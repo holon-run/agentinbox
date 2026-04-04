@@ -1,0 +1,24 @@
+{
+  "name": "agentinbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Shared ingress and delivery layer for local agents.",
+  "license": "MIT",
+  "bin": {
+    "agentinbox": "dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --watch --loader ts-node/esm src/cli.ts",
+    "test": "npm run build && node --test dist/test/**/*.test.js"
+  },
+  "dependencies": {
+    "sql.js": "^1.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/sql.js": "^1.4.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.2"
+  }
+}

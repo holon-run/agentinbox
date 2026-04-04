@@ -1,0 +1,220 @@
+# AgentInbox
+
+`AgentInbox` is the shared ingress and delivery layer for local agents.
+
+It is responsible for bringing external message streams and event streams into
+the local agent environment, activating target agents when relevant signals
+arrive, and delivering agent replies or updates back to external systems.
+
+`AgentInbox` is not an agent runtime. It is the layer between outside systems
+and local runtimes such as `Louke`.
+
+## One Sentence
+
+`AgentInbox` is the shared subscription and delivery layer for local agents.
+
+## Product Position
+
+`AgentInbox` sits between:
+
+- external systems such as GitHub, IM, MCP endpoints, workspace watchers, and
+  web/app bridges
+- local agent runtimes such as `Louke`
+
+It should let multiple agents reuse the same local subscription sources without
+forcing each agent runtime to embed provider-specific connectors.
+
+## What It Owns
+
+`AgentInbox` should own:
+
+- subscription source hosting
+- source-specific polling / push adapters
+- shared local event intake
+- agent-specific interests on top of shared sources
+- activation signals for target agents
+- mailbox-style read access to normalized items
+- outbound delivery back to external systems
+
+## What It Does Not Own
+
+`AgentInbox` should not own:
+
+- agent lifecycle
+- long-lived runtime semantics
+- queue / wake / sleep policy inside the runtime
+- task orchestration
+- prompt / reasoning logic
+- end-user product shell
+- a heavy workflow engine
+
+## Core Boundary
+
+Use this boundary consistently:
+
+- `AgentInbox` owns sources and delivery
+- `Louke` owns runtime meaning
+
+That means:
+
+- `AgentInbox` decides how outside systems are watched and how messages are
+  routed or delivered
+- `Louke` decides how inbound items become queue work, wakeups, task updates,
+  or follow-up reasoning
+
+## Current Mental Model
+
+Recommended layers:
+
+- `Commitment`
+  - long-term agent responsibility, owned by the runtime and project docs
+- `SubscriptionSource`
+  - a shared source hosted by `AgentInbox`
+- `Interest`
+  - an agent-specific filter and delivery rule on top of a source
+- `InboxItem`
+  - a normalized inbound item stored by `AgentInbox`
+- `Activation`
+  - a lightweight wake signal sent to an agent runtime
+
+Inside `AgentInbox`, the primary model should stay:
+
+- source first
+- interest second
+
+That allows one source to serve many agents with different filters and delivery
+rules.
+
+## Inbound / Outbound
+
+`AgentInbox` is not receive-only.
+
+It should support both:
+
+- inbound: collect events and messages, then activate agents
+- outbound: send replies, questions, progress updates, and notifications back
+  to the correct external surface
+
+The runtime should decide what to say.
+`AgentInbox` should decide how and where it gets delivered.
+
+## Relationship To Other Projects
+
+- `Louke`
+  - headless long-lived runtime for agents
+- `uxc`
+  - capability access layer
+- `webmcp-bridge`
+  - web/browser bridge layer
+- `holon`
+  - the future default assembled product and operator environment
+
+## Execution Strategy
+
+`AgentInbox` and `Louke` should develop in parallel.
+
+They should share one forcing function:
+
+- a real workflow where external systems activate a local agent
+- the agent reads pending inbox items
+- the agent continues work across time
+- the agent sends updates or questions back through the same ingress/delivery
+  layer
+
+## Initial Direction
+
+The current likely first workflow is:
+
+- GitHub as a task/object surface
+- IM as a driving and collaboration surface
+- local workspace / project docs as ongoing context
+
+But `AgentInbox` should stay source-agnostic enough that this is a first path,
+not a permanent limitation.
+
+## Language Choice
+
+The first version should be built in `TypeScript / Node.js`.
+
+Reasoning:
+
+- this layer is connector-heavy
+- SDK and CLI integrations are easier to move quickly in TypeScript
+- web/app and IM integrations are usually better supported there
+- `Louke` can remain the Rust runtime core
+
+If the product later needs stronger daemon constraints or deeper local systems
+integration, selective lower-level components can move later.
+
+## Near-Term Goal
+
+The near-term goal is not to become a large connector platform.
+
+The near-term goal is to prove a clean local ingress/delivery layer that:
+
+- keeps connector logic out of `Louke`
+- supports shared sources for multiple agents
+- activates local agents reliably
+- lets those agents reply through the same system boundary
+
+## Current Implementation
+
+This repository now includes the first runnable `M0/M1` scaffold:
+
+- `agentinbox serve` local daemon
+- local HTTP API for source registration, mailbox access, delivery, and status
+- thin `agentinbox` CLI for shell-first agents and operators
+- SQLite-backed state for sources, interests, inbox items, activations, and deliveries
+- fixture source path for end-to-end local testing
+- adapter scaffolding for future GitHub and Feishu integrations
+
+The current implementation proves the core boundary and local control surface.
+Real provider-backed GitHub and Feishu flows are the next milestone.
+
+## Commands
+
+Install dependencies and build:
+
+```bash
+npm install
+npm run build
+```
+
+Start the daemon:
+
+```bash
+node dist/src/cli.js serve
+```
+
+Register a shared source and interest:
+
+```bash
+node dist/src/cli.js source add fixture demo
+node dist/src/cli.js interest add alpha <source_id> --match-json '{"channel":"engineering"}'
+```
+
+Emit a fixture event and inspect the mailbox:
+
+```bash
+node dist/src/cli.js fixture emit <source_id> --metadata-json '{"channel":"engineering"}' --payload-json '{"text":"hello"}'
+node dist/src/cli.js mailbox list
+node dist/src/cli.js mailbox read mbx_alpha
+```
+
+Record a delivery attempt:
+
+```bash
+node dist/src/cli.js deliver send --provider fixture --surface chat --target room-1 --payload-json '{"text":"reply"}'
+```
+
+Inspect status:
+
+```bash
+node dist/src/cli.js status
+```
+
+Run tests:
+
+```bash
+npm test
+```
