@@ -1,4 +1,11 @@
-import { DeliveryAttempt, DeliveryRequest, EmitItemInput, SourcePollResult, SourceType, SubscriptionSource } from "./model";
+import {
+  AppendSourceEventInput,
+  DeliveryAttempt,
+  DeliveryRequest,
+  SourcePollResult,
+  SourceType,
+  SubscriptionSource,
+} from "./model";
 import { AgentInboxStore } from "./store";
 import { GithubDeliveryAdapter, GithubSourceRuntime } from "./sources/github";
 
@@ -15,6 +22,8 @@ export interface DeliveryAdapter {
 }
 
 class NoopSourceAdapter implements SourceAdapter {
+  constructor(private readonly sourceType: SourceType) {}
+
   async ensureSource(_source: SubscriptionSource): Promise<void> {
     return;
   }
@@ -22,11 +31,11 @@ class NoopSourceAdapter implements SourceAdapter {
   async pollSource(sourceId: string): Promise<SourcePollResult> {
     return {
       sourceId,
-      sourceType: "fixture",
-      inserted: 0,
-      ignored: 0,
+      sourceType: this.sourceType,
+      appended: 0,
+      deduped: 0,
       eventsRead: 0,
-      note: "fixture source has no background poller",
+      note: `${this.sourceType} source has no background poller`,
     };
   }
 }
@@ -45,9 +54,9 @@ class UxcBackedStubAdapter implements SourceAdapter, DeliveryAdapter {
   async pollSource(sourceId: string): Promise<SourcePollResult> {
     return {
       sourceId,
-      sourceType: "github_repo",
-      inserted: 0,
-      ignored: 0,
+      sourceType: "feishu_bot",
+      appended: 0,
+      deduped: 0,
       eventsRead: 0,
       note: "provider adapter scaffolded; wire this to uxc in the next milestone",
     };
@@ -62,14 +71,15 @@ class UxcBackedStubAdapter implements SourceAdapter, DeliveryAdapter {
 }
 
 export class AdapterRegistry {
-  private readonly fixtureSource = new NoopSourceAdapter();
+  private readonly fixtureSource = new NoopSourceAdapter("fixture");
+  private readonly feishuSource = new NoopSourceAdapter("feishu_bot");
   private readonly githubSource: GithubSourceRuntime;
   private readonly fixtureDelivery = new NoopDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
   private readonly stub = new UxcBackedStubAdapter();
 
-  constructor(store: AgentInboxStore, emitItem: (input: EmitItemInput) => Promise<{ inserted: number }>) {
-    this.githubSource = new GithubSourceRuntime(store, emitItem);
+  constructor(store: AgentInboxStore, appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>) {
+    this.githubSource = new GithubSourceRuntime(store, appendSourceEvent);
   }
 
   sourceAdapterFor(type: SourceType): SourceAdapter {
@@ -78,6 +88,9 @@ export class AdapterRegistry {
     }
     if (type === "github_repo") {
       return this.githubSource;
+    }
+    if (type === "feishu_bot") {
+      return this.feishuSource;
     }
     return this.stub;
   }
@@ -106,8 +119,8 @@ export class AdapterRegistry {
       return {
         sourceId: source.sourceId,
         sourceType: source.sourceType,
-        inserted: 0,
-        ignored: 0,
+        appended: 0,
+        deduped: 0,
         eventsRead: 0,
         note: "source type does not support polling",
       };

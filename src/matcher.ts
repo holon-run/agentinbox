@@ -1,12 +1,12 @@
-import { Interest, MatchResult } from "./model";
+import { MatchResult, Subscription } from "./model";
 
-export function matchInterest(
-  interest: Interest,
+export function matchSubscription(
+  subscription: Subscription,
   metadata: Record<string, unknown>,
   payload: Record<string, unknown>,
 ): MatchResult {
   const source = { ...payload, ...metadata };
-  const { matchRules } = interest;
+  const { matchRules } = subscription;
 
   for (const [key, expected] of Object.entries(matchRules)) {
     const actual = source[key];

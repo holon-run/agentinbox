@@ -1,27 +1,67 @@
 import {
   Activation,
+  AppendSourceEventInput,
+  AppendSourceEventResult,
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryRequest,
-  EmitItemInput,
+  Inbox,
   InboxItem,
-  Interest,
-  RegisterInterestInput,
   RegisterSourceInput,
+  RegisterSubscriptionInput,
   SourcePollResult,
+  Subscription,
+  SubscriptionPollResult,
   SubscriptionSource,
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { AdapterRegistry } from "./adapters";
+import {
+  defaultInboxIdForAgent,
+  EventBusBackend,
+  SqliteEventBusBackend,
+  streamKeyForSource,
+  toAppendResult,
+} from "./backend";
 import { generateId, nowIso } from "./util";
-import { matchInterest } from "./matcher";
+import { matchSubscription } from "./matcher";
+
+const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 
 export class AgentInboxService {
+  private readonly backend: EventBusBackend;
+  private readonly inFlightSubscriptions = new Set<string>();
+  private subscriptionInterval: NodeJS.Timeout | null = null;
+
   constructor(
     private readonly store: AgentInboxStore,
     private readonly adapters: AdapterRegistry,
-    private readonly activationDispatcher: ActivationDispatcher = new ActivationDispatcher(),
-  ) {}
+    activationDispatcher: ActivationDispatcher = new ActivationDispatcher(),
+    backend?: EventBusBackend,
+  ) {
+    this.activationDispatcher = activationDispatcher;
+    this.backend = backend ?? new SqliteEventBusBackend(store);
+  }
+
+  private readonly activationDispatcher: ActivationDispatcher;
+
+  async start(): Promise<void> {
+    if (this.subscriptionInterval) {
+      return;
+    }
+    this.subscriptionInterval = setInterval(() => {
+      void this.syncAllSubscriptions();
+    }, 2_000);
+    await this.syncAllSubscriptions();
+  }
+
+  async stop(): Promise<void> {
+    if (!this.subscriptionInterval) {
+      return;
+    }
+    clearInterval(this.subscriptionInterval);
+    this.subscriptionInterval = null;
+  }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
     const existing = this.store.getSourceByKey(input.sourceType, input.sourceKey);
@@ -40,87 +80,68 @@ export class AgentInboxService {
       updatedAt: nowIso(),
     };
     this.store.insertSource(source);
+    await this.ensureStreamForSource(source);
     await this.adapters.sourceAdapterFor(source.sourceType).ensureSource(source);
     return source;
   }
 
-  registerInterest(input: RegisterInterestInput): Interest {
+  async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
     const source = this.store.getSource(input.sourceId);
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
-    const interest: Interest = {
-      interestId: generateId("int"),
+
+    const inboxId = input.inboxId ?? defaultInboxIdForAgent(input.agentId);
+    this.ensureInbox(inboxId, input.agentId);
+    const subscription: Subscription = {
+      subscriptionId: generateId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
-      mailboxId: input.mailboxId ?? `mbx_${input.agentId}`,
+      inboxId,
       matchRules: input.matchRules ?? {},
       activationTarget: input.activationTarget ?? null,
+      startPolicy: input.startPolicy ?? "latest",
+      startOffset: input.startOffset ?? null,
+      startTime: input.startTime ?? null,
       createdAt: nowIso(),
     };
-    this.store.insertInterest(interest);
-    return interest;
+    this.store.insertSubscription(subscription);
+
+    const stream = await this.ensureStreamForSource(source);
+    await this.backend.ensureConsumer({
+      streamId: stream.streamId,
+      subscriptionId: subscription.subscriptionId,
+      consumerKey: `subscription:${subscription.subscriptionId}`,
+      startPolicy: subscription.startPolicy,
+      startOffset: subscription.startOffset ?? null,
+      startTime: subscription.startTime ?? null,
+    });
+    return subscription;
   }
 
-  async emitItem(input: EmitItemInput): Promise<{ inserted: number; items: InboxItem[]; activations: Activation[] }> {
+  async appendSourceEvent(input: AppendSourceEventInput): Promise<AppendSourceEventResult> {
     const source = this.store.getSource(input.sourceId);
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
-
-    const interests = this.store.listInterestsForSource(input.sourceId);
-    const items: InboxItem[] = [];
-    const activations: Activation[] = [];
-
-    for (const interest of interests) {
-      const match = matchInterest(interest, input.metadata ?? {}, input.rawPayload ?? {});
-      if (!match.matched) {
-        continue;
-      }
-      const item: InboxItem = {
-        itemId: generateId("item"),
-        sourceId: input.sourceId,
-        sourceNativeId: input.sourceNativeId,
-        eventVariant: input.eventVariant,
-        mailboxId: interest.mailboxId,
-        occurredAt: input.occurredAt ?? nowIso(),
-        metadata: { ...(input.metadata ?? {}), matchReason: match.reason, agentId: interest.agentId },
-        rawPayload: input.rawPayload ?? {},
-        deliveryHandle: input.deliveryHandle ?? defaultDeliveryHandleForSource(source, input),
-        ackedAt: null,
-      };
-      const inserted = this.store.insertInboxItem(item);
-      if (!inserted) {
-        continue;
-      }
-      items.push(item);
-      const activation: Activation = {
-        activationId: generateId("act"),
-        agentId: interest.agentId,
-        mailboxId: interest.mailboxId,
-        newItemCount: 1,
-        summary: `${source.sourceType}:${source.sourceKey}:${input.eventVariant}`,
-        createdAt: nowIso(),
-        deliveredAt: null,
-      };
-      this.store.insertActivation(activation);
-      activations.push(activation);
-      await this.activationDispatcher.dispatch(interest.activationTarget, activation);
-    }
-
-    return { inserted: items.length, items, activations };
+    const stream = await this.ensureStreamForSource(source);
+    const result = await this.backend.append({
+      streamId: stream.streamId,
+      events: [input],
+    });
+    return toAppendResult(result);
   }
 
-  listMailboxIds(): string[] {
-    return this.store.listMailboxIds();
+  listInboxIds(): string[] {
+    return this.store.listInboxes().map((inbox) => inbox.inboxId);
   }
 
-  listMailboxItems(mailboxId: string): InboxItem[] {
-    return this.store.listInboxItems(mailboxId);
+  listInboxItems(inboxId: string): InboxItem[] {
+    return this.store.listInboxItems(inboxId);
   }
 
-  ackMailboxItems(mailboxId: string, itemIds: string[]): { acked: number } {
-    return { acked: this.store.ackItems(mailboxId, itemIds, nowIso()) };
+  ackInboxItems(inboxId: string, itemIds: string[]): { acked: number } {
+    return { acked: this.store.ackItems(inboxId, itemIds, nowIso()) };
   }
 
   async pollSource(sourceId: string): Promise<SourcePollResult> {
@@ -129,6 +150,119 @@ export class AgentInboxService {
       throw new Error(`unknown source: ${sourceId}`);
     }
     return this.adapters.pollSource(source);
+  }
+
+  async pollSubscription(subscriptionId: string): Promise<SubscriptionPollResult> {
+    if (this.inFlightSubscriptions.has(subscriptionId)) {
+      const subscription = this.store.getSubscription(subscriptionId);
+      if (!subscription) {
+        throw new Error(`unknown subscription: ${subscriptionId}`);
+      }
+      return {
+        subscriptionId,
+        sourceId: subscription.sourceId,
+        eventsRead: 0,
+        matched: 0,
+        inboxItemsCreated: 0,
+        committedOffset: null,
+        note: "subscription poll already in flight",
+      };
+    }
+
+    this.inFlightSubscriptions.add(subscriptionId);
+    try {
+      const subscription = this.store.getSubscription(subscriptionId);
+      if (!subscription) {
+        throw new Error(`unknown subscription: ${subscriptionId}`);
+      }
+      const source = this.store.getSource(subscription.sourceId);
+      if (!source) {
+        throw new Error(`unknown source: ${subscription.sourceId}`);
+      }
+      const stream = await this.ensureStreamForSource(source);
+      const consumer = await this.backend.ensureConsumer({
+        streamId: stream.streamId,
+        subscriptionId: subscription.subscriptionId,
+        consumerKey: `subscription:${subscription.subscriptionId}`,
+        startPolicy: subscription.startPolicy,
+        startOffset: subscription.startOffset ?? null,
+        startTime: subscription.startTime ?? null,
+      });
+      const batch = await this.backend.read({
+        streamId: stream.streamId,
+        consumerId: consumer.consumerId,
+        limit: DEFAULT_SUBSCRIPTION_POLL_LIMIT,
+      });
+
+      let matched = 0;
+      let inboxItemsCreated = 0;
+      let lastProcessedOffset: number | null = null;
+      try {
+        for (const event of batch.events) {
+          lastProcessedOffset = event.offset;
+          const match = matchSubscription(subscription, event.metadata, event.rawPayload);
+          if (!match.matched) {
+            continue;
+          }
+          matched += 1;
+          const item: InboxItem = {
+            itemId: generateId("item"),
+            sourceId: event.sourceId,
+            sourceNativeId: event.sourceNativeId,
+            eventVariant: event.eventVariant,
+            inboxId: subscription.inboxId,
+            occurredAt: event.occurredAt,
+            metadata: { ...event.metadata, matchReason: match.reason, agentId: subscription.agentId },
+            rawPayload: event.rawPayload,
+            deliveryHandle: event.deliveryHandle as DeliveryHandle | null,
+            ackedAt: null,
+          };
+          const inserted = this.store.insertInboxItem(item);
+          if (!inserted) {
+            continue;
+          }
+          inboxItemsCreated += 1;
+          const activation: Activation = {
+            activationId: generateId("act"),
+            agentId: subscription.agentId,
+            inboxId: subscription.inboxId,
+            newItemCount: 1,
+            summary: `${source.sourceType}:${source.sourceKey}:${event.eventVariant}`,
+            createdAt: nowIso(),
+            deliveredAt: null,
+          };
+          this.store.insertActivation(activation);
+          await this.activationDispatcher.dispatch(subscription.activationTarget, activation);
+        }
+      } catch (error) {
+        if (lastProcessedOffset != null) {
+          await this.backend.commit({
+            consumerId: consumer.consumerId,
+            committedOffset: lastProcessedOffset,
+          });
+        }
+        throw error;
+      }
+
+      if (lastProcessedOffset != null) {
+        await this.backend.commit({
+          consumerId: consumer.consumerId,
+          committedOffset: lastProcessedOffset,
+        });
+      }
+
+      return {
+        subscriptionId: subscription.subscriptionId,
+        sourceId: subscription.sourceId,
+        eventsRead: batch.events.length,
+        matched,
+        inboxItemsCreated,
+        committedOffset: lastProcessedOffset,
+        note: batch.events.length === 0 ? "no new stream events" : "subscription batch processed",
+      };
+    } finally {
+      this.inFlightSubscriptions.delete(subscriptionId);
+    }
   }
 
   async sendDelivery(request: DeliveryRequest): Promise<DeliveryAttempt & { note: string }> {
@@ -156,23 +290,51 @@ export class AgentInboxService {
     return {
       counts: this.store.getCounts(),
       sources: this.store.listSources(),
-      interests: this.store.listInterests(),
-      mailboxes: this.store.listMailboxIds(),
+      subscriptions: this.store.listSubscriptions(),
+      inboxes: this.store.listInboxes(),
+      streams: this.store.listStreams(),
+      consumers: this.store.listConsumers(),
       adapters: this.adapters.status(),
       recentActivations: this.store.listActivations().slice(0, 10),
       recentDeliveries: this.store.listDeliveries().slice(0, 10),
     };
   }
-}
 
-function defaultDeliveryHandleForSource(source: SubscriptionSource, input: EmitItemInput): DeliveryHandle {
-  return {
-    provider: source.sourceType === "fixture" ? "fixture" : source.sourceType,
-    surface: "inbox_item",
-    targetRef: input.sourceNativeId,
-    threadRef: null,
-    replyMode: "reply",
-  };
+  private ensureInbox(inboxId: string, ownerAgentId: string): Inbox {
+    const existing = this.store.getInbox(inboxId);
+    if (existing) {
+      if (existing.ownerAgentId !== ownerAgentId) {
+        throw new Error(`inbox ${inboxId} already belongs to agent ${existing.ownerAgentId}`);
+      }
+      return existing;
+    }
+    const inbox: Inbox = {
+      inboxId,
+      ownerAgentId,
+      createdAt: nowIso(),
+    };
+    this.store.insertInbox(inbox);
+    return inbox;
+  }
+
+  private async ensureStreamForSource(source: SubscriptionSource) {
+    return this.backend.ensureStream({
+      sourceId: source.sourceId,
+      streamKey: streamKeyForSource(source.sourceType, source.sourceKey),
+      backend: "sqlite",
+    });
+  }
+
+  private async syncAllSubscriptions(): Promise<void> {
+    const subscriptions = this.store.listSubscriptions();
+    for (const subscription of subscriptions) {
+      try {
+        await this.pollSubscription(subscription.subscriptionId);
+      } catch (error) {
+        console.warn(`subscription poll failed for ${subscription.subscriptionId}:`, error);
+      }
+    }
+  }
 }
 
 function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {

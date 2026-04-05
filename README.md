@@ -31,9 +31,9 @@ forcing each agent runtime to embed provider-specific connectors.
 - subscription source hosting
 - source-specific polling / push adapters
 - shared local event intake
-- agent-specific interests on top of shared sources
+- agent-specific subscriptions on top of shared sources
 - activation signals for target agents
-- mailbox-style read access to normalized items
+- inbox-style read access to normalized items
 - outbound delivery back to external systems
 
 ## What It Does Not Own
@@ -70,17 +70,21 @@ Recommended layers:
   - long-term agent responsibility, owned by the runtime and project docs
 - `SubscriptionSource`
   - a shared source hosted by `AgentInbox`
-- `Interest`
-  - an agent-specific filter and delivery rule on top of a source
+- `StreamEvent`
+  - one normalized source event written into the source stream
+- `Subscription`
+  - an agent-specific filter and consumer on top of a source
+- `Inbox`
+  - the delivery target for one or more subscriptions
 - `InboxItem`
-  - a normalized inbound item stored by `AgentInbox`
+  - a normalized inbound item materialized into an inbox after subscription matching
 - `Activation`
   - a lightweight wake signal sent to an agent runtime
 
 Inside `AgentInbox`, the primary model should stay:
 
 - source first
-- interest second
+- subscription second
 
 That allows one source to serve many agents with different filters and delivery
 rules.
@@ -162,14 +166,15 @@ The near-term goal is to prove a clean local ingress/delivery layer that:
 This repository now includes the first runnable `M0/M1` scaffold:
 
 - `agentinbox serve` local daemon
-- local HTTP API for source registration, mailbox access, delivery, and status
+- local HTTP API for source registration, subscription polling, inbox access, delivery, and status
 - thin `agentinbox` CLI for shell-first agents and operators
-- SQLite-backed state for sources, interests, inbox items, activations, and deliveries
+- SQLite-backed state for sources, streams, stream events, subscriptions, inboxes, inbox items, activations, and deliveries
 - fixture source path for end-to-end local testing
-- adapter scaffolding for future GitHub and Feishu integrations
+- GitHub source ingestion through `uxc` poll subscriptions
+- adapter scaffolding for future Feishu integrations
 
-The current implementation proves the core boundary and local control surface.
-Real provider-backed GitHub and Feishu flows are the next milestone.
+The current implementation proves the source-ingress / event-log / inbox-delivery
+boundary with per-subscription consumer offsets.
 
 ## Commands
 
@@ -186,11 +191,11 @@ Start the daemon:
 node dist/src/cli.js serve
 ```
 
-Register a shared source and interest:
+Register a shared source and subscription:
 
 ```bash
 node dist/src/cli.js source add fixture demo
-node dist/src/cli.js interest add alpha <source_id> --match-json '{"channel":"engineering"}'
+node dist/src/cli.js subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
 ```
 
 Register a GitHub repo source backed by `uxc` poll subscription:
@@ -198,16 +203,17 @@ Register a GitHub repo source backed by `uxc` poll subscription:
 ```bash
 node dist/src/cli.js source add github_repo holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
-node dist/src/cli.js interest add alpha <source_id> --match-json '{"mentions":["alpha"]}'
+node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions":["alpha"]}'
 node dist/src/cli.js source poll <source_id>
 ```
 
-Emit a fixture event and inspect the mailbox:
+Emit a fixture event, materialize it into an inbox, and inspect the result:
 
 ```bash
 node dist/src/cli.js fixture emit <source_id> --metadata-json '{"channel":"engineering"}' --payload-json '{"text":"hello"}'
-node dist/src/cli.js mailbox list
-node dist/src/cli.js mailbox read mbx_alpha
+node dist/src/cli.js subscription poll <subscription_id>
+node dist/src/cli.js inbox list
+node dist/src/cli.js inbox read inbox_alpha
 ```
 
 Record a delivery attempt:

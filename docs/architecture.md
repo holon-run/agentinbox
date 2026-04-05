@@ -10,6 +10,9 @@ The goal is to lock the boundary between:
 - shared local subscription and delivery infrastructure
 - local agent runtimes such as `Louke`
 
+For the next-step event retention and multi-consumer design, see
+`docs/eventbus-backend.md`.
+
 ## One Sentence
 
 `AgentInbox` is the shared local ingress and delivery layer for agents.

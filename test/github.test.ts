@@ -7,7 +7,7 @@ import { AgentInboxStore } from "../src/store";
 import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { GithubDeliveryAdapter, GithubSourceRuntime, GithubUxcClient, normalizeGithubRepoEvent, type UxcLikeClient } from "../src/sources/github";
-import { DeliveryAttempt, EmitItemInput, SubscriptionSource } from "../src/model";
+import { AppendSourceEventInput, DeliveryAttempt, SubscriptionSource } from "../src/model";
 import { nowIso } from "../src/util";
 
 class FakeUxcClient implements UxcLikeClient {
@@ -72,7 +72,7 @@ async function makeService(): Promise<{ store: AgentInboxStore; service: AgentIn
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-github-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
   let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input: EmitItemInput) => service.emitItem(input));
+  const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input));
   service = new AgentInboxService(store, adapters);
   return { store, service, adapters, dir };
 }
@@ -121,11 +121,11 @@ test("normalizeGithubRepoEvent extracts metadata and delivery handle", async () 
   assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#12");
 });
 
-test("github source runtime creates subscription and emits matching inbox items", async () => {
+test("github source runtime appends stream events and subscriptions materialize inbox items", async () => {
   const { store, service, dir } = await makeService();
   try {
     const fake = new FakeUxcClient();
-    const runtime = new GithubSourceRuntime(store, async (input) => service.emitItem(input), new GithubUxcClient(fake));
+    const runtime = new GithubSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubUxcClient(fake));
     const source: SubscriptionSource = {
       sourceId: "src_github",
       sourceType: "github_repo",
@@ -138,10 +138,11 @@ test("github source runtime creates subscription and emits matching inbox items"
       updatedAt: nowIso(),
     };
     store.insertSource(source);
-    service.registerInterest({
+    const subscription = await service.registerSubscription({
       agentId: "alpha",
       sourceId: source.sourceId,
       matchRules: { mentions: ["alpha"] },
+      startPolicy: "earliest",
     });
 
     await runtime.ensureSource(source);
@@ -162,9 +163,11 @@ test("github source runtime creates subscription and emits matching inbox items"
       },
     });
 
-    const result = await runtime.pollSource(source.sourceId);
-    assert.equal(result.inserted, 1);
-    assert.equal(service.listMailboxItems("mbx_alpha").length, 1);
+    const sourceResult = await runtime.pollSource(source.sourceId);
+    const subscriptionResult = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(sourceResult.appended, 1);
+    assert.equal(subscriptionResult.inboxItemsCreated, 1);
+    assert.equal(service.listInboxItems(subscription.inboxId).length, 1);
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });

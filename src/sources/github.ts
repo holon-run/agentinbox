@@ -3,7 +3,7 @@ import {
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryRequest,
-  EmitItemInput,
+  AppendSourceEventInput,
   SourcePollResult,
   SubscriptionSource,
 } from "../model";
@@ -156,7 +156,7 @@ export class GithubSourceRuntime {
 
   constructor(
     private readonly store: AgentInboxStore,
-    private readonly emitItem: (input: EmitItemInput) => Promise<{ inserted: number }>,
+    private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
     client?: GithubUxcClient,
   ) {
     this.client = client ?? new GithubUxcClient();
@@ -217,8 +217,8 @@ export class GithubSourceRuntime {
       return {
         sourceId,
         sourceType: "github_repo",
-        inserted: 0,
-        ignored: 0,
+        appended: 0,
+        deduped: 0,
         eventsRead: 0,
         note: "source sync already in flight",
       };
@@ -229,16 +229,6 @@ export class GithubSourceRuntime {
       if (!source) {
         throw new Error(`unknown source: ${sourceId}`);
       }
-      if (this.store.listInterestsForSource(sourceId).length === 0) {
-        return {
-          sourceId,
-          sourceType: "github_repo",
-          inserted: 0,
-          ignored: 0,
-          eventsRead: 0,
-          note: "no interests registered for source",
-        };
-      }
       const config = parseGithubSourceConfig(source);
       let checkpoint = parseGithubCheckpoint(source.checkpoint);
       const subscription = await this.client.ensureRepoEventsSubscription(config, checkpoint);
@@ -247,22 +237,19 @@ export class GithubSourceRuntime {
       }
 
       const batch = await this.client.readSubscriptionEvents(checkpoint.uxcJobId!, checkpoint.afterSeq ?? 0);
-      let inserted = 0;
-      let ignored = 0;
+      let appended = 0;
+      let deduped = 0;
       for (const event of batch.events) {
         if (event.event_kind !== "data") {
           continue;
         }
         const normalized = normalizeGithubRepoEvent(source, config, event.data);
         if (!normalized) {
-          ignored += 1;
           continue;
         }
-        const result = await this.emitItem(normalized);
-        inserted += result.inserted;
-        if (result.inserted === 0) {
-          ignored += 1;
-        }
+        const result = await this.appendSourceEvent(normalized);
+        appended += result.appended;
+        deduped += result.deduped;
       }
 
       this.store.updateSourceRuntime(sourceId, {
@@ -279,8 +266,8 @@ export class GithubSourceRuntime {
       return {
         sourceId,
         sourceType: "github_repo",
-        inserted,
-        ignored,
+        appended,
+        deduped,
         eventsRead: batch.events.length,
         note: `subscription status=${batch.status}`,
       };
@@ -343,7 +330,7 @@ export function normalizeGithubRepoEvent(
   source: SubscriptionSource,
   config: GithubSourceConfig,
   raw: unknown,
-): EmitItemInput | null {
+): AppendSourceEventInput | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return null;
   }

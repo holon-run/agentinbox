@@ -50,42 +50,54 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "interest" && args[1] === "add") {
+  if (command === "subscription" && args[1] === "add") {
     const [agentId, sourceId] = args.slice(2, 4);
     if (!agentId || !sourceId) {
-      throw new Error("usage: agentinbox interest add <agentId> <sourceId> [--mailbox-id ID] [--match-json JSON] [--activation-target URL]");
+      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
-    await printRemote("/interests/register", {
+    await printRemote("/subscriptions/register", {
       agentId,
       sourceId,
-      mailboxId: takeFlagValue(args, "--mailbox-id") ?? undefined,
+      inboxId: takeFlagValue(args, "--inbox-id") ?? undefined,
       matchRules: parseJsonArg(takeFlagValue(args, "--match-json")),
       activationTarget: takeFlagValue(args, "--activation-target") ?? null,
+      startPolicy: takeFlagValue(args, "--start-policy") ?? undefined,
+      startOffset: parseOptionalNumber(takeFlagValue(args, "--start-offset")),
+      startTime: takeFlagValue(args, "--start-time") ?? undefined,
     });
     return;
   }
 
-  if (command === "mailbox" && args[1] === "list") {
-    await printRemote("/mailboxes", undefined, "GET");
-    return;
-  }
-
-  if (command === "mailbox" && args[1] === "read") {
-    const mailboxId = args[2];
-    if (!mailboxId) {
-      throw new Error("usage: agentinbox mailbox read <mailboxId>");
+  if (command === "subscription" && args[1] === "poll") {
+    const subscriptionId = args[2];
+    if (!subscriptionId) {
+      throw new Error("usage: agentinbox subscription poll <subscriptionId>");
     }
-    await printRemote(`/mailboxes/${encodeURIComponent(mailboxId)}/items`, undefined, "GET");
+    await printRemote(`/subscriptions/${encodeURIComponent(subscriptionId)}/poll`, {});
     return;
   }
 
-  if (command === "mailbox" && args[1] === "ack") {
-    const mailboxId = args[2];
+  if (command === "inbox" && args[1] === "list") {
+    await printRemote("/inboxes", undefined, "GET");
+    return;
+  }
+
+  if (command === "inbox" && args[1] === "read") {
+    const inboxId = args[2];
+    if (!inboxId) {
+      throw new Error("usage: agentinbox inbox read <inboxId>");
+    }
+    await printRemote(`/inboxes/${encodeURIComponent(inboxId)}/items`, undefined, "GET");
+    return;
+  }
+
+  if (command === "inbox" && args[1] === "ack") {
+    const inboxId = args[2];
     const itemId = takeFlagValue(args, "--item");
-    if (!mailboxId || !itemId) {
-      throw new Error("usage: agentinbox mailbox ack <mailboxId> --item <itemId>");
+    if (!inboxId || !itemId) {
+      throw new Error("usage: agentinbox inbox ack <inboxId> --item <itemId>");
     }
-    await printRemote(`/mailboxes/${encodeURIComponent(mailboxId)}/ack`, { itemIds: [itemId] });
+    await printRemote(`/inboxes/${encodeURIComponent(inboxId)}/ack`, { itemIds: [itemId] });
     return;
   }
 
@@ -139,10 +151,11 @@ async function runServe(args: string[]): Promise<void> {
   const dbPath = takeFlagValue(args, "--state") ?? DEFAULT_DB_PATH;
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.emitItem(input));
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
   service = new AgentInboxService(store, adapters);
   const server = createServer(service);
   await adapters.start();
+  await service.start();
   server.listen(port, "127.0.0.1", () => {
     console.log(jsonResponse({
       ok: true,
@@ -153,6 +166,7 @@ async function runServe(args: string[]): Promise<void> {
   const shutdown = () => {
     server.close(() => {
       void adapters.stop();
+      void service.stop();
       store.close();
       process.exit(0);
     });
@@ -182,6 +196,17 @@ function takeFlagValue(args: string[], flag: string): string | undefined {
   return args[index + 1];
 }
 
+function parseOptionalNumber(value: string | undefined): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`expected number, received ${value}`);
+  }
+  return parsed;
+}
+
 function printHelp(): void {
   console.log(`agentinbox
 
@@ -189,10 +214,11 @@ Commands:
   agentinbox serve [--port 4747] [--state .agentinbox/agentinbox.sqlite]
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source poll <sourceId>
-  agentinbox interest add <agentId> <sourceId> [--mailbox-id ID] [--match-json JSON] [--activation-target URL]
-  agentinbox mailbox list
-  agentinbox mailbox read <mailboxId>
-  agentinbox mailbox ack <mailboxId> --item <itemId>
+  agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription poll <subscriptionId>
+  agentinbox inbox list
+  agentinbox inbox read <inboxId>
+  agentinbox inbox ack <inboxId> --item <itemId>
   agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]
   agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]
   agentinbox status

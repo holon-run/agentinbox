@@ -1,13 +1,26 @@
 import fs from "node:fs";
 import path from "node:path";
 import initSqlJs, { Database, SqlJsStatic } from "sql.js";
+import type {
+  ConsumerRecord,
+  StreamEventRecord,
+  StreamRecord,
+  StreamStats,
+} from "./backend";
 import {
   Activation,
+  AppendSourceEventInput,
+  AppendSourceEventResult,
   DeliveryAttempt,
+  Inbox,
   InboxItem,
-  Interest,
+  Subscription,
   SubscriptionSource,
+  SubscriptionStartPolicy,
 } from "./model";
+import { generateId, nowIso } from "./util";
+
+const SCHEMA_VERSION = 1;
 
 function parseJson<T>(value: string | null): T {
   if (!value) {
@@ -45,7 +58,144 @@ export class AgentInboxStore {
     return this.sqlPromise;
   }
 
+  close(): void {
+    this.db.close();
+  }
+
   private migrate(): void {
+    const userVersion = this.userVersion();
+    if (userVersion >= SCHEMA_VERSION) {
+      this.createCurrentSchema();
+      return;
+    }
+
+    if (this.hasLegacySchema()) {
+      this.migrateLegacySchema();
+    } else {
+      this.createCurrentSchema();
+    }
+    this.setUserVersion(SCHEMA_VERSION);
+  }
+
+  private hasLegacySchema(): boolean {
+    return this.tableExists("interests")
+      || this.columnExists("inbox_items", "mailbox_id")
+      || this.columnExists("activations", "mailbox_id");
+  }
+
+  private migrateLegacySchema(): void {
+    this.inTransaction(() => {
+      this.createCurrentSchemaBase();
+
+      this.db.exec(`
+        create table if not exists inbox_items_v2 (
+          item_id text primary key,
+          source_id text not null,
+          source_native_id text not null,
+          event_variant text not null,
+          inbox_id text not null,
+          occurred_at text not null,
+          metadata_json text not null,
+          raw_payload_json text not null,
+          delivery_handle_json text,
+          acked_at text,
+          unique(source_id, source_native_id, event_variant, inbox_id)
+        );
+
+        create table if not exists activations_v2 (
+          activation_id text primary key,
+          agent_id text not null,
+          inbox_id text not null,
+          new_item_count integer not null,
+          summary text not null,
+          created_at text not null,
+          delivered_at text
+        );
+      `);
+
+      this.db.exec(`
+        insert or ignore into inboxes (inbox_id, owner_agent_id, created_at)
+        select mailbox_id, min(agent_id), min(created_at)
+        from interests
+        group by mailbox_id;
+
+        insert or ignore into subscriptions (
+          subscription_id, agent_id, source_id, inbox_id, match_rules_json,
+          activation_target, start_policy, start_offset, start_time, created_at
+        )
+        select
+          interest_id, agent_id, source_id, mailbox_id, match_rules_json,
+          activation_target, 'latest', null, null, created_at
+        from interests;
+
+        insert or ignore into inbox_items_v2 (
+          item_id, source_id, source_native_id, event_variant, inbox_id, occurred_at,
+          metadata_json, raw_payload_json, delivery_handle_json, acked_at
+        )
+        select
+          item_id, source_id, source_native_id, event_variant, mailbox_id, occurred_at,
+          metadata_json, raw_payload_json, delivery_handle_json, acked_at
+        from inbox_items;
+
+        insert or ignore into activations_v2 (
+          activation_id, agent_id, inbox_id, new_item_count, summary, created_at, delivered_at
+        )
+        select
+          activation_id, agent_id, mailbox_id, new_item_count, summary, created_at, delivered_at
+        from activations;
+
+        insert or ignore into streams (stream_id, source_id, stream_key, backend, created_at)
+        select
+          'stream_' || source_id,
+          source_id,
+          source_type || ':' || source_key,
+          'sqlite',
+          created_at
+        from sources;
+
+        insert or ignore into consumers (
+          consumer_id, stream_id, subscription_id, consumer_key, start_policy,
+          start_offset, start_time, next_offset, created_at, updated_at
+        )
+        select
+          'consumer_' || subscription_id,
+          'stream_' || source_id,
+          subscription_id,
+          'subscription:' || subscription_id,
+          'latest',
+          null,
+          null,
+          1,
+          created_at,
+          created_at
+        from subscriptions;
+      `);
+
+      if (this.tableExists("interests")) {
+        this.db.exec("drop table interests;");
+      }
+      if (this.tableExists("inbox_items")) {
+        this.db.exec("drop table inbox_items;");
+      }
+      if (this.tableExists("activations")) {
+        this.db.exec("drop table activations;");
+      }
+
+      this.db.exec(`
+        alter table inbox_items_v2 rename to inbox_items;
+        alter table activations_v2 rename to activations;
+      `);
+
+      this.createCurrentIndexes();
+    });
+  }
+
+  private createCurrentSchema(): void {
+    this.createCurrentSchemaBase();
+    this.createCurrentIndexes();
+  }
+
+  private createCurrentSchemaBase(): void {
     this.db.exec(`
       create table if not exists sources (
         source_id text primary key,
@@ -60,13 +210,22 @@ export class AgentInboxStore {
         unique(source_type, source_key)
       );
 
-      create table if not exists interests (
-        interest_id text primary key,
+      create table if not exists inboxes (
+        inbox_id text primary key,
+        owner_agent_id text not null,
+        created_at text not null
+      );
+
+      create table if not exists subscriptions (
+        subscription_id text primary key,
         agent_id text not null,
         source_id text not null,
-        mailbox_id text not null,
+        inbox_id text not null,
         match_rules_json text not null,
         activation_target text,
+        start_policy text not null,
+        start_offset integer,
+        start_time text,
         created_at text not null
       );
 
@@ -75,19 +234,19 @@ export class AgentInboxStore {
         source_id text not null,
         source_native_id text not null,
         event_variant text not null,
-        mailbox_id text not null,
+        inbox_id text not null,
         occurred_at text not null,
         metadata_json text not null,
         raw_payload_json text not null,
         delivery_handle_json text,
         acked_at text,
-        unique(source_id, source_native_id, event_variant, mailbox_id)
+        unique(source_id, source_native_id, event_variant, inbox_id)
       );
 
       create table if not exists activations (
         activation_id text primary key,
         agent_id text not null,
-        mailbox_id text not null,
+        inbox_id text not null,
         new_item_count integer not null,
         summary text not null,
         created_at text not null,
@@ -106,6 +265,66 @@ export class AgentInboxStore {
         status text not null,
         created_at text not null
       );
+
+      create table if not exists streams (
+        stream_id text primary key,
+        source_id text not null unique,
+        stream_key text not null unique,
+        backend text not null,
+        created_at text not null
+      );
+
+      create table if not exists stream_events (
+        offset integer primary key autoincrement,
+        stream_event_id text not null unique,
+        stream_id text not null,
+        source_id text not null,
+        source_native_id text not null,
+        event_variant text not null,
+        occurred_at text not null,
+        metadata_json text not null,
+        raw_payload_json text not null,
+        delivery_handle_json text,
+        created_at text not null,
+        unique(stream_id, source_native_id, event_variant)
+      );
+
+      create table if not exists consumers (
+        consumer_id text primary key,
+        stream_id text not null,
+        subscription_id text not null unique,
+        consumer_key text not null unique,
+        start_policy text not null,
+        start_offset integer,
+        start_time text,
+        next_offset integer not null,
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create table if not exists consumer_commits (
+        commit_id text primary key,
+        consumer_id text not null,
+        stream_id text not null,
+        committed_offset integer not null,
+        committed_at text not null
+      );
+    `);
+  }
+
+  private createCurrentIndexes(): void {
+    this.db.exec(`
+      create index if not exists idx_stream_events_stream_offset
+        on stream_events(stream_id, offset);
+
+      create index if not exists idx_stream_events_stream_occurred_at
+        on stream_events(stream_id, occurred_at);
+
+      create index if not exists idx_consumers_stream
+        on consumers(stream_id);
+
+      create index if not exists idx_consumer_commits_consumer
+        on consumer_commits(consumer_id, committed_offset);
     `);
   }
 
@@ -114,12 +333,50 @@ export class AgentInboxStore {
     fs.writeFileSync(this.dbPath, Buffer.from(data));
   }
 
-  close(): void {
-    this.db.close();
+  private inTransaction(fn: () => void): void {
+    this.db.exec("begin");
+    try {
+      fn();
+      this.db.exec("commit");
+    } catch (error) {
+      this.db.exec("rollback");
+      throw error;
+    }
+  }
+
+  private userVersion(): number {
+    const row = this.getOne("pragma user_version;");
+    if (!row) {
+      return 0;
+    }
+    return Number(row.user_version ?? 0);
+  }
+
+  private setUserVersion(version: number): void {
+    this.db.exec(`pragma user_version = ${version};`);
+  }
+
+  private tableExists(name: string): boolean {
+    const row = this.getOne(
+      "select name from sqlite_master where type = 'table' and name = ?",
+      [name],
+    );
+    return Boolean(row);
+  }
+
+  private columnExists(tableName: string, columnName: string): boolean {
+    if (!this.tableExists(tableName)) {
+      return false;
+    }
+    const rows = this.getAll(`pragma table_info(${tableName});`);
+    return rows.some((row) => String(row.name) === columnName);
   }
 
   getSourceByKey(sourceType: string, sourceKey: string): SubscriptionSource | null {
-    const row = this.getOne("select * from sources where source_type = ? and source_key = ?", [sourceType, sourceKey]);
+    const row = this.getOne(
+      "select * from sources where source_type = ? and source_key = ?",
+      [sourceType, sourceKey],
+    );
     return row ? this.mapSource(row) : null;
   }
 
@@ -156,7 +413,10 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapSource(row));
   }
 
-  updateSourceRuntime(sourceId: string, input: { status?: SubscriptionSource["status"]; checkpoint?: string | null }): void {
+  updateSourceRuntime(
+    sourceId: string,
+    input: { status?: SubscriptionSource["status"]; checkpoint?: string | null },
+  ): void {
     const current = this.getSource(sourceId);
     if (!current) {
       throw new Error(`unknown source: ${sourceId}`);
@@ -170,42 +430,74 @@ export class AgentInboxStore {
       [
         input.status ?? current.status,
         input.checkpoint ?? current.checkpoint ?? null,
-        new Date().toISOString(),
+        nowIso(),
         sourceId,
       ],
     );
     this.persist();
   }
 
-  insertInterest(interest: Interest): void {
+  getInbox(inboxId: string): Inbox | null {
+    const row = this.getOne("select * from inboxes where inbox_id = ?", [inboxId]);
+    return row ? this.mapInbox(row) : null;
+  }
+
+  insertInbox(inbox: Inbox): void {
     this.db.run(
       `
-      insert into interests (
-        interest_id, agent_id, source_id, mailbox_id, match_rules_json,
-        activation_target, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?)
+      insert into inboxes (inbox_id, owner_agent_id, created_at)
+      values (?, ?, ?)
+    `,
+      [inbox.inboxId, inbox.ownerAgentId, inbox.createdAt],
+    );
+    this.persist();
+  }
+
+  listInboxes(): Inbox[] {
+    const rows = this.getAll("select * from inboxes order by created_at asc");
+    return rows.map((row) => this.mapInbox(row));
+  }
+
+  getSubscription(subscriptionId: string): Subscription | null {
+    const row = this.getOne("select * from subscriptions where subscription_id = ?", [subscriptionId]);
+    return row ? this.mapSubscription(row) : null;
+  }
+
+  insertSubscription(subscription: Subscription): void {
+    this.db.run(
+      `
+      insert into subscriptions (
+        subscription_id, agent_id, source_id, inbox_id, match_rules_json,
+        activation_target, start_policy, start_offset, start_time, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
-        interest.interestId,
-        interest.agentId,
-        interest.sourceId,
-        interest.mailboxId,
-        JSON.stringify(interest.matchRules),
-        interest.activationTarget ?? null,
-        interest.createdAt,
+        subscription.subscriptionId,
+        subscription.agentId,
+        subscription.sourceId,
+        subscription.inboxId,
+        JSON.stringify(subscription.matchRules),
+        subscription.activationTarget ?? null,
+        subscription.startPolicy,
+        subscription.startOffset ?? null,
+        subscription.startTime ?? null,
+        subscription.createdAt,
       ],
     );
     this.persist();
   }
 
-  listInterests(): Interest[] {
-    const rows = this.getAll("select * from interests order by created_at asc");
-    return rows.map((row) => this.mapInterest(row));
+  listSubscriptions(): Subscription[] {
+    const rows = this.getAll("select * from subscriptions order by created_at asc");
+    return rows.map((row) => this.mapSubscription(row));
   }
 
-  listInterestsForSource(sourceId: string): Interest[] {
-    const rows = this.getAll("select * from interests where source_id = ? order by created_at asc", [sourceId]);
-    return rows.map((row) => this.mapInterest(row));
+  listSubscriptionsForSource(sourceId: string): Subscription[] {
+    const rows = this.getAll(
+      "select * from subscriptions where source_id = ? order by created_at asc",
+      [sourceId],
+    );
+    return rows.map((row) => this.mapSubscription(row));
   }
 
   insertInboxItem(item: InboxItem): boolean {
@@ -213,7 +505,7 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert or ignore into inbox_items (
-        item_id, source_id, source_native_id, event_variant, mailbox_id, occurred_at,
+        item_id, source_id, source_native_id, event_variant, inbox_id, occurred_at,
         metadata_json, raw_payload_json, delivery_handle_json, acked_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
@@ -222,7 +514,7 @@ export class AgentInboxStore {
         item.sourceId,
         item.sourceNativeId,
         item.eventVariant,
-        item.mailboxId,
+        item.inboxId,
         item.occurredAt,
         JSON.stringify(item.metadata),
         JSON.stringify(item.rawPayload),
@@ -237,26 +529,25 @@ export class AgentInboxStore {
     return inserted;
   }
 
-  listMailboxIds(): string[] {
-    const rows = this.getAll("select distinct mailbox_id from inbox_items order by mailbox_id asc");
-    return rows.map((row) => String(row.mailbox_id));
-  }
-
-  listInboxItems(mailboxId: string): InboxItem[] {
-    const rows = this.getAll("select * from inbox_items where mailbox_id = ? order by occurred_at asc", [mailboxId]);
+  listInboxItems(inboxId: string): InboxItem[] {
+    const rows = this.getAll(
+      "select * from inbox_items where inbox_id = ? order by occurred_at asc, item_id asc",
+      [inboxId],
+    );
     return rows.map((row) => this.mapInboxItem(row));
   }
 
-  ackItems(mailboxId: string, itemIds: string[], ackedAt: string): number {
+  ackItems(inboxId: string, itemIds: string[], ackedAt: string): number {
     let changes = 0;
     for (const itemId of itemIds) {
       const before = this.changes();
       this.db.run(
         `
-        update inbox_items set acked_at = ?
-        where mailbox_id = ? and item_id = ? and acked_at is null
+        update inbox_items
+        set acked_at = ?
+        where inbox_id = ? and item_id = ? and acked_at is null
       `,
-        [ackedAt, mailboxId, itemId],
+        [ackedAt, inboxId, itemId],
       );
       const after = this.changes();
       changes += after - before;
@@ -271,13 +562,13 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into activations (
-        activation_id, agent_id, mailbox_id, new_item_count, summary, created_at, delivered_at
+        activation_id, agent_id, inbox_id, new_item_count, summary, created_at, delivered_at
       ) values (?, ?, ?, ?, ?, ?, ?)
     `,
       [
         activation.activationId,
         activation.agentId,
-        activation.mailboxId,
+        activation.inboxId,
         activation.newItemCount,
         activation.summary,
         activation.createdAt,
@@ -321,14 +612,233 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapDelivery(row));
   }
 
+  insertStream(stream: StreamRecord): void {
+    this.db.run(
+      `
+      insert into streams (stream_id, source_id, stream_key, backend, created_at)
+      values (?, ?, ?, ?, ?)
+    `,
+      [stream.streamId, stream.sourceId, stream.streamKey, stream.backend, stream.createdAt],
+    );
+    this.persist();
+  }
+
+  getStream(streamId: string): StreamRecord | null {
+    const row = this.getOne("select * from streams where stream_id = ?", [streamId]);
+    return row ? this.mapStream(row) : null;
+  }
+
+  listStreams(): StreamRecord[] {
+    const rows = this.getAll("select * from streams order by created_at asc");
+    return rows.map((row) => this.mapStream(row));
+  }
+
+  getStreamBySourceId(sourceId: string): StreamRecord | null {
+    const row = this.getOne("select * from streams where source_id = ?", [sourceId]);
+    return row ? this.mapStream(row) : null;
+  }
+
+  insertStreamEvent(
+    streamId: string,
+    event: AppendSourceEventInput,
+  ): AppendSourceEventResult {
+    const before = this.changes();
+    this.db.run(
+      `
+      insert or ignore into stream_events (
+        stream_event_id, stream_id, source_id, source_native_id, event_variant,
+        occurred_at, metadata_json, raw_payload_json, delivery_handle_json, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        generateId("strevt"),
+        streamId,
+        event.sourceId,
+        event.sourceNativeId,
+        event.eventVariant,
+        event.occurredAt ?? nowIso(),
+        JSON.stringify(event.metadata ?? {}),
+        JSON.stringify(event.rawPayload ?? {}),
+        event.deliveryHandle ? JSON.stringify(event.deliveryHandle) : null,
+        nowIso(),
+      ],
+    );
+    const inserted = this.changes() > before;
+    if (inserted) {
+      this.persist();
+      return {
+        appended: 1,
+        deduped: 0,
+        lastOffset: this.lastInsertRowId(),
+      };
+    }
+    return { appended: 0, deduped: 1, lastOffset: null };
+  }
+
+  readStreamEvents(streamId: string, nextOffset: number, limit: number): StreamEventRecord[] {
+    const rows = this.getAll(
+      `
+      select * from stream_events
+      where stream_id = ? and offset >= ?
+      order by offset asc
+      limit ?
+    `,
+      [streamId, nextOffset, limit],
+    );
+    return rows.map((row) => this.mapStreamEvent(row));
+  }
+
+  getStreamStats(streamId: string): StreamStats {
+    const row = this.getOne(
+      `
+      select count(*) as event_count, max(offset) as high_watermark_offset
+      from stream_events
+      where stream_id = ?
+    `,
+      [streamId],
+    );
+    return {
+      streamId,
+      eventCount: Number(row?.event_count ?? 0),
+      highWatermarkOffset: row?.high_watermark_offset != null
+        ? Number(row.high_watermark_offset)
+        : null,
+    };
+  }
+
+  findOffsetAtOrAfter(streamId: string, occurredAt: string): number | null {
+    const row = this.getOne(
+      `
+      select offset
+      from stream_events
+      where stream_id = ? and occurred_at >= ?
+      order by occurred_at asc, offset asc
+      limit 1
+    `,
+      [streamId, occurredAt],
+    );
+    return row?.offset != null ? Number(row.offset) : null;
+  }
+
+  countPendingEvents(streamId: string, nextOffset: number): number {
+    const row = this.getOne(
+      "select count(*) as count from stream_events where stream_id = ? and offset >= ?",
+      [streamId, nextOffset],
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  insertConsumer(consumer: ConsumerRecord): void {
+    this.db.run(
+      `
+      insert into consumers (
+        consumer_id, stream_id, subscription_id, consumer_key, start_policy,
+        start_offset, start_time, next_offset, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        consumer.consumerId,
+        consumer.streamId,
+        consumer.subscriptionId,
+        consumer.consumerKey,
+        consumer.startPolicy,
+        consumer.startOffset ?? null,
+        consumer.startTime ?? null,
+        consumer.nextOffset,
+        consumer.createdAt,
+        consumer.updatedAt,
+      ],
+    );
+    this.persist();
+  }
+
+  getConsumer(consumerId: string): ConsumerRecord | null {
+    const row = this.getOne("select * from consumers where consumer_id = ?", [consumerId]);
+    return row ? this.mapConsumer(row) : null;
+  }
+
+  getConsumerBySubscriptionId(subscriptionId: string): ConsumerRecord | null {
+    const row = this.getOne("select * from consumers where subscription_id = ?", [subscriptionId]);
+    return row ? this.mapConsumer(row) : null;
+  }
+
+  listConsumers(): ConsumerRecord[] {
+    const rows = this.getAll("select * from consumers order by created_at asc");
+    return rows.map((row) => this.mapConsumer(row));
+  }
+
+  updateConsumerOffset(
+    consumerId: string,
+    nextOffset: number,
+    committedOffset: number,
+  ): ConsumerRecord {
+    const consumer = this.getConsumer(consumerId);
+    if (!consumer) {
+      throw new Error(`unknown consumer: ${consumerId}`);
+    }
+    const updatedAt = nowIso();
+    this.inTransaction(() => {
+      this.db.run(
+        `
+        update consumers
+        set next_offset = ?, updated_at = ?
+        where consumer_id = ?
+      `,
+        [nextOffset, updatedAt, consumerId],
+      );
+      this.db.run(
+        `
+        insert into consumer_commits (
+          commit_id, consumer_id, stream_id, committed_offset, committed_at
+        ) values (?, ?, ?, ?, ?)
+      `,
+        [generateId("commit"), consumerId, consumer.streamId, committedOffset, updatedAt],
+      );
+    });
+    this.persist();
+    return this.getConsumer(consumerId)!;
+  }
+
+  resetConsumer(
+    consumerId: string,
+    input: {
+      startPolicy: SubscriptionStartPolicy;
+      startOffset: number | null;
+      startTime: string | null;
+      nextOffset: number;
+    },
+  ): ConsumerRecord {
+    this.db.run(
+      `
+      update consumers
+      set start_policy = ?, start_offset = ?, start_time = ?, next_offset = ?, updated_at = ?
+      where consumer_id = ?
+    `,
+      [
+        input.startPolicy,
+        input.startOffset ?? null,
+        input.startTime ?? null,
+        input.nextOffset,
+        nowIso(),
+        consumerId,
+      ],
+    );
+    this.persist();
+    return this.getConsumer(consumerId)!;
+  }
+
   getCounts(): Record<string, number> {
-    const sources = this.count("sources");
-    const interests = this.count("interests");
-    const inboxItems = this.count("inbox_items");
-    const pendingItems = this.count("inbox_items where acked_at is null");
-    const activations = this.count("activations");
-    const deliveries = this.count("deliveries");
-    return { sources, interests, inboxItems, pendingItems, activations, deliveries };
+    return {
+      sources: this.count("sources"),
+      subscriptions: this.count("subscriptions"),
+      inboxes: this.count("inboxes"),
+      streamEvents: this.count("stream_events"),
+      consumers: this.count("consumers"),
+      inboxItems: this.count("inbox_items"),
+      pendingInboxItems: this.count("inbox_items where acked_at is null"),
+      activations: this.count("activations"),
+      deliveries: this.count("deliveries"),
+    };
   }
 
   private count(tableOrClause: string): number {
@@ -339,6 +849,11 @@ export class AgentInboxStore {
   private changes(): number {
     const row = this.getOne("select changes() as count");
     return row ? Number(row.count) : 0;
+  }
+
+  private lastInsertRowId(): number {
+    const row = this.getOne("select last_insert_rowid() as rowid");
+    return Number(row?.rowid ?? 0);
   }
 
   private getOne(sql: string, params: unknown[] = []): Record<string, unknown> | undefined {
@@ -382,14 +897,25 @@ export class AgentInboxStore {
     };
   }
 
-  private mapInterest(row: Record<string, unknown>): Interest {
+  private mapInbox(row: Record<string, unknown>): Inbox {
     return {
-      interestId: String(row.interest_id),
+      inboxId: String(row.inbox_id),
+      ownerAgentId: String(row.owner_agent_id),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  private mapSubscription(row: Record<string, unknown>): Subscription {
+    return {
+      subscriptionId: String(row.subscription_id),
       agentId: String(row.agent_id),
       sourceId: String(row.source_id),
-      mailboxId: String(row.mailbox_id),
+      inboxId: String(row.inbox_id),
       matchRules: parseJson<Record<string, unknown>>(row.match_rules_json as string),
       activationTarget: row.activation_target ? String(row.activation_target) : null,
+      startPolicy: row.start_policy as SubscriptionStartPolicy,
+      startOffset: row.start_offset != null ? Number(row.start_offset) : null,
+      startTime: row.start_time ? String(row.start_time) : null,
       createdAt: String(row.created_at),
     };
   }
@@ -400,7 +926,7 @@ export class AgentInboxStore {
       sourceId: String(row.source_id),
       sourceNativeId: String(row.source_native_id),
       eventVariant: String(row.event_variant),
-      mailboxId: String(row.mailbox_id),
+      inboxId: String(row.inbox_id),
       occurredAt: String(row.occurred_at),
       metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
       rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json as string),
@@ -415,7 +941,7 @@ export class AgentInboxStore {
     return {
       activationId: String(row.activation_id),
       agentId: String(row.agent_id),
-      mailboxId: String(row.mailbox_id),
+      inboxId: String(row.inbox_id),
       newItemCount: Number(row.new_item_count),
       summary: String(row.summary),
       createdAt: String(row.created_at),
@@ -435,6 +961,49 @@ export class AgentInboxStore {
       payload: parseJson<Record<string, unknown>>(row.payload_json as string),
       status: row.status as DeliveryAttempt["status"],
       createdAt: String(row.created_at),
+    };
+  }
+
+  private mapStream(row: Record<string, unknown>): StreamRecord {
+    return {
+      streamId: String(row.stream_id),
+      sourceId: String(row.source_id),
+      streamKey: String(row.stream_key),
+      backend: String(row.backend),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  private mapStreamEvent(row: Record<string, unknown>): StreamEventRecord {
+    return {
+      offset: Number(row.offset),
+      streamEventId: String(row.stream_event_id),
+      streamId: String(row.stream_id),
+      sourceId: String(row.source_id),
+      sourceNativeId: String(row.source_native_id),
+      eventVariant: String(row.event_variant),
+      occurredAt: String(row.occurred_at),
+      metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
+      rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json as string),
+      deliveryHandle: row.delivery_handle_json
+        ? parseJson<Record<string, unknown>>(row.delivery_handle_json as string)
+        : null,
+      createdAt: String(row.created_at),
+    };
+  }
+
+  private mapConsumer(row: Record<string, unknown>): ConsumerRecord {
+    return {
+      consumerId: String(row.consumer_id),
+      streamId: String(row.stream_id),
+      subscriptionId: String(row.subscription_id),
+      consumerKey: String(row.consumer_key),
+      nextOffset: Number(row.next_offset),
+      startPolicy: row.start_policy as SubscriptionStartPolicy,
+      startOffset: row.start_offset != null ? Number(row.start_offset) : null,
+      startTime: row.start_time ? String(row.start_time) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
     };
   }
 }

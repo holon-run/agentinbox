@@ -1,5 +1,7 @@
 export type SourceType = "fixture" | "github_repo" | "feishu_bot";
 
+export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
+
 export interface DeliveryHandle {
   provider: string;
   surface: string;
@@ -20,13 +22,22 @@ export interface SubscriptionSource {
   updatedAt: string;
 }
 
-export interface Interest {
-  interestId: string;
+export interface Inbox {
+  inboxId: string;
+  ownerAgentId: string;
+  createdAt: string;
+}
+
+export interface Subscription {
+  subscriptionId: string;
   agentId: string;
   sourceId: string;
-  mailboxId: string;
+  inboxId: string;
   matchRules: Record<string, unknown>;
   activationTarget?: string | null;
+  startPolicy: SubscriptionStartPolicy;
+  startOffset?: number | null;
+  startTime?: string | null;
   createdAt: string;
 }
 
@@ -35,7 +46,7 @@ export interface InboxItem {
   sourceId: string;
   sourceNativeId: string;
   eventVariant: string;
-  mailboxId: string;
+  inboxId: string;
   occurredAt: string;
   metadata: Record<string, unknown>;
   rawPayload: Record<string, unknown>;
@@ -46,7 +57,7 @@ export interface InboxItem {
 export interface Activation {
   activationId: string;
   agentId: string;
-  mailboxId: string;
+  inboxId: string;
   newItemCount: number;
   summary: string;
   createdAt: string;
@@ -73,15 +84,18 @@ export interface RegisterSourceInput {
   config?: Record<string, unknown>;
 }
 
-export interface RegisterInterestInput {
+export interface RegisterSubscriptionInput {
   agentId: string;
   sourceId: string;
-  mailboxId?: string;
+  inboxId?: string;
   matchRules?: Record<string, unknown>;
   activationTarget?: string | null;
+  startPolicy?: SubscriptionStartPolicy;
+  startOffset?: number | null;
+  startTime?: string | null;
 }
 
-export interface EmitItemInput {
+export interface AppendSourceEventInput {
   sourceId: string;
   sourceNativeId: string;
   eventVariant: string;
@@ -91,8 +105,14 @@ export interface EmitItemInput {
   deliveryHandle?: DeliveryHandle | null;
 }
 
+export interface AppendSourceEventResult {
+  appended: number;
+  deduped: number;
+  lastOffset: number | null;
+}
+
 export interface DeliveryRequest {
-  mailboxId?: string;
+  inboxId?: string;
   deliveryHandle?: DeliveryHandle | null;
   provider?: string;
   surface?: string;
@@ -111,8 +131,18 @@ export interface MatchResult {
 export interface SourcePollResult {
   sourceId: string;
   sourceType: SourceType;
-  inserted: number;
-  ignored: number;
+  appended: number;
+  deduped: number;
   eventsRead: number;
+  note: string;
+}
+
+export interface SubscriptionPollResult {
+  subscriptionId: string;
+  sourceId: string;
+  eventsRead: number;
+  matched: number;
+  inboxItemsCreated: number;
+  committedOffset: number | null;
   note: string;
 }

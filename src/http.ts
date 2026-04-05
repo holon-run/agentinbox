@@ -52,34 +52,41 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/interests/register") {
-        const interest = service.registerInterest(await readJson(req) as never);
-        send(res, 200, interest);
+      if (req.method === "POST" && url.pathname === "/subscriptions/register") {
+        const subscription = await service.registerSubscription(await readJson(req) as never);
+        send(res, 200, subscription);
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/fixtures/emit") {
-        const result = await service.emitItem(await readJson(req) as never);
+      const subscriptionPollMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/poll$/);
+      if (req.method === "POST" && subscriptionPollMatch) {
+        const result = await service.pollSubscription(decodeURIComponent(subscriptionPollMatch[1]));
         send(res, 200, result);
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/mailboxes") {
-        send(res, 200, { mailboxes: service.listMailboxIds() });
+      if (req.method === "POST" && url.pathname === "/fixtures/emit") {
+        const result = await service.appendSourceEvent(await readJson(req) as never);
+        send(res, 200, result);
         return;
       }
 
-      const mailboxMatch = url.pathname.match(/^\/mailboxes\/([^/]+)\/items$/);
-      if (req.method === "GET" && mailboxMatch) {
-        send(res, 200, { items: service.listMailboxItems(decodeURIComponent(mailboxMatch[1])) });
+      if (req.method === "GET" && url.pathname === "/inboxes") {
+        send(res, 200, { inboxes: service.listInboxIds() });
         return;
       }
 
-      const mailboxAckMatch = url.pathname.match(/^\/mailboxes\/([^/]+)\/ack$/);
-      if (req.method === "POST" && mailboxAckMatch) {
+      const inboxMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/items$/);
+      if (req.method === "GET" && inboxMatch) {
+        send(res, 200, { items: service.listInboxItems(decodeURIComponent(inboxMatch[1])) });
+        return;
+      }
+
+      const inboxAckMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/ack$/);
+      if (req.method === "POST" && inboxAckMatch) {
         const body = await readJson(req);
         const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map(String) : [];
-        send(res, 200, service.ackMailboxItems(decodeURIComponent(mailboxAckMatch[1]), itemIds));
+        send(res, 200, service.ackInboxItems(decodeURIComponent(inboxAckMatch[1]), itemIds));
         return;
       }
 
