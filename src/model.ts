@@ -1,6 +1,7 @@
 export type SourceType = "fixture" | "github_repo" | "feishu_bot";
 
 export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
+export type ActivationMode = "activation_only" | "activation_with_items";
 
 export interface DeliveryHandle {
   provider: string;
@@ -35,6 +36,7 @@ export interface Subscription {
   inboxId: string;
   matchRules: Record<string, unknown>;
   activationTarget?: string | null;
+  activationMode: ActivationMode;
   startPolicy: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
@@ -54,6 +56,18 @@ export interface InboxItem {
   ackedAt?: string | null;
 }
 
+export interface ActivationItem {
+  itemId: string;
+  sourceId: string;
+  sourceNativeId: string;
+  eventVariant: string;
+  inboxId: string;
+  occurredAt: string;
+  metadata: Record<string, unknown>;
+  rawPayload: Record<string, unknown>;
+  deliveryHandle?: DeliveryHandle | null;
+}
+
 export interface Activation {
   kind: "agentinbox.activation";
   activationId: string;
@@ -63,6 +77,7 @@ export interface Activation {
   sourceIds: string[];
   newItemCount: number;
   summary: string;
+  items?: ActivationItem[];
   createdAt: string;
   deliveredAt?: string | null;
 }
@@ -93,6 +108,7 @@ export interface RegisterSubscriptionInput {
   inboxId?: string;
   matchRules?: Record<string, unknown>;
   activationTarget?: string | null;
+  activationMode?: ActivationMode;
   startPolicy?: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;

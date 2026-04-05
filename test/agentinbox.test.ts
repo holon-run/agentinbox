@@ -196,6 +196,30 @@ test("delivery requests are recorded with provider metadata", async () => {
   }
 });
 
+test("registerSubscription rejects unsupported activation modes", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "demo",
+      config: {},
+    });
+
+    await assert.rejects(
+      () => service.registerSubscription({
+        agentId: "alpha",
+        sourceId: source.sourceId,
+        activationMode: "push_everything" as never,
+      }),
+      /unsupported activation mode: push_everything/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("legacy interest/mailbox schema migrates to subscriptions/inboxes", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-test-"));
   const dbPath = path.join(dir, "agentinbox.sqlite");
@@ -308,6 +332,7 @@ test("legacy interest/mailbox schema migrates to subscriptions/inboxes", async (
     assert.equal(subscriptions.length, 1);
     assert.equal(subscriptions[0].subscriptionId, "int_legacy");
     assert.equal(subscriptions[0].inboxId, "mbx_alpha");
+    assert.equal(subscriptions[0].activationMode, "activation_only");
     assert.equal(inboxes.length, 1);
     assert.equal(inboxes[0].inboxId, "mbx_alpha");
     assert.equal(inboxItems.length, 1);
@@ -371,6 +396,7 @@ test("activations are aggregated within the inbox window", async () => {
     assert.deepEqual(activation.subscriptionIds, [subscription.subscriptionId]);
     assert.deepEqual(activation.sourceIds, [source.sourceId]);
     assert.equal(activation.newItemCount, 2);
+    assert.equal(activation.items, undefined);
     assert.match(activation.summary, /2 new items in inbox_alpha/);
     assert.equal(store.listActivations().length, 1);
     assert.equal(store.listActivations()[0].newItemCount, 2);
@@ -424,6 +450,58 @@ test("activations flush immediately when the inbox count threshold is reached", 
 
     assert.equal(dispatcher.calls.length, 1);
     assert.equal(dispatcher.calls[0].activation.newItemCount, 2);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("activation_with_items includes inbox item snapshots in the webhook body", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeAsyncService({
+    dispatcher,
+    activationWindowMs: 40,
+    activationMaxItems: 20,
+  });
+  try {
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: "alpha",
+      sourceId: source.sourceId,
+      matchRules: { channel: "engineering" },
+      activationTarget: "http://louke.local/activate?agent=alpha",
+      activationMode: "activation_with_items",
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-1",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering", priority: "high" },
+      rawPayload: { text: "hello" },
+    });
+
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 1);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.equal(dispatcher.calls.length, 1);
+    const activation = dispatcher.calls[0].activation;
+    assert.equal(activation.newItemCount, 1);
+    assert.ok(activation.items);
+    assert.equal(activation.items.length, 1);
+    assert.equal(activation.items[0].sourceNativeId, "evt-1");
+    assert.equal(activation.items[0].metadata.channel, "engineering");
+    assert.equal(activation.items[0].rawPayload.text, "hello");
+    assert.equal(store.listActivations().length, 1);
+    assert.equal(store.listActivations()[0].items?.length, 1);
   } finally {
     await service.stop();
     store.close();

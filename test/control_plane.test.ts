@@ -76,8 +76,6 @@ test("unix socket control plane replaces stale socket files and serves requests"
   const server = createServer(service);
 
   try {
-    await adapters.start();
-    await service.start();
     const started = await startControlServer(server, {
       kind: "socket",
       socketPath,
@@ -96,7 +94,6 @@ test("unix socket control plane replaces stale socket files and serves requests"
     }
     assert.equal(fs.existsSync(socketPath), false);
   } finally {
-    await adapters.stop();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -134,13 +131,13 @@ test("e2e control plane can register fixture source, consume a subscription, and
       chunks.push(Buffer.from(chunk));
     }
     const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Activation;
-    resolveWebhook?.(payload);
     res.statusCode = 204;
-    res.end();
+    res.end(() => {
+      resolveWebhook?.(payload);
+    });
   });
 
   try {
-    await adapters.start();
     const started = await startControlServer(server, {
       kind: "socket",
       socketPath,
@@ -210,6 +207,7 @@ test("e2e control plane can register fixture source, consume a subscription, and
       assert.deepEqual(activation.subscriptionIds, [subscriptionResponse.data.subscriptionId]);
       assert.deepEqual(activation.sourceIds, [sourceResponse.data.sourceId]);
       assert.equal(activation.newItemCount, 1);
+      assert.equal(activation.items, undefined);
       assert.match(activation.summary, /1 new item/);
 
       const inboxResponse = await client.request<{ items: InboxItem[] }>(
@@ -227,7 +225,6 @@ test("e2e control plane can register fixture source, consume a subscription, and
       await started.close();
     }
   } finally {
-    await adapters.stop();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });

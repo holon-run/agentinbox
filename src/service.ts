@@ -1,5 +1,6 @@
 import {
   Activation,
+  ActivationItem,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
@@ -29,15 +30,19 @@ import { matchSubscription } from "./matcher";
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
+const ACTIVATION_MODES = new Set<Subscription["activationMode"]>(["activation_only", "activation_with_items"]);
 
 interface ActivationBuffer {
   agentId: string;
   inboxId: string;
   activationTarget: string | null;
-  newItemCount: number;
-  subscriptionIds: Set<string>;
-  sourceIds: Set<string>;
-  firstSummary: string | null;
+  activationMode: Subscription["activationMode"];
+  pending: Array<{
+    subscriptionId: string;
+    sourceId: string;
+    summary: string;
+    item?: ActivationItem;
+  }>;
   timer: NodeJS.Timeout | null;
   inFlight: boolean;
 }
@@ -54,6 +59,7 @@ export class AgentInboxService {
   private readonly activationMaxItems: number;
   private readonly activationBuffers = new Map<string, ActivationBuffer>();
   private subscriptionInterval: NodeJS.Timeout | null = null;
+  private stopping = false;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -74,6 +80,7 @@ export class AgentInboxService {
     if (this.subscriptionInterval) {
       return;
     }
+    this.stopping = false;
     this.subscriptionInterval = setInterval(() => {
       void this.syncAllSubscriptions();
     }, 2_000);
@@ -81,6 +88,13 @@ export class AgentInboxService {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    for (const buffer of this.activationBuffers.values()) {
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+        buffer.timer = null;
+      }
+    }
     if (!this.subscriptionInterval) {
       await this.flushAllPendingActivations();
       return;
@@ -117,6 +131,7 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
+    const activationMode = normalizeActivationMode(input.activationMode);
 
     const inboxId = input.inboxId ?? defaultInboxIdForAgent(input.agentId);
     this.ensureInbox(inboxId, input.agentId);
@@ -127,6 +142,7 @@ export class AgentInboxService {
       inboxId,
       matchRules: input.matchRules ?? {},
       activationTarget: input.activationTarget ?? null,
+      activationMode,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
@@ -253,11 +269,23 @@ export class AgentInboxService {
             agentId: subscription.agentId,
             inboxId: subscription.inboxId,
             activationTarget: subscription.activationTarget ?? null,
+            activationMode: subscription.activationMode,
             subscriptionId: subscription.subscriptionId,
             sourceId: source.sourceId,
             eventVariant: event.eventVariant,
             sourceType: source.sourceType,
             sourceKey: source.sourceKey,
+            item: {
+              itemId: item.itemId,
+              sourceId: item.sourceId,
+              sourceNativeId: item.sourceNativeId,
+              eventVariant: item.eventVariant,
+              inboxId: item.inboxId,
+              occurredAt: item.occurredAt,
+              metadata: item.metadata,
+              rawPayload: item.rawPayload,
+              deliveryHandle: item.deliveryHandle,
+            },
           });
         }
       } catch (error) {
@@ -366,35 +394,35 @@ export class AgentInboxService {
     agentId: string;
     inboxId: string;
     activationTarget: string | null;
+    activationMode: Subscription["activationMode"];
     subscriptionId: string;
     sourceId: string;
     eventVariant: string;
     sourceType: string;
     sourceKey: string;
+    item: ActivationItem;
   }): void {
-    const key = activationBufferKey(input.inboxId, input.activationTarget);
+    const key = activationBufferKey(input.inboxId, input.activationTarget, input.activationMode);
     let buffer = this.activationBuffers.get(key);
     if (!buffer) {
       buffer = {
         agentId: input.agentId,
         inboxId: input.inboxId,
         activationTarget: input.activationTarget,
-        newItemCount: 0,
-        subscriptionIds: new Set<string>(),
-        sourceIds: new Set<string>(),
-        firstSummary: null,
+        activationMode: input.activationMode,
+        pending: [],
         timer: null,
         inFlight: false,
       };
       this.activationBuffers.set(key, buffer);
     }
 
-    buffer.newItemCount += 1;
-    buffer.subscriptionIds.add(input.subscriptionId);
-    buffer.sourceIds.add(input.sourceId);
-    if (!buffer.firstSummary) {
-      buffer.firstSummary = `${input.sourceType}:${input.sourceKey}:${input.eventVariant}`;
-    }
+    buffer.pending.push({
+      subscriptionId: input.subscriptionId,
+      sourceId: input.sourceId,
+      summary: `${input.sourceType}:${input.sourceKey}:${input.eventVariant}`,
+      item: input.activationMode === "activation_with_items" ? input.item : undefined,
+    });
 
     if (!buffer.timer && !buffer.inFlight) {
       buffer.timer = setTimeout(() => {
@@ -402,7 +430,7 @@ export class AgentInboxService {
       }, this.activationWindowMs);
     }
 
-    if (buffer.newItemCount >= this.activationMaxItems) {
+    if (buffer.pending.length >= this.activationMaxItems) {
       if (buffer.timer) {
         clearTimeout(buffer.timer);
         buffer.timer = null;
@@ -420,7 +448,7 @@ export class AgentInboxService {
 
   private async flushActivationBuffer(key: string): Promise<void> {
     const buffer = this.activationBuffers.get(key);
-    if (!buffer || buffer.inFlight || buffer.newItemCount === 0) {
+    if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
       return;
     }
     if (buffer.timer) {
@@ -429,11 +457,17 @@ export class AgentInboxService {
     }
 
     buffer.inFlight = true;
+    const dispatchedEntries = buffer.pending.splice(0, buffer.pending.length);
     try {
-      const dispatchedCount = buffer.newItemCount;
-      const dispatchedSubscriptionIds = Array.from(buffer.subscriptionIds).sort();
-      const dispatchedSourceIds = Array.from(buffer.sourceIds).sort();
-      const dispatchedSummary = buffer.firstSummary;
+      const dispatchedCount = dispatchedEntries.length;
+      const dispatchedSubscriptionIds = Array.from(new Set(dispatchedEntries.map((entry) => entry.subscriptionId))).sort();
+      const dispatchedSourceIds = Array.from(new Set(dispatchedEntries.map((entry) => entry.sourceId))).sort();
+      const dispatchedSummary = dispatchedEntries[0]?.summary ?? null;
+      const dispatchedItems = buffer.activationMode === "activation_with_items"
+        ? dispatchedEntries
+          .map((entry) => entry.item)
+          .filter((item): item is ActivationItem => Boolean(item))
+        : undefined;
       const activation: Activation = {
         kind: "agentinbox.activation",
         activationId: generateId("act"),
@@ -443,23 +477,14 @@ export class AgentInboxService {
         sourceIds: dispatchedSourceIds,
         newItemCount: dispatchedCount,
         summary: summarizeActivation(buffer.inboxId, dispatchedCount, dispatchedSummary),
+        items: dispatchedItems && dispatchedItems.length > 0 ? dispatchedItems : undefined,
         createdAt: nowIso(),
         deliveredAt: null,
       };
-      this.store.insertActivation(activation);
       await this.activationDispatcher.dispatch(buffer.activationTarget, activation);
+      this.store.insertActivation(activation);
 
-      const hasPendingDuringFlight = buffer.newItemCount > dispatchedCount;
-      buffer.newItemCount = Math.max(0, buffer.newItemCount - dispatchedCount);
-      for (const subscriptionId of dispatchedSubscriptionIds) {
-        buffer.subscriptionIds.delete(subscriptionId);
-      }
-      for (const sourceId of dispatchedSourceIds) {
-        buffer.sourceIds.delete(sourceId);
-      }
-      if (!hasPendingDuringFlight) {
-        buffer.firstSummary = null;
-      }
+      const hasPendingDuringFlight = buffer.pending.length > 0;
       buffer.inFlight = false;
 
       if (hasPendingDuringFlight) {
@@ -471,8 +496,9 @@ export class AgentInboxService {
 
       this.activationBuffers.delete(key);
     } catch (error) {
+      buffer.pending.unshift(...dispatchedEntries);
       buffer.inFlight = false;
-      if (!buffer.timer) {
+      if (!this.stopping && !buffer.timer) {
         buffer.timer = setTimeout(() => {
           void this.flushActivationBuffer(key);
         }, this.activationWindowMs);
@@ -518,8 +544,12 @@ export class ActivationDispatcher {
   }
 }
 
-function activationBufferKey(inboxId: string, activationTarget: string | null): string {
-  return `${inboxId}::${activationTarget ?? ""}`;
+function activationBufferKey(
+  inboxId: string,
+  activationTarget: string | null,
+  activationMode: Subscription["activationMode"],
+): string {
+  return `${inboxId}::${activationTarget ?? ""}::${activationMode}`;
 }
 
 function summarizeActivation(inboxId: string, newItemCount: number, firstSummary: string | null): string {
@@ -528,4 +558,12 @@ function summarizeActivation(inboxId: string, newItemCount: number, firstSummary
     return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
   }
   return `${newItemCount} new ${itemWord} in ${inboxId}`;
+}
+
+function normalizeActivationMode(mode: RegisterSubscriptionInput["activationMode"]): Subscription["activationMode"] {
+  const resolved = mode ?? "activation_only";
+  if (!ACTIVATION_MODES.has(resolved)) {
+    throw new Error(`unsupported activation mode: ${String(mode)}`);
+  }
+  return resolved;
 }
