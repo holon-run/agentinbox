@@ -1,6 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { UxcDaemonClient, type PollSubscriptionConfig, type SubscribeStartResponse, type SubscriptionEventEnvelope } from "@holon-run/uxc-daemon-client";
 import {
   DeliveryAttempt,
@@ -32,7 +29,6 @@ export interface GithubSourceConfig {
 interface GithubSourceCheckpoint {
   uxcJobId?: string;
   afterSeq?: number;
-  sinkPath?: string;
   lastEventAt?: string;
   lastError?: string;
 }
@@ -67,11 +63,9 @@ export class GithubUxcClient {
   constructor(private readonly client: UxcLikeClient = new UxcDaemonClient({ env: process.env })) {}
 
   async ensureRepoEventsSubscription(
-    sourceId: string,
     config: GithubSourceConfig,
     checkpoint: GithubSourceCheckpoint,
-  ): Promise<SubscribeStartResponse & { sinkPath: string }> {
-    const sinkPath = checkpoint.sinkPath ?? join(tmpdir(), `agentinbox-${sourceId}-github-events.ndjson`);
+  ): Promise<SubscribeStartResponse> {
     if (checkpoint.uxcJobId) {
       try {
         const status = await this.client.subscribeStatus(checkpoint.uxcJobId);
@@ -81,9 +75,8 @@ export class GithubUxcClient {
             mode: "poll",
             protocol: "openapi",
             endpoint: GITHUB_ENDPOINT,
-            sink: `file:${sinkPath}`,
+            sink: "memory:",
             status: status.status,
-            sinkPath,
           };
         }
       } catch {
@@ -106,11 +99,10 @@ export class GithubUxcClient {
         },
       },
       options: { auth: config.uxcAuth },
-      sink: `file:${sinkPath}`,
+      sink: "memory:",
       ephemeral: false,
     });
-
-    return { ...started, sinkPath };
+    return started;
   }
 
   async readSubscriptionEvents(jobId: string, afterSeq: number): Promise<{ events: SubscriptionEventEnvelope[]; nextAfterSeq: number; status: string }> {
@@ -176,13 +168,12 @@ export class GithubSourceRuntime {
     }
     const config = parseGithubSourceConfig(source);
     const checkpoint = parseGithubCheckpoint(source.checkpoint);
-    const started = await this.client.ensureRepoEventsSubscription(source.sourceId, config, checkpoint);
+    const started = await this.client.ensureRepoEventsSubscription(config, checkpoint);
     this.store.updateSourceRuntime(source.sourceId, {
       status: "active",
       checkpoint: JSON.stringify({
         ...checkpoint,
         uxcJobId: started.job_id,
-        sinkPath: started.sinkPath,
       }),
     });
   }
@@ -238,16 +229,24 @@ export class GithubSourceRuntime {
       if (!source) {
         throw new Error(`unknown source: ${sourceId}`);
       }
+      if (this.store.listInterestsForSource(sourceId).length === 0) {
+        return {
+          sourceId,
+          sourceType: "github_repo",
+          inserted: 0,
+          ignored: 0,
+          eventsRead: 0,
+          note: "no interests registered for source",
+        };
+      }
       const config = parseGithubSourceConfig(source);
       let checkpoint = parseGithubCheckpoint(source.checkpoint);
-      const subscription = await this.client.ensureRepoEventsSubscription(sourceId, config, checkpoint);
+      const subscription = await this.client.ensureRepoEventsSubscription(config, checkpoint);
       if (subscription.job_id !== checkpoint.uxcJobId) {
-        checkpoint = { ...checkpoint, uxcJobId: subscription.job_id, sinkPath: subscription.sinkPath };
+        checkpoint = { ...checkpoint, uxcJobId: subscription.job_id };
       }
 
-      const batch =
-        readEventsFromSink(checkpoint.sinkPath, checkpoint.afterSeq ?? 0) ??
-        (await this.client.readSubscriptionEvents(checkpoint.uxcJobId!, checkpoint.afterSeq ?? 0));
+      const batch = await this.client.readSubscriptionEvents(checkpoint.uxcJobId!, checkpoint.afterSeq ?? 0);
       let inserted = 0;
       let ignored = 0;
       for (const event of batch.events) {
@@ -271,7 +270,6 @@ export class GithubSourceRuntime {
         checkpoint: JSON.stringify({
           ...checkpoint,
           uxcJobId: checkpoint.uxcJobId,
-          sinkPath: checkpoint.sinkPath,
           afterSeq: batch.nextAfterSeq,
           lastEventAt: new Date().toISOString(),
           lastError: null,
@@ -479,49 +477,6 @@ function parseGithubCheckpoint(checkpoint: string | null | undefined): GithubSou
   } catch {
     return {};
   }
-}
-
-function readEventsFromSink(
-  sinkPath: string | undefined,
-  afterSeq: number,
-): { events: SubscriptionEventEnvelope[]; nextAfterSeq: number; status: string } | null {
-  if (!sinkPath || !existsSync(sinkPath)) {
-    return null;
-  }
-
-  const lines = readFileSync(sinkPath, "utf8")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const events: SubscriptionEventEnvelope[] = [];
-  let nextAfterSeq = afterSeq;
-
-  for (const line of lines) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      continue;
-    }
-    const envelope = parsed as SubscriptionEventEnvelope & { seq?: unknown };
-    const seq = typeof envelope.seq === "number" ? envelope.seq : null;
-    if (seq === null || seq <= afterSeq) {
-      continue;
-    }
-    events.push(envelope);
-    if (seq > nextAfterSeq) {
-      nextAfterSeq = seq;
-    }
-  }
-
-  return {
-    events,
-    nextAfterSeq,
-    status: "running",
-  };
 }
 
 function extractLabels(raw: unknown): string[] {
