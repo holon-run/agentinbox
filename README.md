@@ -166,11 +166,13 @@ The near-term goal is to prove a clean local ingress/delivery layer that:
 This repository now includes the first runnable `M0/M1` scaffold:
 
 - `agentinbox serve` local daemon
-- local HTTP API for source registration, subscription polling, inbox access, delivery, and status
+- local HTTP control API for source registration, subscription polling, inbox access, delivery, and status
 - thin `agentinbox` CLI for shell-first agents and operators
 - SQLite-backed state for sources, streams, stream events, subscriptions, inboxes, inbox items, activations, and deliveries
 - fixture source path for end-to-end local testing
 - GitHub source ingestion through `uxc` poll subscriptions
+- default local home at `~/.agentinbox`
+- Unix socket-first local control plane with TCP fallback for explicit debug usage
 - adapter scaffolding for future Feishu integrations
 
 The current implementation proves the source-ingress / event-log / inbox-delivery
@@ -189,6 +191,23 @@ Start the daemon:
 
 ```bash
 node dist/src/cli.js serve
+```
+
+By default this listens on `~/.agentinbox/agentinbox.sock` and stores state in
+`~/.agentinbox/agentinbox.sqlite`.
+
+Use TCP only when you explicitly want it:
+
+```bash
+node dist/src/cli.js serve --port 4747
+```
+
+All client commands accept:
+
+```bash
+--home <path>
+--socket <path>
+--url <http://127.0.0.1:4747>
 ```
 
 Register a shared source and subscription:

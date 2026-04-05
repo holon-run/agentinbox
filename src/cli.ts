@@ -1,15 +1,12 @@
 #!/usr/bin/env node
-import path from "node:path";
 import { AgentInboxStore } from "./store";
 import { AgentInboxService } from "./service";
 import { createServer } from "./http";
 import { jsonResponse, parseJsonArg } from "./util";
 import { AdapterRegistry } from "./adapters";
-
-const DEFAULT_PORT = 4747;
-const DEFAULT_URL = process.env.AGENTINBOX_URL ?? `http://127.0.0.1:${DEFAULT_PORT}`;
-const DEFAULT_STATE_DIR = process.env.AGENTINBOX_STATE_DIR ?? path.join(process.cwd(), ".agentinbox");
-const DEFAULT_DB_PATH = path.join(DEFAULT_STATE_DIR, "agentinbox.sqlite");
+import { AgentInboxClient } from "./client";
+import { startControlServer } from "./control_server";
+import { resolveClientTransport, resolveServeConfig } from "./paths";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -25,6 +22,8 @@ async function main(): Promise<void> {
     return;
   }
 
+  const client = createClient(args);
+
   if (command === "source" && args[1] === "add") {
     const [type, sourceKey] = args.slice(2, 4);
     if (!type || !sourceKey) {
@@ -32,7 +31,7 @@ async function main(): Promise<void> {
     }
     const configJson = takeFlagValue(args, "--config-json");
     const configRef = takeFlagValue(args, "--config-ref");
-    await printRemote("/sources/register", {
+    await printRemote(client, "/sources/register", {
       sourceType: type,
       sourceKey,
       configRef: configRef ?? null,
@@ -46,7 +45,7 @@ async function main(): Promise<void> {
     if (!sourceId) {
       throw new Error("usage: agentinbox source poll <sourceId>");
     }
-    await printRemote(`/sources/${encodeURIComponent(sourceId)}/poll`, {});
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/poll`, {});
     return;
   }
 
@@ -55,7 +54,7 @@ async function main(): Promise<void> {
     if (!agentId || !sourceId) {
       throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
-    await printRemote("/subscriptions/register", {
+    await printRemote(client, "/subscriptions/register", {
       agentId,
       sourceId,
       inboxId: takeFlagValue(args, "--inbox-id") ?? undefined,
@@ -73,12 +72,12 @@ async function main(): Promise<void> {
     if (!subscriptionId) {
       throw new Error("usage: agentinbox subscription poll <subscriptionId>");
     }
-    await printRemote(`/subscriptions/${encodeURIComponent(subscriptionId)}/poll`, {});
+    await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}/poll`, {});
     return;
   }
 
   if (command === "inbox" && args[1] === "list") {
-    await printRemote("/inboxes", undefined, "GET");
+    await printRemote(client, "/inboxes", undefined, "GET");
     return;
   }
 
@@ -87,7 +86,7 @@ async function main(): Promise<void> {
     if (!inboxId) {
       throw new Error("usage: agentinbox inbox read <inboxId>");
     }
-    await printRemote(`/inboxes/${encodeURIComponent(inboxId)}/items`, undefined, "GET");
+    await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}/items`, undefined, "GET");
     return;
   }
 
@@ -97,7 +96,7 @@ async function main(): Promise<void> {
     if (!inboxId || !itemId) {
       throw new Error("usage: agentinbox inbox ack <inboxId> --item <itemId>");
     }
-    await printRemote(`/inboxes/${encodeURIComponent(inboxId)}/ack`, { itemIds: [itemId] });
+    await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}/ack`, { itemIds: [itemId] });
     return;
   }
 
@@ -108,7 +107,7 @@ async function main(): Promise<void> {
     if (!sourceId) {
       throw new Error("usage: agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]");
     }
-    await printRemote("/fixtures/emit", {
+    await printRemote(client, "/fixtures/emit", {
       sourceId,
       sourceNativeId,
       eventVariant,
@@ -126,7 +125,7 @@ async function main(): Promise<void> {
     if (!provider || !surface || !targetRef) {
       throw new Error("usage: agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]");
     }
-    await printRemote("/deliveries/send", {
+    await printRemote(client, "/deliveries/send", {
       provider,
       surface,
       targetRef,
@@ -139,7 +138,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "status") {
-    await printRemote("/status", undefined, "GET");
+    await printRemote(client, "/status", undefined, "GET");
     return;
   }
 
@@ -147,8 +146,16 @@ async function main(): Promise<void> {
 }
 
 async function runServe(args: string[]): Promise<void> {
-  const port = Number(takeFlagValue(args, "--port") ?? DEFAULT_PORT);
-  const dbPath = takeFlagValue(args, "--state") ?? DEFAULT_DB_PATH;
+  const port = parseOptionalNumber(takeFlagValue(args, "--port"));
+  const serveConfig = resolveServeConfig({
+    env: process.env,
+    homeDirOverride: takeFlagValue(args, "--home"),
+    statePathOverride: takeFlagValue(args, "--state"),
+    socketPathOverride: takeFlagValue(args, "--socket"),
+    portOverride: port,
+  });
+
+  const dbPath = serveConfig.dbPath;
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
@@ -156,15 +163,15 @@ async function runServe(args: string[]): Promise<void> {
   const server = createServer(service);
   await adapters.start();
   await service.start();
-  server.listen(port, "127.0.0.1", () => {
-    console.log(jsonResponse({
-      ok: true,
-      url: `http://127.0.0.1:${port}`,
-      dbPath,
-    }));
-  });
+  const controlServer = await startControlServer(server, serveConfig.transport);
+  console.log(jsonResponse({
+    ok: true,
+    homeDir: serveConfig.homeDir,
+    dbPath,
+    ...controlServer.info,
+  }));
   const shutdown = () => {
-    server.close(() => {
+    void controlServer.close().finally(() => {
       void adapters.stop();
       void service.stop();
       store.close();
@@ -175,17 +182,27 @@ async function runServe(args: string[]): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-async function printRemote(endpoint: string, body?: unknown, method: "GET" | "POST" = "POST"): Promise<void> {
-  const response = await fetch(`${DEFAULT_URL}${endpoint}`, {
-    method,
-    headers: body ? { "content-type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+function createClient(args: string[]): AgentInboxClient {
+  const transport = resolveClientTransport({
+    env: process.env,
+    homeDirOverride: takeFlagValue(args, "--home"),
+    socketPathOverride: takeFlagValue(args, "--socket"),
+    baseUrlOverride: takeFlagValue(args, "--url"),
   });
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(jsonResponse(data));
+  return new AgentInboxClient(transport);
+}
+
+async function printRemote(
+  client: AgentInboxClient,
+  endpoint: string,
+  body?: unknown,
+  method: "GET" | "POST" = "POST",
+): Promise<void> {
+  const response = await client.request(endpoint, body, method);
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(jsonResponse(response.data));
   }
-  console.log(jsonResponse(data));
+  console.log(jsonResponse(response.data));
 }
 
 function takeFlagValue(args: string[], flag: string): string | undefined {
@@ -211,7 +228,8 @@ function printHelp(): void {
   console.log(`agentinbox
 
 Commands:
-  agentinbox serve [--port 4747] [--state .agentinbox/agentinbox.sqlite]
+  agentinbox serve [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+  agentinbox serve --port 4747 [--state ~/.agentinbox/agentinbox.sqlite]
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source poll <sourceId>
   agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
@@ -222,6 +240,11 @@ Commands:
   agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]
   agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]
   agentinbox status
+
+Global client flags:
+  --home PATH
+  --socket PATH
+  --url URL
 `);
 }
 
