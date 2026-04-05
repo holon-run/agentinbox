@@ -8,16 +8,18 @@ import {
   Interest,
   RegisterInterestInput,
   RegisterSourceInput,
+  SourcePollResult,
   SubscriptionSource,
 } from "./model";
 import { AgentInboxStore } from "./store";
-import { deliveryAdapterFor, sourceAdapterFor } from "./adapters";
+import { AdapterRegistry } from "./adapters";
 import { generateId, nowIso } from "./util";
 import { matchInterest } from "./matcher";
 
 export class AgentInboxService {
   constructor(
     private readonly store: AgentInboxStore,
+    private readonly adapters: AdapterRegistry,
     private readonly activationDispatcher: ActivationDispatcher = new ActivationDispatcher(),
   ) {}
 
@@ -38,7 +40,7 @@ export class AgentInboxService {
       updatedAt: nowIso(),
     };
     this.store.insertSource(source);
-    await sourceAdapterFor(source.sourceType).ensureSource(source);
+    await this.adapters.sourceAdapterFor(source.sourceType).ensureSource(source);
     return source;
   }
 
@@ -121,6 +123,14 @@ export class AgentInboxService {
     return { acked: this.store.ackItems(mailboxId, itemIds, nowIso()) };
   }
 
+  async pollSource(sourceId: string): Promise<SourcePollResult> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    return this.adapters.pollSource(source);
+  }
+
   async sendDelivery(request: DeliveryRequest): Promise<DeliveryAttempt & { note: string }> {
     const handle = resolveDeliveryHandle(request);
     const attempt: DeliveryAttempt = {
@@ -135,7 +145,7 @@ export class AgentInboxService {
       status: "accepted",
       createdAt: nowIso(),
     };
-    const adapter = deliveryAdapterFor(handle.provider);
+    const adapter = this.adapters.deliveryAdapterFor(handle.provider);
     const result = await adapter.send(request, attempt);
     const storedAttempt = { ...attempt, status: result.status };
     this.store.insertDelivery(storedAttempt);
@@ -148,6 +158,7 @@ export class AgentInboxService {
       sources: this.store.listSources(),
       interests: this.store.listInterests(),
       mailboxes: this.store.listMailboxIds(),
+      adapters: this.adapters.status(),
       recentActivations: this.store.listActivations().slice(0, 10),
       recentDeliveries: this.store.listDeliveries().slice(0, 10),
     };

@@ -193,6 +193,15 @@ node dist/src/cli.js source add fixture demo
 node dist/src/cli.js interest add alpha <source_id> --match-json '{"channel":"engineering"}'
 ```
 
+Register a GitHub repo source backed by `uxc` poll subscription:
+
+```bash
+node dist/src/cli.js source add github_repo holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
+node dist/src/cli.js interest add alpha <source_id> --match-json '{"mentions":["alpha"]}'
+node dist/src/cli.js source poll <source_id>
+```
+
 Emit a fixture event and inspect the mailbox:
 
 ```bash

@@ -107,3 +107,12 @@ export interface MatchResult {
   matched: boolean;
   reason: string;
 }
+
+export interface SourcePollResult {
+  sourceId: string;
+  sourceType: SourceType;
+  inserted: number;
+  ignored: number;
+  eventsRead: number;
+  note: string;
+}

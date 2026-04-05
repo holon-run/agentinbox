@@ -5,11 +5,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { AgentInboxStore } from "../src/store";
 import { AgentInboxService } from "../src/service";
+import { AdapterRegistry } from "../src/adapters";
 
 async function makeAsyncService(): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
-  const service = new AgentInboxService(store);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.emitItem(input));
+  service = new AgentInboxService(store, adapters);
   return { store, service, dir };
 }
 

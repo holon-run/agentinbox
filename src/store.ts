@@ -156,6 +156,27 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapSource(row));
   }
 
+  updateSourceRuntime(sourceId: string, input: { status?: SubscriptionSource["status"]; checkpoint?: string | null }): void {
+    const current = this.getSource(sourceId);
+    if (!current) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    this.db.run(
+      `
+      update sources
+      set status = ?, checkpoint = ?, updated_at = ?
+      where source_id = ?
+    `,
+      [
+        input.status ?? current.status,
+        input.checkpoint ?? current.checkpoint ?? null,
+        new Date().toISOString(),
+        sourceId,
+      ],
+    );
+    this.persist();
+  }
+
   insertInterest(interest: Interest): void {
     this.db.run(
       `

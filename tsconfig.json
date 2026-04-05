@@ -5,6 +5,12 @@
     "moduleResolution": "Node",
     "lib": ["ES2022", "DOM"],
     "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@holon-run/uxc-daemon-client": [
+        "../uxc/packages/uxc-daemon-client/dist/index.d.ts"
+      ]
+    },
     "rootDir": ".",
     "outDir": "dist",
     "strict": true,

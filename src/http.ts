@@ -45,6 +45,13 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      const sourcePollMatch = url.pathname.match(/^\/sources\/([^/]+)\/poll$/);
+      if (req.method === "POST" && sourcePollMatch) {
+        const result = await service.pollSource(decodeURIComponent(sourcePollMatch[1]));
+        send(res, 200, result);
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/interests/register") {
         const interest = service.registerInterest(await readJson(req) as never);
         send(res, 200, interest);

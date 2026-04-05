@@ -4,6 +4,7 @@ import { AgentInboxStore } from "./store";
 import { AgentInboxService } from "./service";
 import { createServer } from "./http";
 import { jsonResponse, parseJsonArg } from "./util";
+import { AdapterRegistry } from "./adapters";
 
 const DEFAULT_PORT = 4747;
 const DEFAULT_URL = process.env.AGENTINBOX_URL ?? `http://127.0.0.1:${DEFAULT_PORT}`;
@@ -37,6 +38,15 @@ async function main(): Promise<void> {
       configRef: configRef ?? null,
       config: parseJsonArg(configJson),
     });
+    return;
+  }
+
+  if (command === "source" && args[1] === "poll") {
+    const sourceId = args[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source poll <sourceId>");
+    }
+    await printRemote(`/sources/${encodeURIComponent(sourceId)}/poll`, {});
     return;
   }
 
@@ -128,8 +138,11 @@ async function runServe(args: string[]): Promise<void> {
   const port = Number(takeFlagValue(args, "--port") ?? DEFAULT_PORT);
   const dbPath = takeFlagValue(args, "--state") ?? DEFAULT_DB_PATH;
   const store = await AgentInboxStore.open(dbPath);
-  const service = new AgentInboxService(store);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.emitItem(input));
+  service = new AgentInboxService(store, adapters);
   const server = createServer(service);
+  await adapters.start();
   server.listen(port, "127.0.0.1", () => {
     console.log(jsonResponse({
       ok: true,
@@ -139,6 +152,7 @@ async function runServe(args: string[]): Promise<void> {
   });
   const shutdown = () => {
     server.close(() => {
+      void adapters.stop();
       store.close();
       process.exit(0);
     });
@@ -174,6 +188,7 @@ function printHelp(): void {
 Commands:
   agentinbox serve [--port 4747] [--state .agentinbox/agentinbox.sqlite]
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
+  agentinbox source poll <sourceId>
   agentinbox interest add <agentId> <sourceId> [--mailbox-id ID] [--match-json JSON] [--activation-target URL]
   agentinbox mailbox list
   agentinbox mailbox read <mailboxId>

@@ -13,6 +13,7 @@
     "test": "npm run build && node --test dist/test/**/*.test.js"
   },
   "dependencies": {
+    "@holon-run/uxc-daemon-client": "file:../uxc/packages/uxc-daemon-client",
     "sql.js": "^1.13.0"
   },
   "devDependencies": {
