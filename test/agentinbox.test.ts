@@ -5,16 +5,38 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import initSqlJs from "sql.js";
 import { AgentInboxStore } from "../src/store";
-import { AgentInboxService } from "../src/service";
+import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
+import { Activation } from "../src/model";
 
-async function makeAsyncService(): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
+class RecordingActivationDispatcher extends ActivationDispatcher {
+  public readonly calls: Array<{ target: string | null | undefined; activation: Activation }> = [];
+
+  override async dispatch(target: string | null | undefined, activation: Activation): Promise<void> {
+    this.calls.push({ target, activation });
+  }
+}
+
+async function makeAsyncService(options?: {
+  dispatcher?: ActivationDispatcher;
+  activationWindowMs?: number;
+  activationMaxItems?: number;
+}): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
+  service = new AgentInboxService(
+    store,
+    adapters,
+    options?.dispatcher,
+    undefined,
+    {
+      windowMs: options?.activationWindowMs,
+      maxItems: options?.activationMaxItems,
+    },
+  );
   return { store, service, dir };
 }
 
@@ -53,9 +75,11 @@ test("shared source can route one stream event to multiple agent inboxes", async
     assert.equal(pollB.inboxItemsCreated, 1);
     assert.equal(service.listInboxItems(subscriptionA.inboxId).length, 1);
     assert.equal(service.listInboxItems(subscriptionB.inboxId).length, 1);
+    await service.stop();
     assert.equal(store.listActivations().length, 2);
     assert.equal(store.listSources().length, 1);
   } finally {
+    await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -100,6 +124,7 @@ test("stream dedupe and consumer offsets prevent duplicate inbox inserts", async
     assert.equal(secondPoll.inboxItemsCreated, 0);
     assert.equal(service.listInboxItems(subscription.inboxId).length, 1);
   } finally {
+    await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -145,6 +170,7 @@ test("sqlite event bus keeps independent offsets per subscription", async () => 
     assert.equal(earlyLag.pendingEvents, 0);
     assert.equal(latestLag.pendingEvents, 0);
   } finally {
+    await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -164,6 +190,7 @@ test("delivery requests are recorded with provider metadata", async () => {
     assert.equal(store.listDeliveries().length, 1);
     assert.equal(store.listDeliveries()[0].targetRef, "room-1");
   } finally {
+    await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -289,6 +316,116 @@ test("legacy interest/mailbox schema migrates to subscriptions/inboxes", async (
     assert.equal(streams.length, 1);
     assert.equal(consumers.length, 1);
   } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("activations are aggregated within the inbox window", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeAsyncService({
+    dispatcher,
+    activationWindowMs: 40,
+    activationMaxItems: 20,
+  });
+  try {
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: "alpha",
+      sourceId: source.sourceId,
+      matchRules: {},
+      activationTarget: "http://louke.local/activate?agent=alpha",
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 2);
+    assert.equal(dispatcher.calls.length, 0);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    assert.equal(dispatcher.calls.length, 1);
+    const activation = dispatcher.calls[0].activation;
+    assert.equal(activation.kind, "agentinbox.activation");
+    assert.equal(activation.agentId, "alpha");
+    assert.equal(activation.inboxId, "inbox_alpha");
+    assert.deepEqual(activation.subscriptionIds, [subscription.subscriptionId]);
+    assert.deepEqual(activation.sourceIds, [source.sourceId]);
+    assert.equal(activation.newItemCount, 2);
+    assert.match(activation.summary, /2 new items in inbox_alpha/);
+    assert.equal(store.listActivations().length, 1);
+    assert.equal(store.listActivations()[0].newItemCount, 2);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("activations flush immediately when the inbox count threshold is reached", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeAsyncService({
+    dispatcher,
+    activationWindowMs: 500,
+    activationMaxItems: 2,
+  });
+  try {
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: "alpha",
+      sourceId: source.sourceId,
+      matchRules: {},
+      activationTarget: "http://louke.local/activate?agent=alpha",
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 2);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(dispatcher.calls.length, 1);
+    assert.equal(dispatcher.calls[0].activation.newItemCount, 2);
+  } finally {
+    await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }

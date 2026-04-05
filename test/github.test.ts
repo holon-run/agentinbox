@@ -169,6 +169,7 @@ test("github source runtime appends stream events and subscriptions materialize 
     assert.equal(subscriptionResult.inboxItemsCreated, 1);
     assert.equal(service.listInboxItems(subscription.inboxId).length, 1);
   } finally {
+    await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }

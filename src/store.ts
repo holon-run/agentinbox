@@ -20,7 +20,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function parseJson<T>(value: string | null): T {
   if (!value) {
@@ -69,11 +69,19 @@ export class AgentInboxStore {
       return;
     }
 
-    if (this.hasLegacySchema()) {
-      this.migrateLegacySchema();
-    } else {
-      this.createCurrentSchema();
+    if (userVersion < 1) {
+      if (this.hasLegacySchema()) {
+        this.migrateLegacySchema();
+      } else {
+        this.createCurrentSchema();
+      }
+      this.setUserVersion(1);
     }
+
+    if (userVersion < 2 && this.needsActivationSchemaUpgrade()) {
+      this.upgradeActivationSchema();
+    }
+
     this.setUserVersion(SCHEMA_VERSION);
   }
 
@@ -104,8 +112,11 @@ export class AgentInboxStore {
 
         create table if not exists activations_v2 (
           activation_id text primary key,
+          kind text not null,
           agent_id text not null,
           inbox_id text not null,
+          subscription_ids_json text not null,
+          source_ids_json text not null,
           new_item_count integer not null,
           summary text not null,
           created_at text not null,
@@ -138,10 +149,10 @@ export class AgentInboxStore {
         from inbox_items;
 
         insert or ignore into activations_v2 (
-          activation_id, agent_id, inbox_id, new_item_count, summary, created_at, delivered_at
+          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, created_at, delivered_at
         )
         select
-          activation_id, agent_id, mailbox_id, new_item_count, summary, created_at, delivered_at
+          activation_id, 'agentinbox.activation', agent_id, mailbox_id, '[]', '[]', new_item_count, summary, created_at, delivered_at
         from activations;
 
         insert or ignore into streams (stream_id, source_id, stream_key, backend, created_at)
@@ -187,6 +198,52 @@ export class AgentInboxStore {
       `);
 
       this.createCurrentIndexes();
+    });
+  }
+
+  private needsActivationSchemaUpgrade(): boolean {
+    return !this.columnExists("activations", "kind")
+      || !this.columnExists("activations", "subscription_ids_json")
+      || !this.columnExists("activations", "source_ids_json");
+  }
+
+  private upgradeActivationSchema(): void {
+    this.inTransaction(() => {
+      this.db.exec(`
+        create table if not exists activations_v3 (
+          activation_id text primary key,
+          kind text not null,
+          agent_id text not null,
+          inbox_id text not null,
+          subscription_ids_json text not null,
+          source_ids_json text not null,
+          new_item_count integer not null,
+          summary text not null,
+          created_at text not null,
+          delivered_at text
+        );
+      `);
+
+      this.db.exec(`
+        insert or ignore into activations_v3 (
+          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, created_at, delivered_at
+        )
+        select
+          activation_id,
+          'agentinbox.activation',
+          agent_id,
+          inbox_id,
+          '[]',
+          '[]',
+          new_item_count,
+          summary,
+          created_at,
+          delivered_at
+        from activations;
+      `);
+
+      this.db.exec("drop table activations;");
+      this.db.exec("alter table activations_v3 rename to activations;");
     });
   }
 
@@ -245,8 +302,11 @@ export class AgentInboxStore {
 
       create table if not exists activations (
         activation_id text primary key,
+        kind text not null,
         agent_id text not null,
         inbox_id text not null,
+        subscription_ids_json text not null,
+        source_ids_json text not null,
         new_item_count integer not null,
         summary text not null,
         created_at text not null,
@@ -562,13 +622,16 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into activations (
-        activation_id, agent_id, inbox_id, new_item_count, summary, created_at, delivered_at
-      ) values (?, ?, ?, ?, ?, ?, ?)
+        activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, created_at, delivered_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         activation.activationId,
+        activation.kind,
         activation.agentId,
         activation.inboxId,
+        JSON.stringify(activation.subscriptionIds),
+        JSON.stringify(activation.sourceIds),
         activation.newItemCount,
         activation.summary,
         activation.createdAt,
@@ -939,9 +1002,12 @@ export class AgentInboxStore {
 
   private mapActivation(row: Record<string, unknown>): Activation {
     return {
+      kind: "agentinbox.activation",
       activationId: String(row.activation_id),
       agentId: String(row.agent_id),
       inboxId: String(row.inbox_id),
+      subscriptionIds: parseJson<string[]>(row.subscription_ids_json as string),
+      sourceIds: parseJson<string[]>(row.source_ids_json as string),
       newItemCount: Number(row.new_item_count),
       summary: String(row.summary),
       createdAt: String(row.created_at),

@@ -27,10 +27,32 @@ import { generateId, nowIso } from "./util";
 import { matchSubscription } from "./matcher";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
+const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
+const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
+
+interface ActivationBuffer {
+  agentId: string;
+  inboxId: string;
+  activationTarget: string | null;
+  newItemCount: number;
+  subscriptionIds: Set<string>;
+  sourceIds: Set<string>;
+  firstSummary: string | null;
+  timer: NodeJS.Timeout | null;
+  inFlight: boolean;
+}
+
+interface ActivationPolicy {
+  windowMs?: number;
+  maxItems?: number;
+}
 
 export class AgentInboxService {
   private readonly backend: EventBusBackend;
   private readonly inFlightSubscriptions = new Set<string>();
+  private readonly activationWindowMs: number;
+  private readonly activationMaxItems: number;
+  private readonly activationBuffers = new Map<string, ActivationBuffer>();
   private subscriptionInterval: NodeJS.Timeout | null = null;
 
   constructor(
@@ -38,9 +60,12 @@ export class AgentInboxService {
     private readonly adapters: AdapterRegistry,
     activationDispatcher: ActivationDispatcher = new ActivationDispatcher(),
     backend?: EventBusBackend,
+    activationPolicy?: ActivationPolicy,
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
+    this.activationWindowMs = activationPolicy?.windowMs ?? DEFAULT_ACTIVATION_WINDOW_MS;
+    this.activationMaxItems = activationPolicy?.maxItems ?? DEFAULT_ACTIVATION_MAX_ITEMS;
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
@@ -57,10 +82,12 @@ export class AgentInboxService {
 
   async stop(): Promise<void> {
     if (!this.subscriptionInterval) {
+      await this.flushAllPendingActivations();
       return;
     }
     clearInterval(this.subscriptionInterval);
     this.subscriptionInterval = null;
+    await this.flushAllPendingActivations();
   }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
@@ -222,17 +249,16 @@ export class AgentInboxService {
             continue;
           }
           inboxItemsCreated += 1;
-          const activation: Activation = {
-            activationId: generateId("act"),
+          this.enqueueActivation({
             agentId: subscription.agentId,
             inboxId: subscription.inboxId,
-            newItemCount: 1,
-            summary: `${source.sourceType}:${source.sourceKey}:${event.eventVariant}`,
-            createdAt: nowIso(),
-            deliveredAt: null,
-          };
-          this.store.insertActivation(activation);
-          await this.activationDispatcher.dispatch(subscription.activationTarget, activation);
+            activationTarget: subscription.activationTarget ?? null,
+            subscriptionId: subscription.subscriptionId,
+            sourceId: source.sourceId,
+            eventVariant: event.eventVariant,
+            sourceType: source.sourceType,
+            sourceKey: source.sourceKey,
+          });
         }
       } catch (error) {
         if (lastProcessedOffset != null) {
@@ -335,6 +361,125 @@ export class AgentInboxService {
       }
     }
   }
+
+  private enqueueActivation(input: {
+    agentId: string;
+    inboxId: string;
+    activationTarget: string | null;
+    subscriptionId: string;
+    sourceId: string;
+    eventVariant: string;
+    sourceType: string;
+    sourceKey: string;
+  }): void {
+    const key = activationBufferKey(input.inboxId, input.activationTarget);
+    let buffer = this.activationBuffers.get(key);
+    if (!buffer) {
+      buffer = {
+        agentId: input.agentId,
+        inboxId: input.inboxId,
+        activationTarget: input.activationTarget,
+        newItemCount: 0,
+        subscriptionIds: new Set<string>(),
+        sourceIds: new Set<string>(),
+        firstSummary: null,
+        timer: null,
+        inFlight: false,
+      };
+      this.activationBuffers.set(key, buffer);
+    }
+
+    buffer.newItemCount += 1;
+    buffer.subscriptionIds.add(input.subscriptionId);
+    buffer.sourceIds.add(input.sourceId);
+    if (!buffer.firstSummary) {
+      buffer.firstSummary = `${input.sourceType}:${input.sourceKey}:${input.eventVariant}`;
+    }
+
+    if (!buffer.timer && !buffer.inFlight) {
+      buffer.timer = setTimeout(() => {
+        void this.flushActivationBuffer(key);
+      }, this.activationWindowMs);
+    }
+
+    if (buffer.newItemCount >= this.activationMaxItems) {
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+        buffer.timer = null;
+      }
+      void this.flushActivationBuffer(key);
+    }
+  }
+
+  private async flushAllPendingActivations(): Promise<void> {
+    const keys = Array.from(this.activationBuffers.keys());
+    for (const key of keys) {
+      await this.flushActivationBuffer(key);
+    }
+  }
+
+  private async flushActivationBuffer(key: string): Promise<void> {
+    const buffer = this.activationBuffers.get(key);
+    if (!buffer || buffer.inFlight || buffer.newItemCount === 0) {
+      return;
+    }
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = null;
+    }
+
+    buffer.inFlight = true;
+    try {
+      const dispatchedCount = buffer.newItemCount;
+      const dispatchedSubscriptionIds = Array.from(buffer.subscriptionIds).sort();
+      const dispatchedSourceIds = Array.from(buffer.sourceIds).sort();
+      const dispatchedSummary = buffer.firstSummary;
+      const activation: Activation = {
+        kind: "agentinbox.activation",
+        activationId: generateId("act"),
+        agentId: buffer.agentId,
+        inboxId: buffer.inboxId,
+        subscriptionIds: dispatchedSubscriptionIds,
+        sourceIds: dispatchedSourceIds,
+        newItemCount: dispatchedCount,
+        summary: summarizeActivation(buffer.inboxId, dispatchedCount, dispatchedSummary),
+        createdAt: nowIso(),
+        deliveredAt: null,
+      };
+      this.store.insertActivation(activation);
+      await this.activationDispatcher.dispatch(buffer.activationTarget, activation);
+
+      const hasPendingDuringFlight = buffer.newItemCount > dispatchedCount;
+      buffer.newItemCount = Math.max(0, buffer.newItemCount - dispatchedCount);
+      for (const subscriptionId of dispatchedSubscriptionIds) {
+        buffer.subscriptionIds.delete(subscriptionId);
+      }
+      for (const sourceId of dispatchedSourceIds) {
+        buffer.sourceIds.delete(sourceId);
+      }
+      if (!hasPendingDuringFlight) {
+        buffer.firstSummary = null;
+      }
+      buffer.inFlight = false;
+
+      if (hasPendingDuringFlight) {
+        buffer.timer = setTimeout(() => {
+          void this.flushActivationBuffer(key);
+        }, this.activationWindowMs);
+        return;
+      }
+
+      this.activationBuffers.delete(key);
+    } catch (error) {
+      buffer.inFlight = false;
+      if (!buffer.timer) {
+        buffer.timer = setTimeout(() => {
+          void this.flushActivationBuffer(key);
+        }, this.activationWindowMs);
+      }
+      throw error;
+    }
+  }
 }
 
 function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {
@@ -371,4 +516,16 @@ export class ActivationDispatcher {
       console.warn(`activation dispatch error for ${target}:`, error);
     }
   }
+}
+
+function activationBufferKey(inboxId: string, activationTarget: string | null): string {
+  return `${inboxId}::${activationTarget ?? ""}`;
+}
+
+function summarizeActivation(inboxId: string, newItemCount: number, firstSummary: string | null): string {
+  const itemWord = newItemCount === 1 ? "item" : "items";
+  if (firstSummary) {
+    return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
+  }
+  return `${newItemCount} new ${itemWord} in ${inboxId}`;
 }

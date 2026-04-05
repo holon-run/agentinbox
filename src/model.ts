@@ -55,9 +55,12 @@ export interface InboxItem {
 }
 
 export interface Activation {
+  kind: "agentinbox.activation";
   activationId: string;
   agentId: string;
   inboxId: string;
+  subscriptionIds: string[];
+  sourceIds: string[];
   newItemCount: number;
   summary: string;
   createdAt: string;
