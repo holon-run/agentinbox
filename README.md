@@ -218,6 +218,14 @@ node dist/src/cli.js source add fixture demo
 node dist/src/cli.js subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
 ```
 
+Subscriptions default to `activation_only`. For low-frequency flows, you can push the newly created inbox items directly in the activation webhook body:
+
+```bash
+node dist/src/cli.js subscription add alpha <source_id> \
+  --activation-target http://127.0.0.1:8080/webhooks/agentinbox/alpha \
+  --activation-mode activation_with_items
+```
+
 Register a GitHub repo source backed by `uxc` poll subscription:
 
 ```bash

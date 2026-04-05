@@ -9,6 +9,7 @@ import type {
 } from "./backend";
 import {
   Activation,
+  ActivationItem,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
@@ -20,7 +21,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 4;
 
 function parseJson<T>(value: string | null): T {
   if (!value) {
@@ -82,6 +83,14 @@ export class AgentInboxStore {
       this.upgradeActivationSchema();
     }
 
+    if (userVersion < 3 && this.needsSubscriptionActivationModeUpgrade()) {
+      this.upgradeSubscriptionActivationModeSchema();
+    }
+
+    if (userVersion < 4 && this.needsActivationItemsUpgrade()) {
+      this.upgradeActivationItemsSchema();
+    }
+
     this.setUserVersion(SCHEMA_VERSION);
   }
 
@@ -119,6 +128,7 @@ export class AgentInboxStore {
           source_ids_json text not null,
           new_item_count integer not null,
           summary text not null,
+          items_json text,
           created_at text not null,
           delivered_at text
         );
@@ -132,11 +142,11 @@ export class AgentInboxStore {
 
         insert or ignore into subscriptions (
           subscription_id, agent_id, source_id, inbox_id, match_rules_json,
-          activation_target, start_policy, start_offset, start_time, created_at
+          activation_target, activation_mode, start_policy, start_offset, start_time, created_at
         )
         select
           interest_id, agent_id, source_id, mailbox_id, match_rules_json,
-          activation_target, 'latest', null, null, created_at
+          activation_target, 'activation_only', 'latest', null, null, created_at
         from interests;
 
         insert or ignore into inbox_items_v2 (
@@ -149,10 +159,10 @@ export class AgentInboxStore {
         from inbox_items;
 
         insert or ignore into activations_v2 (
-          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, created_at, delivered_at
+          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
         )
         select
-          activation_id, 'agentinbox.activation', agent_id, mailbox_id, '[]', '[]', new_item_count, summary, created_at, delivered_at
+          activation_id, 'agentinbox.activation', agent_id, mailbox_id, '[]', '[]', new_item_count, summary, null, created_at, delivered_at
         from activations;
 
         insert or ignore into streams (stream_id, source_id, stream_key, backend, created_at)
@@ -207,6 +217,14 @@ export class AgentInboxStore {
       || !this.columnExists("activations", "source_ids_json");
   }
 
+  private needsSubscriptionActivationModeUpgrade(): boolean {
+    return !this.columnExists("subscriptions", "activation_mode");
+  }
+
+  private needsActivationItemsUpgrade(): boolean {
+    return !this.columnExists("activations", "items_json");
+  }
+
   private upgradeActivationSchema(): void {
     this.inTransaction(() => {
       this.db.exec(`
@@ -219,6 +237,7 @@ export class AgentInboxStore {
           source_ids_json text not null,
           new_item_count integer not null,
           summary text not null,
+          items_json text,
           created_at text not null,
           delivered_at text
         );
@@ -226,7 +245,7 @@ export class AgentInboxStore {
 
       this.db.exec(`
         insert or ignore into activations_v3 (
-          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, created_at, delivered_at
+          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
         )
         select
           activation_id,
@@ -237,6 +256,7 @@ export class AgentInboxStore {
           '[]',
           new_item_count,
           summary,
+          null,
           created_at,
           delivered_at
         from activations;
@@ -244,6 +264,18 @@ export class AgentInboxStore {
 
       this.db.exec("drop table activations;");
       this.db.exec("alter table activations_v3 rename to activations;");
+    });
+  }
+
+  private upgradeSubscriptionActivationModeSchema(): void {
+    this.inTransaction(() => {
+      this.db.exec("alter table subscriptions add column activation_mode text not null default 'activation_only';");
+    });
+  }
+
+  private upgradeActivationItemsSchema(): void {
+    this.inTransaction(() => {
+      this.db.exec("alter table activations add column items_json text;");
     });
   }
 
@@ -280,6 +312,7 @@ export class AgentInboxStore {
         inbox_id text not null,
         match_rules_json text not null,
         activation_target text,
+        activation_mode text not null,
         start_policy text not null,
         start_offset integer,
         start_time text,
@@ -309,6 +342,7 @@ export class AgentInboxStore {
         source_ids_json text not null,
         new_item_count integer not null,
         summary text not null,
+        items_json text,
         created_at text not null,
         delivered_at text
       );
@@ -528,8 +562,8 @@ export class AgentInboxStore {
       `
       insert into subscriptions (
         subscription_id, agent_id, source_id, inbox_id, match_rules_json,
-        activation_target, start_policy, start_offset, start_time, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        activation_target, activation_mode, start_policy, start_offset, start_time, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         subscription.subscriptionId,
@@ -538,6 +572,7 @@ export class AgentInboxStore {
         subscription.inboxId,
         JSON.stringify(subscription.matchRules),
         subscription.activationTarget ?? null,
+        subscription.activationMode,
         subscription.startPolicy,
         subscription.startOffset ?? null,
         subscription.startTime ?? null,
@@ -622,8 +657,8 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into activations (
-        activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, created_at, delivered_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         activation.activationId,
@@ -634,6 +669,7 @@ export class AgentInboxStore {
         JSON.stringify(activation.sourceIds),
         activation.newItemCount,
         activation.summary,
+        activation.items ? JSON.stringify(activation.items) : null,
         activation.createdAt,
         activation.deliveredAt ?? null,
       ],
@@ -976,6 +1012,7 @@ export class AgentInboxStore {
       inboxId: String(row.inbox_id),
       matchRules: parseJson<Record<string, unknown>>(row.match_rules_json as string),
       activationTarget: row.activation_target ? String(row.activation_target) : null,
+      activationMode: (row.activation_mode ? String(row.activation_mode) : "activation_only") as Subscription["activationMode"],
       startPolicy: row.start_policy as SubscriptionStartPolicy,
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
       startTime: row.start_time ? String(row.start_time) : null,
@@ -1010,6 +1047,7 @@ export class AgentInboxStore {
       sourceIds: parseJson<string[]>(row.source_ids_json as string),
       newItemCount: Number(row.new_item_count),
       summary: String(row.summary),
+      items: row.items_json ? parseJson<ActivationItem[]>(row.items_json as string) : undefined,
       createdAt: String(row.created_at),
       deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
     };

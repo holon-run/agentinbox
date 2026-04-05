@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   if (command === "subscription" && args[1] === "add") {
     const [agentId, sourceId] = args.slice(2, 4);
     if (!agentId || !sourceId) {
-      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
     await printRemote(client, "/subscriptions/register", {
       agentId,
@@ -60,6 +60,7 @@ async function main(): Promise<void> {
       inboxId: takeFlagValue(args, "--inbox-id") ?? undefined,
       matchRules: parseJsonArg(takeFlagValue(args, "--match-json")),
       activationTarget: takeFlagValue(args, "--activation-target") ?? null,
+      activationMode: takeFlagValue(args, "--activation-mode") ?? undefined,
       startPolicy: takeFlagValue(args, "--start-policy") ?? undefined,
       startOffset: parseOptionalNumber(takeFlagValue(args, "--start-offset")),
       startTime: takeFlagValue(args, "--start-time") ?? undefined,
@@ -232,7 +233,7 @@ Commands:
   agentinbox serve --port 4747 [--state ~/.agentinbox/agentinbox.sqlite]
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source poll <sourceId>
-  agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription poll <subscriptionId>
   agentinbox inbox list
   agentinbox inbox read <inboxId>
