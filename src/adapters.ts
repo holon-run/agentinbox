@@ -7,6 +7,7 @@ import {
   SubscriptionSource,
 } from "./model";
 import { AgentInboxStore } from "./store";
+import { FeishuDeliveryAdapter, FeishuSourceRuntime } from "./sources/feishu";
 import { GithubDeliveryAdapter, GithubSourceRuntime } from "./sources/github";
 
 export interface SourceAdapter {
@@ -46,39 +47,16 @@ class NoopDeliveryAdapter implements DeliveryAdapter {
   }
 }
 
-class UxcBackedStubAdapter implements SourceAdapter, DeliveryAdapter {
-  async ensureSource(_source: SubscriptionSource): Promise<void> {
-    return;
-  }
-
-  async pollSource(sourceId: string): Promise<SourcePollResult> {
-    return {
-      sourceId,
-      sourceType: "feishu_bot",
-      appended: 0,
-      deduped: 0,
-      eventsRead: 0,
-      note: "provider adapter scaffolded; wire this to uxc in the next milestone",
-    };
-  }
-
-  async send(_request: DeliveryRequest, _attempt: DeliveryAttempt): Promise<{ status: "accepted"; note: string }> {
-    return {
-      status: "accepted",
-      note: "provider adapter scaffolded; wire this to uxc in the next milestone",
-    };
-  }
-}
-
 export class AdapterRegistry {
   private readonly fixtureSource = new NoopSourceAdapter("fixture");
-  private readonly feishuSource = new NoopSourceAdapter("feishu_bot");
+  private readonly feishuSource: FeishuSourceRuntime;
   private readonly githubSource: GithubSourceRuntime;
   private readonly fixtureDelivery = new NoopDeliveryAdapter();
+  private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
-  private readonly stub = new UxcBackedStubAdapter();
 
   constructor(store: AgentInboxStore, appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>) {
+    this.feishuSource = new FeishuSourceRuntime(store, appendSourceEvent);
     this.githubSource = new GithubSourceRuntime(store, appendSourceEvent);
   }
 
@@ -92,24 +70,29 @@ export class AdapterRegistry {
     if (type === "feishu_bot") {
       return this.feishuSource;
     }
-    return this.stub;
+    return this.fixtureSource;
   }
 
   deliveryAdapterFor(provider: string): DeliveryAdapter {
     if (provider === "fixture") {
       return this.fixtureDelivery;
     }
+    if (provider === "feishu") {
+      return this.feishuDelivery;
+    }
     if (provider === "github") {
       return this.githubDelivery;
     }
-    return this.stub;
+    return this.fixtureDelivery;
   }
 
   async start(): Promise<void> {
+    await this.feishuSource.start?.();
     await this.githubSource.start?.();
   }
 
   async stop(): Promise<void> {
+    await this.feishuSource.stop?.();
     await this.githubSource.stop?.();
   }
 
@@ -130,6 +113,7 @@ export class AdapterRegistry {
 
   status(): Record<string, unknown> {
     return {
+      feishu: this.feishuSource.status?.() ?? {},
       github: this.githubSource.status?.() ?? {},
     };
   }

@@ -171,9 +171,10 @@ This repository now includes the first runnable `M0/M1` scaffold:
 - SQLite-backed state for sources, streams, stream events, subscriptions, inboxes, inbox items, activations, and deliveries
 - fixture source path for end-to-end local testing
 - GitHub source ingestion through `uxc` poll subscriptions
+- Feishu bot source ingestion through `uxc` long-connection subscriptions
 - default local home at `~/.agentinbox`
 - Unix socket-first local control plane with TCP fallback for explicit debug usage
-- adapter scaffolding for future Feishu integrations
+- Feishu delivery through `uxc` OpenAPI calls
 
 The current implementation proves the source-ingress / event-log / inbox-delivery
 boundary with per-subscription consumer offsets.
@@ -223,6 +224,15 @@ Register a GitHub repo source backed by `uxc` poll subscription:
 node dist/src/cli.js source add github_repo holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
 node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions":["alpha"]}'
+node dist/src/cli.js source poll <source_id>
+```
+
+Register a Feishu bot source backed by `uxc` long-connection subscription:
+
+```bash
+node dist/src/cli.js source add feishu_bot feishu-default \
+  --config-json '{"uxcAuth":"feishu-default","eventTypes":["im.message.receive_v1"]}'
+node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions":["Alpha"]}'
 node dist/src/cli.js source poll <source_id>
 ```
 
