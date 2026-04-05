@@ -196,6 +196,30 @@ test("delivery requests are recorded with provider metadata", async () => {
   }
 });
 
+test("registerSubscription rejects unsupported activation modes", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "demo",
+      config: {},
+    });
+
+    await assert.rejects(
+      () => service.registerSubscription({
+        agentId: "alpha",
+        sourceId: source.sourceId,
+        activationMode: "push_everything" as never,
+      }),
+      /unsupported activation mode: push_everything/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("legacy interest/mailbox schema migrates to subscriptions/inboxes", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-test-"));
   const dbPath = path.join(dir, "agentinbox.sqlite");

@@ -30,6 +30,7 @@ import { matchSubscription } from "./matcher";
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
+const ACTIVATION_MODES = new Set<Subscription["activationMode"]>(["activation_only", "activation_with_items"]);
 
 interface ActivationBuffer {
   agentId: string;
@@ -79,6 +80,7 @@ export class AgentInboxService {
     if (this.subscriptionInterval) {
       return;
     }
+    this.stopping = false;
     this.subscriptionInterval = setInterval(() => {
       void this.syncAllSubscriptions();
     }, 2_000);
@@ -129,6 +131,7 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
+    const activationMode = normalizeActivationMode(input.activationMode);
 
     const inboxId = input.inboxId ?? defaultInboxIdForAgent(input.agentId);
     this.ensureInbox(inboxId, input.agentId);
@@ -139,7 +142,7 @@ export class AgentInboxService {
       inboxId,
       matchRules: input.matchRules ?? {},
       activationTarget: input.activationTarget ?? null,
-      activationMode: input.activationMode ?? "activation_only",
+      activationMode,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
@@ -555,4 +558,12 @@ function summarizeActivation(inboxId: string, newItemCount: number, firstSummary
     return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
   }
   return `${newItemCount} new ${itemWord} in ${inboxId}`;
+}
+
+function normalizeActivationMode(mode: RegisterSubscriptionInput["activationMode"]): Subscription["activationMode"] {
+  const resolved = mode ?? "activation_only";
+  if (!ACTIVATION_MODES.has(resolved)) {
+    throw new Error(`unsupported activation mode: ${String(mode)}`);
+  }
+  return resolved;
 }
