@@ -236,10 +236,20 @@ export class AgentInboxService {
     }
     watchers.add(watcher);
 
-    const initialItems = this.store.listInboxItems(inbox.inboxId, {
-      afterItemId: options.afterItemId,
-      includeAcked: options.includeAcked ?? false,
-    });
+    let initialItems: InboxItem[];
+    try {
+      initialItems = this.store.listInboxItems(inbox.inboxId, {
+        afterItemId: options.afterItemId,
+        includeAcked: options.includeAcked ?? false,
+      });
+    } catch (error) {
+      watchers.delete(watcher);
+      if (watchers.size === 0) {
+        this.inboxWatchers.delete(inboxId);
+      }
+      throw error;
+    }
+
     const initialItemIds = new Set(initialItems.map((item) => item.itemId));
 
     return {

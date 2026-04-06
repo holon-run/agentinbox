@@ -232,16 +232,20 @@ function createSseStream(
     let buffer = "";
     res.setEncoding("utf8");
     res.on("data", (chunk: string) => {
-      buffer += chunk;
-      let separatorIndex = buffer.indexOf("\n\n");
-      while (separatorIndex >= 0) {
-        const frame = buffer.slice(0, separatorIndex);
-        buffer = buffer.slice(separatorIndex + 2);
-        const event = parseSseFrame(frame);
-        if (event) {
-          push(event);
+      try {
+        buffer += chunk;
+        let separatorIndex = buffer.indexOf("\n\n");
+        while (separatorIndex >= 0) {
+          const frame = buffer.slice(0, separatorIndex);
+          buffer = buffer.slice(separatorIndex + 2);
+          const event = parseSseFrame(frame);
+          if (event) {
+            push(event);
+          }
+          separatorIndex = buffer.indexOf("\n\n");
         }
-        separatorIndex = buffer.indexOf("\n\n");
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
       }
     });
     res.on("end", () => {
