@@ -196,7 +196,7 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${sourceId}`);
     }
-    if (source.sourceType !== "custom" && source.sourceType !== "fixture") {
+    if (source.sourceType !== "custom") {
       throw new Error(`manual append is not supported for source type: ${source.sourceType}`);
     }
     return this.appendSourceEvent({

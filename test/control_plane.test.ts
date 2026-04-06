@@ -11,7 +11,8 @@ import { createServer } from "../src/http";
 import { AgentInboxClient } from "../src/client";
 import { startControlServer } from "../src/control_server";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveServeConfig } from "../src/paths";
-import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, SubscriptionPollResult } from "../src/model";
+import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, SubscriptionPollResult, SubscriptionSource } from "../src/model";
+import { nowIso } from "../src/util";
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
@@ -452,6 +453,18 @@ test("manual append endpoint rejects adapter-managed sources", async () => {
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
 
   const store = await AgentInboxStore.open(dbPath);
+  const githubSource: SubscriptionSource = {
+    sourceId: "src_github_manual_append",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    configRef: null,
+    config: { owner: "holon-run", repo: "agentinbox" },
+    status: "active",
+    checkpoint: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+  store.insertSource(githubSource);
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
   service = new AgentInboxService(store, adapters);
@@ -468,14 +481,8 @@ test("manual append endpoint rejects adapter-managed sources", async () => {
         socketPath,
         source: "flag",
       });
-      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
-        sourceType: "github_repo",
-        sourceKey: "holon-run/agentinbox",
-        config: { owner: "holon-run", repo: "agentinbox" },
-      } satisfies RegisterSourceInput);
-
       const response = await client.request<{ error: string }>(
-        `/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/events`,
+        `/sources/${encodeURIComponent(githubSource.sourceId)}/events`,
         {
           sourceNativeId: "evt-1",
           eventVariant: "message.created",

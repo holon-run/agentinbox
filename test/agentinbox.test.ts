@@ -8,7 +8,8 @@ import { AgentInboxStore } from "../src/store";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
-import { Activation, InboxWatchEvent } from "../src/model";
+import { Activation, InboxWatchEvent, SubscriptionSource } from "../src/model";
+import { nowIso } from "../src/util";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
   public readonly calls: Array<{ target: string | null | undefined; activation: Activation }> = [];
@@ -303,11 +304,18 @@ test("registerSubscription rejects unsupported activation modes", async () => {
 test("manual append is rejected for adapter-managed sources", async () => {
   const { store, service, dir } = await makeAsyncService();
   try {
-    const githubSource = await service.registerSource({
+    const githubSource: SubscriptionSource = {
+      sourceId: "src_github_manual_append",
       sourceType: "github_repo",
       sourceKey: "holon-run/agentinbox",
+      configRef: null,
       config: { owner: "holon-run", repo: "agentinbox" },
-    });
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    store.insertSource(githubSource);
 
     await assert.rejects(
       () => service.appendSourceEventByCaller(githubSource.sourceId, {

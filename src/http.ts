@@ -66,7 +66,26 @@ export function createServer(service: AgentInboxService): http.Server {
       if (req.method === "POST" && sourceEventsMatch) {
         const sourceId = decodeURIComponent(sourceEventsMatch[1]);
         const body = await readJson(req);
-        const result = await service.appendSourceEventByCaller(sourceId, body as never);
+        const sourceNativeId = String(body.sourceNativeId ?? "");
+        const eventVariant = String(body.eventVariant ?? "");
+        if (!sourceNativeId) {
+          send(res, 400, { error: "sources/events requires sourceNativeId" });
+          return;
+        }
+        if (!eventVariant) {
+          send(res, 400, { error: "sources/events requires eventVariant" });
+          return;
+        }
+        const result = await service.appendSourceEventByCaller(sourceId, {
+          sourceNativeId,
+          eventVariant,
+          occurredAt: body.occurredAt ? String(body.occurredAt) : undefined,
+          metadata: asObject(body.metadata),
+          rawPayload: asObject(body.rawPayload),
+          deliveryHandle: body.deliveryHandle && typeof body.deliveryHandle === "object"
+            ? body.deliveryHandle as never
+            : undefined,
+        });
         send(res, 200, result);
         return;
       }
@@ -88,11 +107,22 @@ export function createServer(service: AgentInboxService): http.Server {
         const body = await readJson(req);
         const sourceId = String(body.sourceId ?? "");
         if (!sourceId) {
-          throw new Error("fixtures/emit requires sourceId");
+          send(res, 400, { error: "fixtures/emit requires sourceId" });
+          return;
+        }
+        const sourceNativeId = String(body.sourceNativeId ?? "");
+        if (!sourceNativeId) {
+          send(res, 400, { error: "fixtures/emit requires sourceNativeId" });
+          return;
+        }
+        const eventVariant = String(body.eventVariant ?? "");
+        if (!eventVariant) {
+          send(res, 400, { error: "fixtures/emit requires eventVariant" });
+          return;
         }
         const result = await service.appendFixtureEvent(sourceId, {
-          sourceNativeId: String(body.sourceNativeId ?? ""),
-          eventVariant: String(body.eventVariant ?? ""),
+          sourceNativeId,
+          eventVariant,
           occurredAt: body.occurredAt ? String(body.occurredAt) : undefined,
           metadata: asObject(body.metadata),
           rawPayload: asObject(body.rawPayload),
