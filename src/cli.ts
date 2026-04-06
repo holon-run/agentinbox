@@ -49,6 +49,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && args[1] === "event") {
+    const sourceId = args[2];
+    const sourceNativeId = takeFlagValue(args, "--native-id");
+    const eventVariant = takeFlagValue(args, "--event");
+    if (!sourceId || !sourceNativeId || !eventVariant) {
+      throw new Error("usage: agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/events`, {
+      sourceNativeId,
+      eventVariant,
+      occurredAt: takeFlagValue(args, "--occurred-at") ?? undefined,
+      metadata: parseJsonArg(takeFlagValue(args, "--metadata-json")),
+      rawPayload: parseJsonArg(takeFlagValue(args, "--payload-json")),
+    });
+    return;
+  }
+
   if (command === "subscription" && args[1] === "add") {
     const [agentId, sourceId] = args.slice(2, 4);
     if (!agentId || !sourceId) {
@@ -255,6 +272,7 @@ Commands:
   agentinbox serve --port 4747 [--state ~/.agentinbox/agentinbox.sqlite]
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source poll <sourceId>
+  agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
   agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription poll <subscriptionId>
   agentinbox inbox list

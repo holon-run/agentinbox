@@ -62,6 +62,15 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      const sourceEventsMatch = url.pathname.match(/^\/sources\/([^/]+)\/events$/);
+      if (req.method === "POST" && sourceEventsMatch) {
+        const sourceId = decodeURIComponent(sourceEventsMatch[1]);
+        const body = await readJson(req);
+        const result = await service.appendSourceEventByCaller(sourceId, body as never);
+        send(res, 200, result);
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/subscriptions/register") {
         const subscription = await service.registerSubscription(await readJson(req) as never);
         send(res, 200, subscription);
@@ -76,7 +85,21 @@ export function createServer(service: AgentInboxService): http.Server {
       }
 
       if (req.method === "POST" && url.pathname === "/fixtures/emit") {
-        const result = await service.appendSourceEvent(await readJson(req) as never);
+        const body = await readJson(req);
+        const sourceId = String(body.sourceId ?? "");
+        if (!sourceId) {
+          throw new Error("fixtures/emit requires sourceId");
+        }
+        const result = await service.appendFixtureEvent(sourceId, {
+          sourceNativeId: String(body.sourceNativeId ?? ""),
+          eventVariant: String(body.eventVariant ?? ""),
+          occurredAt: body.occurredAt ? String(body.occurredAt) : undefined,
+          metadata: asObject(body.metadata),
+          rawPayload: asObject(body.rawPayload),
+          deliveryHandle: body.deliveryHandle && typeof body.deliveryHandle === "object"
+            ? body.deliveryHandle as never
+            : undefined,
+        });
         send(res, 200, result);
         return;
       }
@@ -163,6 +186,10 @@ export function createServer(service: AgentInboxService): http.Server {
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith("unknown ")) {
         send(res, 404, { error: message });
+        return;
+      }
+      if (message.startsWith("manual append is not supported") || message.startsWith("fixtures/emit requires")) {
+        send(res, 400, { error: message });
         return;
       }
       if (message.startsWith("expected positive integer")) {

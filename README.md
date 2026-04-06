@@ -218,6 +218,20 @@ node dist/src/cli.js source add fixture demo
 node dist/src/cli.js subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
 ```
 
+Create a programmable local event bus source and publish events into it:
+
+```bash
+node dist/src/cli.js source add custom project-alpha
+node dist/src/cli.js subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
+node dist/src/cli.js source event <source_id> \
+  --native-id evt-1 \
+  --event message.created \
+  --metadata-json '{"channel":"engineering"}' \
+  --payload-json '{"text":"hello from a local producer"}'
+node dist/src/cli.js subscription poll <subscription_id>
+node dist/src/cli.js inbox read inbox_alpha
+```
+
 Subscriptions default to `activation_only`. For low-frequency flows, you can push the newly created inbox items directly in the activation webhook body:
 
 ```bash
@@ -244,7 +258,7 @@ node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions
 node dist/src/cli.js source poll <source_id>
 ```
 
-Emit a fixture event, materialize it into an inbox, and inspect the result:
+Emit a fixture event for tests and local demos:
 
 ```bash
 node dist/src/cli.js fixture emit <source_id> --metadata-json '{"channel":"engineering"}' --payload-json '{"text":"hello"}'
