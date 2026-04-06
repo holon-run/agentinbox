@@ -1,7 +1,7 @@
 import http from "node:http";
 import { AgentInboxService } from "./service";
 import { asObject, jsonResponse } from "./util";
-import { WatchInboxOptions } from "./model";
+import { DeliveryHandle, WatchInboxOptions } from "./model";
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -66,8 +66,8 @@ export function createServer(service: AgentInboxService): http.Server {
       if (req.method === "POST" && sourceEventsMatch) {
         const sourceId = decodeURIComponent(sourceEventsMatch[1]);
         const body = await readJson(req);
-        const sourceNativeId = String(body.sourceNativeId ?? "");
-        const eventVariant = String(body.eventVariant ?? "");
+        const sourceNativeId = parseRequiredString(body.sourceNativeId, "sources/events requires sourceNativeId");
+        const eventVariant = parseRequiredString(body.eventVariant, "sources/events requires eventVariant");
         if (!sourceNativeId) {
           send(res, 400, { error: "sources/events requires sourceNativeId" });
           return;
@@ -79,12 +79,10 @@ export function createServer(service: AgentInboxService): http.Server {
         const result = await service.appendSourceEventByCaller(sourceId, {
           sourceNativeId,
           eventVariant,
-          occurredAt: body.occurredAt ? String(body.occurredAt) : undefined,
+          occurredAt: parseOptionalString(body.occurredAt),
           metadata: asObject(body.metadata),
           rawPayload: asObject(body.rawPayload),
-          deliveryHandle: body.deliveryHandle && typeof body.deliveryHandle === "object"
-            ? body.deliveryHandle as never
-            : undefined,
+          deliveryHandle: parseOptionalDeliveryHandle(body.deliveryHandle),
         });
         send(res, 200, result);
         return;
@@ -105,17 +103,17 @@ export function createServer(service: AgentInboxService): http.Server {
 
       if (req.method === "POST" && url.pathname === "/fixtures/emit") {
         const body = await readJson(req);
-        const sourceId = String(body.sourceId ?? "");
+        const sourceId = parseRequiredString(body.sourceId, "fixtures/emit requires sourceId");
         if (!sourceId) {
           send(res, 400, { error: "fixtures/emit requires sourceId" });
           return;
         }
-        const sourceNativeId = String(body.sourceNativeId ?? "");
+        const sourceNativeId = parseRequiredString(body.sourceNativeId, "fixtures/emit requires sourceNativeId");
         if (!sourceNativeId) {
           send(res, 400, { error: "fixtures/emit requires sourceNativeId" });
           return;
         }
-        const eventVariant = String(body.eventVariant ?? "");
+        const eventVariant = parseRequiredString(body.eventVariant, "fixtures/emit requires eventVariant");
         if (!eventVariant) {
           send(res, 400, { error: "fixtures/emit requires eventVariant" });
           return;
@@ -123,12 +121,10 @@ export function createServer(service: AgentInboxService): http.Server {
         const result = await service.appendFixtureEvent(sourceId, {
           sourceNativeId,
           eventVariant,
-          occurredAt: body.occurredAt ? String(body.occurredAt) : undefined,
+          occurredAt: parseOptionalString(body.occurredAt),
           metadata: asObject(body.metadata),
           rawPayload: asObject(body.rawPayload),
-          deliveryHandle: body.deliveryHandle && typeof body.deliveryHandle === "object"
-            ? body.deliveryHandle as never
-            : undefined,
+          deliveryHandle: parseOptionalDeliveryHandle(body.deliveryHandle),
         });
         send(res, 200, result);
         return;
@@ -218,7 +214,12 @@ export function createServer(service: AgentInboxService): http.Server {
         send(res, 404, { error: message });
         return;
       }
-      if (message.startsWith("manual append is not supported") || message.startsWith("fixtures/emit requires")) {
+      if (
+        message.startsWith("manual append is not supported") ||
+        message.startsWith("fixtures/emit requires") ||
+        message.startsWith("sources/events requires") ||
+        message.startsWith("deliveryHandle requires")
+      ) {
         send(res, 400, { error: message });
         return;
       }
@@ -240,4 +241,40 @@ function parsePositiveInteger(value: string | null): number | undefined {
     throw new Error(`expected positive integer, received ${value}`);
   }
   return parsed;
+}
+
+function parseRequiredString(value: unknown, _errorMessage: string): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : "";
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseOptionalDeliveryHandle(value: unknown): DeliveryHandle | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const provider = parseOptionalString(record.provider);
+  const surface = parseOptionalString(record.surface);
+  const targetRef = parseOptionalString(record.targetRef);
+  if (!provider || !surface || !targetRef) {
+    throw new Error("deliveryHandle requires provider, surface, and targetRef");
+  }
+  return {
+    provider,
+    surface,
+    targetRef,
+    threadRef: parseOptionalString(record.threadRef) ?? null,
+    replyMode: parseOptionalString(record.replyMode) ?? null,
+  };
 }
