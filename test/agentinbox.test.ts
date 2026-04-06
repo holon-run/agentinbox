@@ -301,6 +301,66 @@ test("registerSubscription rejects unsupported activation modes", async () => {
   }
 });
 
+test("service can list relationships and reset subscription lag", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "project-alpha",
+      config: {},
+    });
+    const inbox = service.ensureInboxByCaller("shared_alpha", "alpha");
+    const subscription = await service.registerSubscription({
+      agentId: "alpha",
+      sourceId: source.sourceId,
+      inboxId: inbox.inboxId,
+      matchRules: { channel: "engineering" },
+      startPolicy: "latest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-1",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering" },
+      rawPayload: { text: "hello" },
+    });
+
+    const listed = service.listSubscriptions({ sourceId: source.sourceId, agentId: "alpha", inboxId: inbox.inboxId });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].subscriptionId, subscription.subscriptionId);
+
+    const lagBefore = await service.getSubscriptionLag(subscription.subscriptionId) as { pendingEvents: number };
+    assert.equal(lagBefore.pendingEvents, 1);
+
+    const reset = await service.resetSubscription({
+      subscriptionId: subscription.subscriptionId,
+      startPolicy: "earliest",
+    });
+    assert.equal((reset.consumer as { nextOffset: number }).nextOffset, 1);
+
+    const lagAfter = await service.getSubscriptionLag(subscription.subscriptionId) as { pendingEvents: number };
+    assert.equal(lagAfter.pendingEvents, 1);
+
+    const inboxDetails = service.getInboxDetails(inbox.inboxId);
+    assert.equal((inboxDetails.itemCounts as { total: number }).total, 0);
+
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 1);
+
+    const shown = await service.getSubscriptionDetails(subscription.subscriptionId);
+    assert.equal((shown.source as SubscriptionSource).sourceId, source.sourceId);
+    assert.equal((shown.inbox as { inboxId: string }).inboxId, inbox.inboxId);
+
+    const acked = service.ackAllInboxItems(inbox.inboxId);
+    assert.equal(acked.acked, 1);
+    assert.equal(service.listInboxItems(inbox.inboxId, { includeAcked: false }).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("manual append is rejected for adapter-managed sources", async () => {
   const { store, service, dir } = await makeAsyncService();
   try {

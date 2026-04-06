@@ -49,9 +49,20 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/sources") {
+        send(res, 200, { sources: service.listSources() });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/sources/register") {
         const source = await service.registerSource(await readJson(req) as never);
         send(res, 200, source);
+        return;
+      }
+
+      const sourceMatch = url.pathname.match(/^\/sources\/([^/]+)$/);
+      if (req.method === "GET" && sourceMatch) {
+        send(res, 200, service.getSourceDetails(decodeURIComponent(sourceMatch[1])));
         return;
       }
 
@@ -88,9 +99,26 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/subscriptions") {
+        send(res, 200, {
+          subscriptions: service.listSubscriptions({
+            sourceId: url.searchParams.get("source_id") ?? undefined,
+            agentId: url.searchParams.get("agent_id") ?? undefined,
+            inboxId: url.searchParams.get("inbox_id") ?? undefined,
+          }),
+        });
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/subscriptions/register") {
         const subscription = await service.registerSubscription(await readJson(req) as never);
         send(res, 200, subscription);
+        return;
+      }
+
+      const subscriptionMatch = url.pathname.match(/^\/subscriptions\/([^/]+)$/);
+      if (req.method === "GET" && subscriptionMatch) {
+        send(res, 200, await service.getSubscriptionDetails(decodeURIComponent(subscriptionMatch[1])));
         return;
       }
 
@@ -98,6 +126,25 @@ export function createServer(service: AgentInboxService): http.Server {
       if (req.method === "POST" && subscriptionPollMatch) {
         const result = await service.pollSubscription(decodeURIComponent(subscriptionPollMatch[1]));
         send(res, 200, result);
+        return;
+      }
+
+      const subscriptionLagMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/lag$/);
+      if (req.method === "GET" && subscriptionLagMatch) {
+        send(res, 200, await service.getSubscriptionLag(decodeURIComponent(subscriptionLagMatch[1])));
+        return;
+      }
+
+      const subscriptionResetMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/reset$/);
+      if (req.method === "POST" && subscriptionResetMatch) {
+        const body = await readJson(req);
+        const startPolicy = parseRequiredString(body.startPolicy, "subscriptions/reset requires startPolicy");
+        send(res, 200, await service.resetSubscription({
+          subscriptionId: decodeURIComponent(subscriptionResetMatch[1]),
+          startPolicy: startPolicy as never,
+          startOffset: parseOptionalInteger(body.startOffset),
+          startTime: parseOptionalString(body.startTime) ?? null,
+        }));
         return;
       }
 
@@ -131,7 +178,29 @@ export function createServer(service: AgentInboxService): http.Server {
       }
 
       if (req.method === "GET" && url.pathname === "/inboxes") {
-        send(res, 200, { inboxes: service.listInboxIds() });
+        send(res, 200, { inboxes: service.listInboxes() });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/inboxes/ensure") {
+        const body = await readJson(req);
+        const inboxId = parseRequiredString(body.inboxId, "inboxes/ensure requires inboxId");
+        const agentId = parseRequiredString(body.agentId, "inboxes/ensure requires agentId");
+        if (!inboxId) {
+          send(res, 400, { error: "inboxes/ensure requires inboxId" });
+          return;
+        }
+        if (!agentId) {
+          send(res, 400, { error: "inboxes/ensure requires agentId" });
+          return;
+        }
+        send(res, 200, service.ensureInboxByCaller(inboxId, agentId));
+        return;
+      }
+
+      const inboxShowMatch = url.pathname.match(/^\/inboxes\/([^/]+)$/);
+      if (req.method === "GET" && inboxShowMatch) {
+        send(res, 200, service.getInboxDetails(decodeURIComponent(inboxShowMatch[1])));
         return;
       }
 
@@ -201,6 +270,12 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      const inboxAckAllMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/ack-all$/);
+      if (req.method === "POST" && inboxAckAllMatch) {
+        send(res, 200, service.ackAllInboxItems(decodeURIComponent(inboxAckAllMatch[1])));
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/deliveries/send") {
         const result = await service.sendDelivery(await readJson(req) as never);
         send(res, 200, result);
@@ -218,12 +293,16 @@ export function createServer(service: AgentInboxService): http.Server {
         message.startsWith("manual append is not supported") ||
         message.startsWith("fixtures/emit requires") ||
         message.startsWith("sources/events requires") ||
-        message.startsWith("deliveryHandle requires")
+        message.startsWith("deliveryHandle requires") ||
+        message.startsWith("subscriptions/reset requires") ||
+        message.startsWith("inboxes/ensure requires") ||
+        message.startsWith("inbox ") ||
+        message.startsWith("unsupported start policy")
       ) {
         send(res, 400, { error: message });
         return;
       }
-      if (message.startsWith("expected positive integer")) {
+      if (message.startsWith("expected positive integer") || message.startsWith("expected integer")) {
         send(res, 400, { error: message });
         return;
       }
@@ -241,6 +320,16 @@ function parsePositiveInteger(value: string | null): number | undefined {
     throw new Error(`expected positive integer, received ${value}`);
   }
   return parsed;
+}
+
+function parseOptionalInteger(value: unknown): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new Error(`expected integer, received ${String(value)}`);
+  }
+  return value;
 }
 
 function parseRequiredString(value: unknown, _errorMessage: string): string {
