@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { AgentInboxStore } from "../src/store";
 import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
@@ -13,6 +14,43 @@ import { startControlServer } from "../src/control_server";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveServeConfig } from "../src/paths";
 import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, SubscriptionPollResult, SubscriptionSource } from "../src/model";
 import { nowIso } from "../src/util";
+
+test("cli version and help subcommands print text output", () => {
+  const repoDir = path.resolve(__dirname, "..");
+  const version = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "--version"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(version.status, 0);
+  assert.match(version.stdout, /^agentinbox \d+\.\d+\.\d+/m);
+
+  const helpInbox = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "help", "inbox"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const inboxHelp = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "inbox", "--help"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(helpInbox.status, 0);
+  assert.equal(inboxHelp.status, 0);
+  assert.match(helpInbox.stdout, /agentinbox inbox/);
+  assert.equal(helpInbox.stdout, inboxHelp.stdout);
+
+  const helpVersion = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "help", "version"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const versionHelp = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "version", "--help"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(helpVersion.status, 0);
+  assert.equal(versionHelp.status, 0);
+  assert.match(helpVersion.stdout, /agentinbox version/);
+  assert.match(helpVersion.stdout, /--version, -v/);
+  assert.equal(helpVersion.stdout, versionHelp.stdout);
+});
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
