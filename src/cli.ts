@@ -40,6 +40,20 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && args[1] === "list") {
+    await printRemote(client, "/sources", undefined, "GET");
+    return;
+  }
+
+  if (command === "source" && args[1] === "show") {
+    const sourceId = args[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source show <sourceId>");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}`, undefined, "GET");
+    return;
+  }
+
   if (command === "source" && args[1] === "poll") {
     const sourceId = args[2];
     if (!sourceId) {
@@ -85,6 +99,25 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "subscription" && args[1] === "list") {
+    const query = buildQuery({
+      source_id: takeFlagValue(args, "--source-id"),
+      agent_id: takeFlagValue(args, "--agent-id"),
+      inbox_id: takeFlagValue(args, "--inbox-id"),
+    });
+    await printRemote(client, `/subscriptions${query}`, undefined, "GET");
+    return;
+  }
+
+  if (command === "subscription" && args[1] === "show") {
+    const subscriptionId = args[2];
+    if (!subscriptionId) {
+      throw new Error("usage: agentinbox subscription show <subscriptionId>");
+    }
+    await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}`, undefined, "GET");
+    return;
+  }
+
   if (command === "subscription" && args[1] === "poll") {
     const subscriptionId = args[2];
     if (!subscriptionId) {
@@ -94,8 +127,50 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "subscription" && args[1] === "lag") {
+    const subscriptionId = args[2];
+    if (!subscriptionId) {
+      throw new Error("usage: agentinbox subscription lag <subscriptionId>");
+    }
+    await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}/lag`, undefined, "GET");
+    return;
+  }
+
+  if (command === "subscription" && args[1] === "reset") {
+    const subscriptionId = args[2];
+    const startPolicy = takeFlagValue(args, "--start-policy");
+    if (!subscriptionId || !startPolicy) {
+      throw new Error("usage: agentinbox subscription reset <subscriptionId> --start-policy latest|earliest|at_offset|at_time [--start-offset N] [--start-time ISO8601]");
+    }
+    await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}/reset`, {
+      startPolicy,
+      startOffset: parseOptionalNumber(takeFlagValue(args, "--start-offset")),
+      startTime: takeFlagValue(args, "--start-time") ?? undefined,
+    });
+    return;
+  }
+
   if (command === "inbox" && args[1] === "list") {
     await printRemote(client, "/inboxes", undefined, "GET");
+    return;
+  }
+
+  if (command === "inbox" && args[1] === "ensure") {
+    const inboxId = args[2];
+    const agentId = takeFlagValue(args, "--agent-id");
+    if (!inboxId || !agentId) {
+      throw new Error("usage: agentinbox inbox ensure <inboxId> --agent-id <agentId>");
+    }
+    await printRemote(client, "/inboxes/ensure", { inboxId, agentId });
+    return;
+  }
+
+  if (command === "inbox" && args[1] === "show") {
+    const inboxId = args[2];
+    if (!inboxId) {
+      throw new Error("usage: agentinbox inbox show <inboxId>");
+    }
+    await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}`, undefined, "GET");
     return;
   }
 
@@ -129,8 +204,16 @@ async function main(): Promise<void> {
   if (command === "inbox" && args[1] === "ack") {
     const inboxId = args[2];
     const itemId = takeFlagValue(args, "--item");
-    if (!inboxId || !itemId) {
-      throw new Error("usage: agentinbox inbox ack <inboxId> --item <itemId>");
+    const ackAll = hasFlag(args, "--all");
+    if (ackAll && itemId) {
+      throw new Error("usage: agentinbox inbox ack <inboxId> (--item <itemId> | --all)");
+    }
+    if (!inboxId || (!itemId && !ackAll)) {
+      throw new Error("usage: agentinbox inbox ack <inboxId> (--item <itemId> | --all)");
+    }
+    if (ackAll) {
+      await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}/ack-all`, {});
+      return;
     }
     await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}/ack`, { itemIds: [itemId] });
     return;
@@ -264,6 +347,17 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
   return parsed;
 }
 
+function buildQuery(params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      search.set(key, value);
+    }
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 function printHelp(): void {
   console.log(`agentinbox
 
@@ -271,14 +365,22 @@ Commands:
   agentinbox serve [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
   agentinbox serve --port 4747 [--state ~/.agentinbox/agentinbox.sqlite]
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
+  agentinbox source list
+  agentinbox source show <sourceId>
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
   agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription list [--source-id ID] [--agent-id ID] [--inbox-id ID]
+  agentinbox subscription show <subscriptionId>
   agentinbox subscription poll <subscriptionId>
+  agentinbox subscription lag <subscriptionId>
+  agentinbox subscription reset <subscriptionId> --start-policy latest|earliest|at_offset|at_time [--start-offset N] [--start-time ISO8601]
   agentinbox inbox list
+  agentinbox inbox ensure <inboxId> --agent-id <agentId>
+  agentinbox inbox show <inboxId>
   agentinbox inbox read <inboxId>
   agentinbox inbox watch <inboxId> [--after-item ID] [--include-acked] [--heartbeat-ms N]
-  agentinbox inbox ack <inboxId> --item <itemId>
+  agentinbox inbox ack <inboxId> (--item <itemId> | --all)
   agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]
   agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]
   agentinbox status

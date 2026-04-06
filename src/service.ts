@@ -21,6 +21,7 @@ import { AgentInboxStore } from "./store";
 import { AdapterRegistry } from "./adapters";
 import {
   defaultInboxIdForAgent,
+  ConsumerLag,
   EventBusBackend,
   SqliteEventBusBackend,
   streamKeyForSource,
@@ -33,6 +34,7 @@ const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
 const ACTIVATION_MODES = new Set<Subscription["activationMode"]>(["activation_only", "activation_with_items"]);
+const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 
 interface ActivationBuffer {
   agentId: string;
@@ -139,6 +141,27 @@ export class AgentInboxService {
     return source;
   }
 
+  listSources(): SubscriptionSource[] {
+    return this.store.listSources();
+  }
+
+  getSource(sourceId: string): SubscriptionSource {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    return source;
+  }
+
+  getSourceDetails(sourceId: string): Record<string, unknown> {
+    const source = this.getSource(sourceId);
+    return {
+      source,
+      stream: this.store.getStreamBySourceId(sourceId),
+      subscriptions: this.store.listSubscriptionsForSource(sourceId),
+    };
+  }
+
   async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
     const source = this.store.getSource(input.sourceId);
     if (!source) {
@@ -173,6 +196,80 @@ export class AgentInboxService {
       startTime: subscription.startTime ?? null,
     });
     return subscription;
+  }
+
+  listSubscriptions(filters?: {
+    sourceId?: string;
+    agentId?: string;
+    inboxId?: string;
+  }): Subscription[] {
+    return this.store.listSubscriptions().filter((subscription) => {
+      if (filters?.sourceId && subscription.sourceId !== filters.sourceId) {
+        return false;
+      }
+      if (filters?.agentId && subscription.agentId !== filters.agentId) {
+        return false;
+      }
+      if (filters?.inboxId && subscription.inboxId !== filters.inboxId) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  getSubscription(subscriptionId: string): Subscription {
+    const subscription = this.store.getSubscription(subscriptionId);
+    if (!subscription) {
+      throw new Error(`unknown subscription: ${subscriptionId}`);
+    }
+    return subscription;
+  }
+
+  async getSubscriptionDetails(subscriptionId: string): Promise<Record<string, unknown>> {
+    const subscription = this.getSubscription(subscriptionId);
+    const consumer = await this.backend.getConsumer({ subscriptionId });
+    if (!consumer) {
+      throw new Error(`unknown consumer for subscription: ${subscriptionId}`);
+    }
+    return {
+      subscription,
+      source: this.getSource(subscription.sourceId),
+      inbox: this.getInbox(subscription.inboxId),
+      consumer,
+      lag: await this.backend.getConsumerLag({ consumerId: consumer.consumerId }),
+    };
+  }
+
+  async getSubscriptionLag(subscriptionId: string): Promise<ConsumerLag> {
+    this.getSubscription(subscriptionId);
+    return this.backend.getConsumerLag({ subscriptionId });
+  }
+
+  async resetSubscription(input: {
+    subscriptionId: string;
+    startPolicy: Subscription["startPolicy"];
+    startOffset?: number | null;
+    startTime?: string | null;
+  }): Promise<Record<string, unknown>> {
+    this.getSubscription(input.subscriptionId);
+    if (!SUBSCRIPTION_START_POLICIES.has(input.startPolicy)) {
+      throw new Error(`unsupported start policy: ${input.startPolicy}`);
+    }
+    const consumer = await this.backend.getConsumer({ subscriptionId: input.subscriptionId });
+    if (!consumer) {
+      throw new Error(`unknown consumer for subscription: ${input.subscriptionId}`);
+    }
+    const reset = await this.backend.reset({
+      consumerId: consumer.consumerId,
+      startPolicy: input.startPolicy,
+      startOffset: input.startOffset ?? null,
+      startTime: input.startTime ?? null,
+    });
+    return {
+      subscription: this.getSubscription(input.subscriptionId),
+      consumer: reset,
+      lag: await this.backend.getConsumerLag({ consumerId: reset.consumerId }),
+    };
   }
 
   async appendSourceEvent(input: AppendSourceEventInput): Promise<AppendSourceEventResult> {
@@ -234,6 +331,36 @@ export class AgentInboxService {
 
   listInboxIds(): string[] {
     return this.store.listInboxes().map((inbox) => inbox.inboxId);
+  }
+
+  listInboxes(): Inbox[] {
+    return this.store.listInboxes();
+  }
+
+  ensureInboxByCaller(inboxId: string, ownerAgentId: string): Inbox {
+    return this.ensureInbox(inboxId, ownerAgentId);
+  }
+
+  getInbox(inboxId: string): Inbox {
+    const inbox = this.store.getInbox(inboxId);
+    if (!inbox) {
+      throw new Error(`unknown inbox: ${inboxId}`);
+    }
+    return inbox;
+  }
+
+  getInboxDetails(inboxId: string): Record<string, unknown> {
+    const inbox = this.getInbox(inboxId);
+    const subscriptions = this.listSubscriptions({ inboxId });
+    return {
+      inbox,
+      subscriptions,
+      itemCounts: {
+        total: this.store.listInboxItems(inboxId).length,
+        unacked: this.store.listInboxItems(inboxId, { includeAcked: false }).length,
+        acked: this.store.listInboxItems(inboxId).filter((item) => item.ackedAt != null).length,
+      },
+    };
   }
 
   listInboxItems(inboxId: string, options?: WatchInboxOptions): InboxItem[] {
@@ -321,6 +448,11 @@ export class AgentInboxService {
   }
 
   ackInboxItems(inboxId: string, itemIds: string[]): { acked: number } {
+    return { acked: this.store.ackItems(inboxId, itemIds, nowIso()) };
+  }
+
+  ackAllInboxItems(inboxId: string): { acked: number } {
+    const itemIds = this.store.listInboxItems(inboxId, { includeAcked: false }).map((item) => item.itemId);
     return { acked: this.store.ackItems(inboxId, itemIds, nowIso()) };
   }
 

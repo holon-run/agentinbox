@@ -554,6 +554,130 @@ test("sources/events validates string ids and delivery handle shape", async () =
   }
 });
 
+test("control plane exposes source, subscription, and inbox management endpoints", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-mgmt-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const source = await client.request<SubscriptionSource>("/sources/register", {
+        sourceType: "custom",
+        sourceKey: "mgmt-demo",
+      } satisfies RegisterSourceInput);
+      assert.equal(source.statusCode, 200);
+
+      const ensured = await client.request<{ inboxId: string; ownerAgentId: string }>("/inboxes/ensure", {
+        inboxId: "shared_alpha",
+        agentId: "alpha",
+      });
+      assert.equal(ensured.statusCode, 200);
+      assert.equal(ensured.data.inboxId, "shared_alpha");
+
+      const subscription = await client.request<{ subscriptionId: string; inboxId: string }>("/subscriptions/register", {
+        agentId: "alpha",
+        sourceId: source.data.sourceId,
+        inboxId: "shared_alpha",
+        matchRules: { channel: "engineering" },
+        startPolicy: "latest",
+      } satisfies RegisterSubscriptionInput);
+      assert.equal(subscription.statusCode, 200);
+
+      const sources = await client.request<{ sources: SubscriptionSource[] }>("/sources", undefined, "GET");
+      assert.equal(sources.statusCode, 200);
+      assert.equal(sources.data.sources.length, 1);
+
+      const sourceDetails = await client.request<{ source: SubscriptionSource; subscriptions: Array<{ subscriptionId: string }> }>(
+        `/sources/${source.data.sourceId}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(sourceDetails.statusCode, 200);
+      assert.equal(sourceDetails.data.subscriptions.length, 1);
+
+      await client.request(`/sources/${source.data.sourceId}/events`, {
+        sourceNativeId: "evt-1",
+        eventVariant: "message.created",
+        metadata: { channel: "engineering" },
+      });
+
+      const lagBefore = await client.request<{ pendingEvents: number }>(
+        `/subscriptions/${subscription.data.subscriptionId}/lag`,
+        undefined,
+        "GET",
+      );
+      assert.equal(lagBefore.statusCode, 200);
+      assert.equal(lagBefore.data.pendingEvents, 1);
+
+      const listed = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>(
+        `/subscriptions?source_id=${encodeURIComponent(source.data.sourceId)}&agent_id=alpha&inbox_id=shared_alpha`,
+        undefined,
+        "GET",
+      );
+      assert.equal(listed.statusCode, 200);
+      assert.equal(listed.data.subscriptions.length, 1);
+
+      const reset = await client.request<{ consumer: { nextOffset: number } }>(
+        `/subscriptions/${subscription.data.subscriptionId}/reset`,
+        { startPolicy: "earliest" },
+      );
+      assert.equal(reset.statusCode, 200);
+      assert.equal(reset.data.consumer.nextOffset, 1);
+
+      const poll = await client.request<SubscriptionPollResult>(
+        `/subscriptions/${subscription.data.subscriptionId}/poll`,
+        {},
+      );
+      assert.equal(poll.statusCode, 200);
+      assert.equal(poll.data.inboxItemsCreated, 1);
+
+      const subShow = await client.request<{ subscription: { inboxId: string }; lag: { pendingEvents: number } }>(
+        `/subscriptions/${subscription.data.subscriptionId}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(subShow.statusCode, 200);
+      assert.equal(subShow.data.subscription.inboxId, "shared_alpha");
+      assert.equal(subShow.data.lag.pendingEvents, 0);
+
+      const inboxShow = await client.request<{
+        inbox: { inboxId: string; ownerAgentId: string };
+        subscriptions: Array<{ subscriptionId: string }>;
+        itemCounts: { total: number; unacked: number; acked: number };
+      }>(`/inboxes/shared_alpha`, undefined, "GET");
+      assert.equal(inboxShow.statusCode, 200);
+      assert.equal(inboxShow.data.inbox.ownerAgentId, "alpha");
+      assert.equal(inboxShow.data.subscriptions.length, 1);
+      assert.equal(inboxShow.data.itemCounts.unacked, 1);
+
+      const ackAll = await client.request<{ acked: number }>(`/inboxes/shared_alpha/ack-all`, {});
+      assert.equal(ackAll.statusCode, 200);
+      assert.equal(ackAll.data.acked, 1);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   try {
