@@ -502,6 +502,58 @@ test("manual append endpoint rejects adapter-managed sources", async () => {
   }
 });
 
+test("sources/events validates string ids and delivery handle shape", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-sev-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const sourceResponse = await client.request<SubscriptionSource>("/sources/register", {
+        sourceType: "custom",
+        sourceKey: "validate-demo",
+      } satisfies RegisterSourceInput);
+      assert.equal(sourceResponse.statusCode, 200);
+
+      const invalidId = await client.request<{ error: string }>(`/sources/${sourceResponse.data.sourceId}/events`, {
+        sourceNativeId: { bad: true },
+        eventVariant: "message.created",
+      });
+      assert.equal(invalidId.statusCode, 400);
+      assert.match(invalidId.data.error, /sources\/events requires sourceNativeId/);
+
+      const invalidDeliveryHandle = await client.request<{ error: string }>(`/sources/${sourceResponse.data.sourceId}/events`, {
+        sourceNativeId: "evt-1",
+        eventVariant: "message.created",
+        deliveryHandle: { provider: "github" },
+      });
+      assert.equal(invalidDeliveryHandle.statusCode, 400);
+      assert.match(invalidDeliveryHandle.data.error, /deliveryHandle requires provider, surface, and targetRef/);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   try {

@@ -249,6 +249,15 @@ node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions
 node dist/src/cli.js source poll <source_id>
 ```
 
+Register a GitHub repo CI source backed by GitHub Actions workflow run polling:
+
+```bash
+node dist/src/cli.js source add github_repo_ci holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30,"perPage":20}'
+node dist/src/cli.js subscription add alpha <source_id> --match-json '{"conclusion":"failure","headBranch":"main"}'
+node dist/src/cli.js source poll <source_id>
+```
+
 Register a Feishu bot source backed by `uxc` long-connection subscription:
 
 ```bash
