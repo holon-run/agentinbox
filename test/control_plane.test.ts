@@ -16,13 +16,13 @@ import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, 
 import { nowIso } from "../src/util";
 
 test("cli version and help subcommands print text output", () => {
-  const repoDir = "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox";
+  const repoDir = path.resolve(__dirname, "..");
   const version = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "--version"], {
     cwd: repoDir,
     encoding: "utf8",
   });
   assert.equal(version.status, 0);
-  assert.match(version.stdout, /^agentinbox 0\.1\.0/m);
+  assert.match(version.stdout, /^agentinbox \d+\.\d+\.\d+/m);
 
   const helpInbox = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "help", "inbox"], {
     cwd: repoDir,
@@ -36,6 +36,20 @@ test("cli version and help subcommands print text output", () => {
   assert.equal(inboxHelp.status, 0);
   assert.match(helpInbox.stdout, /agentinbox inbox/);
   assert.equal(helpInbox.stdout, inboxHelp.stdout);
+
+  const helpVersion = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "help", "version"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  const versionHelp = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "version", "--help"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(helpVersion.status, 0);
+  assert.equal(versionHelp.status, 0);
+  assert.match(helpVersion.stdout, /agentinbox version/);
+  assert.match(helpVersion.stdout, /--version, -v/);
+  assert.equal(helpVersion.stdout, versionHelp.stdout);
 });
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {

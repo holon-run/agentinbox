@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import pkg from "../package.json";
+import fs from "node:fs";
+import path from "node:path";
 import { AgentInboxStore } from "./store";
 import { AgentInboxService } from "./service";
 import { createServer } from "./http";
@@ -20,6 +21,10 @@ async function main(): Promise<void> {
   }
 
   if (command === "version" || command === "--version" || command === "-v") {
+    if (hasHelpFlag(normalized.slice(1))) {
+      printHelp(["version"]);
+      return;
+    }
     printVersion();
     return;
   }
@@ -416,8 +421,8 @@ function printHelp(path: string[] = []): void {
 Usage:
   agentinbox <command> [options]
   agentinbox help [command]
-  agentinbox --help
-  agentinbox --version
+  agentinbox --help, -h
+  agentinbox --version, -v
 
 Commands:
   serve
@@ -486,14 +491,35 @@ Usage:
 
 Usage:
   agentinbox version
-  agentinbox --version
+  agentinbox --version, -v
 `,
   };
   console.log(helpByKey[key] ?? helpByKey.root);
 }
 
 function printVersion(): void {
-  console.log(`agentinbox ${pkg.version}`);
+  console.log(`agentinbox ${readPackageVersion()}`);
+}
+
+function readPackageVersion(): string {
+  const packageJsonPath = findPackageJsonPath(__dirname);
+  const parsed = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
+  return typeof parsed.version === "string" ? parsed.version : "0.0.0";
+}
+
+function findPackageJsonPath(startDir: string): string {
+  let currentDir = startDir;
+  while (true) {
+    const candidate = path.join(currentDir, "package.json");
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      throw new Error(`could not locate package.json from ${startDir}`);
+    }
+    currentDir = parentDir;
+  }
 }
 
 main().catch((error) => {
