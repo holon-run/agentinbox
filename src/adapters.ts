@@ -9,6 +9,7 @@ import {
 import { AgentInboxStore } from "./store";
 import { FeishuDeliveryAdapter, FeishuSourceRuntime } from "./sources/feishu";
 import { GithubDeliveryAdapter, GithubSourceRuntime } from "./sources/github";
+import { GithubCiSourceRuntime } from "./sources/github_ci";
 
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
@@ -52,6 +53,7 @@ export class AdapterRegistry {
   private readonly customSource = new NoopSourceAdapter("custom");
   private readonly feishuSource: FeishuSourceRuntime;
   private readonly githubSource: GithubSourceRuntime;
+  private readonly githubCiSource: GithubCiSourceRuntime;
   private readonly fixtureDelivery = new NoopDeliveryAdapter();
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
@@ -59,6 +61,7 @@ export class AdapterRegistry {
   constructor(store: AgentInboxStore, appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>) {
     this.feishuSource = new FeishuSourceRuntime(store, appendSourceEvent);
     this.githubSource = new GithubSourceRuntime(store, appendSourceEvent);
+    this.githubCiSource = new GithubCiSourceRuntime(store, appendSourceEvent);
   }
 
   sourceAdapterFor(type: SourceType): SourceAdapter {
@@ -70,6 +73,9 @@ export class AdapterRegistry {
     }
     if (type === "github_repo") {
       return this.githubSource;
+    }
+    if (type === "github_repo_ci") {
+      return this.githubCiSource;
     }
     if (type === "feishu_bot") {
       return this.feishuSource;
@@ -93,11 +99,13 @@ export class AdapterRegistry {
   async start(): Promise<void> {
     await this.feishuSource.start?.();
     await this.githubSource.start?.();
+    await this.githubCiSource.start?.();
   }
 
   async stop(): Promise<void> {
     await this.feishuSource.stop?.();
     await this.githubSource.stop?.();
+    await this.githubCiSource.stop?.();
   }
 
   async pollSource(source: SubscriptionSource): Promise<SourcePollResult> {
@@ -119,6 +127,7 @@ export class AdapterRegistry {
     return {
       feishu: this.feishuSource.status?.() ?? {},
       github: this.githubSource.status?.() ?? {},
+      githubCi: this.githubCiSource.status?.() ?? {},
     };
   }
 }
