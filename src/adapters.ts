@@ -49,6 +49,7 @@ class NoopDeliveryAdapter implements DeliveryAdapter {
 
 export class AdapterRegistry {
   private readonly fixtureSource = new NoopSourceAdapter("fixture");
+  private readonly customSource = new NoopSourceAdapter("custom");
   private readonly feishuSource: FeishuSourceRuntime;
   private readonly githubSource: GithubSourceRuntime;
   private readonly fixtureDelivery = new NoopDeliveryAdapter();
@@ -63,6 +64,9 @@ export class AdapterRegistry {
   sourceAdapterFor(type: SourceType): SourceAdapter {
     if (type === "fixture") {
       return this.fixtureSource;
+    }
+    if (type === "custom") {
+      return this.customSource;
     }
     if (type === "github_repo") {
       return this.githubSource;

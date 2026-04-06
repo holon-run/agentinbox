@@ -11,7 +11,8 @@ import { createServer } from "../src/http";
 import { AgentInboxClient } from "../src/client";
 import { startControlServer } from "../src/control_server";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveServeConfig } from "../src/paths";
-import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, SubscriptionPollResult } from "../src/model";
+import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, SubscriptionPollResult, SubscriptionSource } from "../src/model";
+import { nowIso } from "../src/util";
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
@@ -231,6 +232,85 @@ test("e2e control plane can register fixture source, consume a subscription, and
   }
 });
 
+test("e2e control plane can append events through a custom source", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-custom-source-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const sourceResponse = await client.request<{ sourceId: string; sourceType: string }>("/sources/register", {
+        sourceType: "custom",
+        sourceKey: "project-alpha",
+        config: {},
+      } satisfies RegisterSourceInput);
+      assert.equal(sourceResponse.statusCode, 200);
+      assert.equal(sourceResponse.data.sourceType, "custom");
+
+      const subscriptionResponse = await client.request<{ subscriptionId: string; inboxId: string }>(
+        "/subscriptions/register",
+        {
+          agentId: "alpha",
+          sourceId: sourceResponse.data.sourceId,
+          matchRules: { channel: "engineering" },
+          startPolicy: "earliest",
+        } satisfies RegisterSubscriptionInput,
+      );
+      assert.equal(subscriptionResponse.statusCode, 200);
+
+      const appendResponse = await client.request<{ appended: number; deduped: number }>(
+        `/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/events`,
+        {
+          sourceNativeId: "custom-evt-1",
+          eventVariant: "message.created",
+          metadata: { channel: "engineering" },
+          rawPayload: { text: "hello from custom source" },
+        },
+      );
+      assert.equal(appendResponse.statusCode, 200);
+      assert.equal(appendResponse.data.appended, 1);
+
+      const pollResponse = await client.request<SubscriptionPollResult>(
+        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
+        {},
+      );
+      assert.equal(pollResponse.statusCode, 200);
+      assert.equal(pollResponse.data.inboxItemsCreated, 1);
+
+      const inboxResponse = await client.request<{ items: InboxItem[] }>(
+        `/inboxes/${subscriptionResponse.data.inboxId}/items`,
+        undefined,
+        "GET",
+      );
+      assert.equal(inboxResponse.statusCode, 200);
+      assert.equal(inboxResponse.data.items.length, 1);
+      assert.equal(inboxResponse.data.items[0].sourceNativeId, "custom-evt-1");
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("e2e control plane watch streams backlog and future inbox items over socket SSE", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-watch-home-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
@@ -357,6 +437,61 @@ test("inbox reads return 404 when after_item_id is unknown", async () => {
       );
       assert.equal(response.statusCode, 404);
       assert.match(response.data.error, /unknown inbox item/);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("manual append endpoint rejects adapter-managed sources", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-manual-append-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  const githubSource: SubscriptionSource = {
+    sourceId: "src_github_manual_append",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    configRef: null,
+    config: { owner: "holon-run", repo: "agentinbox" },
+    status: "active",
+    checkpoint: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+  store.insertSource(githubSource);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const response = await client.request<{ error: string }>(
+        `/sources/${encodeURIComponent(githubSource.sourceId)}/events`,
+        {
+          sourceNativeId: "evt-1",
+          eventVariant: "message.created",
+          metadata: {},
+          rawPayload: {},
+        },
+      );
+      assert.equal(response.statusCode, 400);
+      assert.match(response.data.error, /manual append is not supported for source type: github_repo/);
     } finally {
       await started.close();
     }

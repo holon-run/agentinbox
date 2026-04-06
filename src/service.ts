@@ -188,6 +188,50 @@ export class AgentInboxService {
     return toAppendResult(result);
   }
 
+  async appendSourceEventByCaller(
+    sourceId: string,
+    input: Omit<AppendSourceEventInput, "sourceId">,
+  ): Promise<AppendSourceEventResult> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    if (source.sourceType !== "custom") {
+      throw new Error(`manual append is not supported for source type: ${source.sourceType}`);
+    }
+    return this.appendSourceEvent({
+      sourceId,
+      sourceNativeId: input.sourceNativeId,
+      eventVariant: input.eventVariant,
+      occurredAt: input.occurredAt,
+      metadata: input.metadata,
+      rawPayload: input.rawPayload,
+      deliveryHandle: input.deliveryHandle,
+    });
+  }
+
+  async appendFixtureEvent(
+    sourceId: string,
+    input: Omit<AppendSourceEventInput, "sourceId">,
+  ): Promise<AppendSourceEventResult> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    if (source.sourceType !== "fixture") {
+      throw new Error(`fixtures/emit requires fixture source, received: ${source.sourceType}`);
+    }
+    return this.appendSourceEvent({
+      sourceId,
+      sourceNativeId: input.sourceNativeId,
+      eventVariant: input.eventVariant,
+      occurredAt: input.occurredAt,
+      metadata: input.metadata,
+      rawPayload: input.rawPayload,
+      deliveryHandle: input.deliveryHandle,
+    });
+  }
+
   listInboxIds(): string[] {
     return this.store.listInboxes().map((inbox) => inbox.inboxId);
   }

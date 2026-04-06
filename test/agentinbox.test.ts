@@ -8,7 +8,8 @@ import { AgentInboxStore } from "../src/store";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
-import { Activation, InboxWatchEvent } from "../src/model";
+import { Activation, InboxWatchEvent, SubscriptionSource } from "../src/model";
+import { nowIso } from "../src/util";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
   public readonly calls: Array<{ target: string | null | undefined; activation: Activation }> = [];
@@ -78,6 +79,40 @@ test("shared source can route one stream event to multiple agent inboxes", async
     await service.stop();
     assert.equal(store.listActivations().length, 2);
     assert.equal(store.listSources().length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("custom source can act as a programmable event bus source", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "project-alpha",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: "alpha",
+      sourceId: source.sourceId,
+      matchRules: { channel: "engineering" },
+      startPolicy: "earliest",
+    });
+
+    const appendResult = await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "custom-evt-1",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering" },
+      rawPayload: { text: "hello from custom source" },
+    });
+    assert.equal(appendResult.appended, 1);
+
+    const pollResult = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(pollResult.inboxItemsCreated, 1);
+    assert.equal(service.listInboxItems(subscription.inboxId).length, 1);
+    assert.equal(service.listInboxItems(subscription.inboxId)[0].sourceNativeId, "custom-evt-1");
   } finally {
     await service.stop();
     store.close();
@@ -258,6 +293,38 @@ test("registerSubscription rejects unsupported activation modes", async () => {
         activationMode: "push_everything" as never,
       }),
       /unsupported activation mode: push_everything/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("manual append is rejected for adapter-managed sources", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const githubSource: SubscriptionSource = {
+      sourceId: "src_github_manual_append",
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox" },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    store.insertSource(githubSource);
+
+    await assert.rejects(
+      () => service.appendSourceEventByCaller(githubSource.sourceId, {
+        sourceNativeId: "evt-1",
+        eventVariant: "message.created",
+        metadata: {},
+        rawPayload: {},
+      }),
+      /manual append is not supported for source type: github_repo/,
     );
   } finally {
     await service.stop();
