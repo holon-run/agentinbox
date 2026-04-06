@@ -1,6 +1,7 @@
 import http from "node:http";
 import { AgentInboxService } from "./service";
 import { asObject, jsonResponse } from "./util";
+import { WatchInboxOptions } from "./model";
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -18,6 +19,15 @@ function send(res: http.ServerResponse, statusCode: number, data: unknown): void
   res.statusCode = statusCode;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.end(jsonResponse(data));
+}
+
+function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
+  res.write(`event: ${event}\n`);
+  const payload = jsonResponse(data)
+    .split("\n")
+    .map((line) => `data: ${line}`)
+    .join("\n");
+  res.write(`${payload}\n\n`);
 }
 
 export function createServer(service: AgentInboxService): http.Server {
@@ -78,7 +88,59 @@ export function createServer(service: AgentInboxService): http.Server {
 
       const inboxMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/items$/);
       if (req.method === "GET" && inboxMatch) {
-        send(res, 200, { items: service.listInboxItems(decodeURIComponent(inboxMatch[1])) });
+        send(res, 200, {
+          items: service.listInboxItems(decodeURIComponent(inboxMatch[1]), {
+            afterItemId: url.searchParams.get("after_item_id") ?? undefined,
+            includeAcked: url.searchParams.has("include_acked")
+              ? url.searchParams.get("include_acked") === "true"
+              : undefined,
+          }),
+        });
+        return;
+      }
+
+      const inboxWatchMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/watch$/);
+      if (req.method === "GET" && inboxWatchMatch) {
+        const inboxId = decodeURIComponent(inboxWatchMatch[1]);
+        const watchOptions: WatchInboxOptions = {
+          afterItemId: url.searchParams.get("after_item_id") ?? undefined,
+          includeAcked: url.searchParams.get("include_acked") === "true",
+          heartbeatMs: parsePositiveInteger(url.searchParams.get("heartbeat_ms")) ?? 15_000,
+        };
+        const session = service.watchInbox(inboxId, watchOptions, (event) => {
+          sendSse(res, event.event, event);
+        });
+
+        res.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache, no-transform",
+          connection: "keep-alive",
+        });
+        res.flushHeaders?.();
+
+        if (session.initialItems.length > 0) {
+          sendSse(res, "items", {
+            event: "items",
+            inboxId,
+            items: session.initialItems,
+          });
+        }
+        session.start();
+
+        const heartbeat = setInterval(() => {
+          sendSse(res, "heartbeat", {
+            event: "heartbeat",
+            inboxId,
+            timestamp: new Date().toISOString(),
+          });
+        }, watchOptions.heartbeatMs ?? 15_000);
+
+        const cleanup = () => {
+          clearInterval(heartbeat);
+          session.close();
+        };
+        req.on("close", cleanup);
+        req.on("error", cleanup);
         return;
       }
 
@@ -99,7 +161,26 @@ export function createServer(service: AgentInboxService): http.Server {
       send(res, 404, { error: "not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("unknown ")) {
+        send(res, 404, { error: message });
+        return;
+      }
+      if (message.startsWith("expected positive integer")) {
+        send(res, 400, { error: message });
+        return;
+      }
       send(res, 500, { error: message });
     }
   });
+}
+
+function parsePositiveInteger(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`expected positive integer, received ${value}`);
+  }
+  return parsed;
 }

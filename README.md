@@ -251,6 +251,7 @@ node dist/src/cli.js fixture emit <source_id> --metadata-json '{"channel":"engin
 node dist/src/cli.js subscription poll <subscription_id>
 node dist/src/cli.js inbox list
 node dist/src/cli.js inbox read inbox_alpha
+node dist/src/cli.js inbox watch inbox_alpha
 ```
 
 Record a delivery attempt:

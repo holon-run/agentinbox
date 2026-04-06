@@ -91,6 +91,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "inbox" && args[1] === "watch") {
+    const inboxId = args[2];
+    if (!inboxId) {
+      throw new Error("usage: agentinbox inbox watch <inboxId> [--after-item ID] [--include-acked] [--heartbeat-ms N]");
+    }
+    for await (const event of client.watchInbox(inboxId, {
+      afterItemId: takeFlagValue(args, "--after-item"),
+      includeAcked: hasFlag(args, "--include-acked"),
+      heartbeatMs: parseOptionalNumber(takeFlagValue(args, "--heartbeat-ms")),
+    })) {
+      if (event.event !== "items") {
+        continue;
+      }
+      console.log(jsonResponse(event));
+    }
+    return;
+  }
+
   if (command === "inbox" && args[1] === "ack") {
     const inboxId = args[2];
     const itemId = takeFlagValue(args, "--item");
@@ -214,6 +232,10 @@ function takeFlagValue(args: string[], flag: string): string | undefined {
   return args[index + 1];
 }
 
+function hasFlag(args: string[], flag: string): boolean {
+  return args.includes(flag);
+}
+
 function parseOptionalNumber(value: string | undefined): number | undefined {
   if (value == null) {
     return undefined;
@@ -237,6 +259,7 @@ Commands:
   agentinbox subscription poll <subscriptionId>
   agentinbox inbox list
   agentinbox inbox read <inboxId>
+  agentinbox inbox watch <inboxId> [--after-item ID] [--include-acked] [--heartbeat-ms N]
   agentinbox inbox ack <inboxId> --item <itemId>
   agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]
   agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]

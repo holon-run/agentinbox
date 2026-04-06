@@ -231,6 +231,142 @@ test("e2e control plane can register fixture source, consume a subscription, and
   }
 });
 
+test("e2e control plane watch streams backlog and future inbox items over socket SSE", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-watch-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
+        sourceType: "fixture",
+        sourceKey: "watch-demo",
+        config: {},
+      } satisfies RegisterSourceInput);
+      assert.equal(sourceResponse.statusCode, 200);
+
+      const subscriptionResponse = await client.request<{ subscriptionId: string; inboxId: string }>(
+        "/subscriptions/register",
+        {
+          agentId: "alpha",
+          sourceId: sourceResponse.data.sourceId,
+          startPolicy: "earliest",
+        } satisfies RegisterSubscriptionInput,
+      );
+      assert.equal(subscriptionResponse.statusCode, 200);
+
+      await client.request("/fixtures/emit", {
+        sourceId: sourceResponse.data.sourceId,
+        sourceNativeId: "evt-watch-1",
+        eventVariant: "message.created",
+        metadata: { channel: "engineering" },
+        rawPayload: { text: "first" },
+      });
+      await client.request<SubscriptionPollResult>(
+        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
+        {},
+      );
+
+      const watch = client.watchInbox(subscriptionResponse.data.inboxId, {
+        heartbeatMs: 25,
+      })[Symbol.asyncIterator]();
+
+      const firstEvent = await waitForWatchItems(watch, 1_000, "timed out waiting for backlog watch event");
+      assert.equal(firstEvent.items.length, 1);
+      assert.equal(firstEvent.items[0].sourceNativeId, "evt-watch-1");
+      assert.equal(firstEvent.items[0].ackedAt, null);
+
+      await client.request("/fixtures/emit", {
+        sourceId: sourceResponse.data.sourceId,
+        sourceNativeId: "evt-watch-2",
+        eventVariant: "message.created",
+        metadata: { channel: "engineering" },
+        rawPayload: { text: "second" },
+      });
+      await client.request<SubscriptionPollResult>(
+        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
+        {},
+      );
+
+      const secondEvent = await waitForWatchItems(watch, 1_000, "timed out waiting for future watch event");
+      assert.equal(secondEvent.items.length, 1);
+      assert.equal(secondEvent.items[0].sourceNativeId, "evt-watch-2");
+
+      await watch.return?.();
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("inbox reads return 404 when after_item_id is unknown", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-watch-invalid-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
+        sourceType: "fixture",
+        sourceKey: "watch-invalid",
+        config: {},
+      } satisfies RegisterSourceInput);
+      const subscriptionResponse = await client.request<{ inboxId: string }>("/subscriptions/register", {
+        agentId: "alpha",
+        sourceId: sourceResponse.data.sourceId,
+      } satisfies RegisterSubscriptionInput);
+      const response = await client.request<{ error: string }>(
+        `/inboxes/${encodeURIComponent(subscriptionResponse.data.inboxId)}/items?after_item_id=missing`,
+        undefined,
+        "GET",
+      );
+      assert.equal(response.statusCode, 404);
+      assert.match(response.data.error, /unknown inbox item/);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   try {
@@ -243,6 +379,21 @@ async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: strin
   } finally {
     if (timer) {
       clearTimeout(timer);
+    }
+  }
+}
+
+async function waitForWatchItems(
+  iterator: AsyncIterator<unknown>,
+  timeoutMs: number,
+  message: string,
+): Promise<{ event: "items"; inboxId: string; items: InboxItem[] }> {
+  while (true) {
+    const next = await waitFor(iterator.next(), timeoutMs, message);
+    assert.equal(next.done, false);
+    const value = next.value as { event: string; inboxId: string; items?: InboxItem[] };
+    if (value.event === "items") {
+      return value as { event: "items"; inboxId: string; items: InboxItem[] };
     }
   }
 }
