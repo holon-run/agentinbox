@@ -204,10 +204,14 @@ async function main(): Promise<void> {
   if (command === "inbox" && args[1] === "ack") {
     const inboxId = args[2];
     const itemId = takeFlagValue(args, "--item");
-    if (!inboxId || (!itemId && !hasFlag(args, "--all"))) {
+    const ackAll = hasFlag(args, "--all");
+    if (ackAll && itemId) {
       throw new Error("usage: agentinbox inbox ack <inboxId> (--item <itemId> | --all)");
     }
-    if (hasFlag(args, "--all")) {
+    if (!inboxId || (!itemId && !ackAll)) {
+      throw new Error("usage: agentinbox inbox ack <inboxId> (--item <itemId> | --all)");
+    }
+    if (ackAll) {
       await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}/ack-all`, {});
       return;
     }

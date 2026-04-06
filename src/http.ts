@@ -139,6 +139,10 @@ export function createServer(service: AgentInboxService): http.Server {
       if (req.method === "POST" && subscriptionResetMatch) {
         const body = await readJson(req);
         const startPolicy = parseRequiredString(body.startPolicy, "subscriptions/reset requires startPolicy");
+        if (!startPolicy) {
+          send(res, 400, { error: "subscriptions/reset requires startPolicy" });
+          return;
+        }
         send(res, 200, await service.resetSubscription({
           subscriptionId: decodeURIComponent(subscriptionResetMatch[1]),
           startPolicy: startPolicy as never,

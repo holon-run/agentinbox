@@ -227,12 +227,16 @@ export class AgentInboxService {
 
   async getSubscriptionDetails(subscriptionId: string): Promise<Record<string, unknown>> {
     const subscription = this.getSubscription(subscriptionId);
+    const consumer = await this.backend.getConsumer({ subscriptionId });
+    if (!consumer) {
+      throw new Error(`unknown consumer for subscription: ${subscriptionId}`);
+    }
     return {
       subscription,
       source: this.getSource(subscription.sourceId),
       inbox: this.getInbox(subscription.inboxId),
-      consumer: await this.backend.getConsumer({ subscriptionId }),
-      lag: await this.backend.getConsumerLag({ subscriptionId }),
+      consumer,
+      lag: await this.backend.getConsumerLag({ consumerId: consumer.consumerId }),
     };
   }
 
