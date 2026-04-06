@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import initSqlJs, { Database, SqlJsStatic } from "sql.js";
+import initSqlJs, { type BindParams, Database, SqlJsStatic } from "sql.js";
 import type {
   ConsumerRecord,
   StreamEventRecord,
@@ -15,6 +15,7 @@ import {
   DeliveryAttempt,
   Inbox,
   InboxItem,
+  ListInboxItemsOptions,
   Subscription,
   SubscriptionSource,
   SubscriptionStartPolicy,
@@ -624,10 +625,30 @@ export class AgentInboxStore {
     return inserted;
   }
 
-  listInboxItems(inboxId: string): InboxItem[] {
+  listInboxItems(inboxId: string, options?: ListInboxItemsOptions): InboxItem[] {
+    const includeAcked = options?.includeAcked ?? true;
+    const filters = ["inbox_id = ?"];
+    const params: Array<string | number | null> = [inboxId];
+
+    if (!includeAcked) {
+      filters.push("acked_at is null");
+    }
+
+    if (options?.afterItemId) {
+      const anchor = this.getOne(
+        "select occurred_at, item_id from inbox_items where inbox_id = ? and item_id = ?",
+        [inboxId, options.afterItemId],
+      );
+      if (!anchor) {
+        throw new Error(`unknown inbox item: ${options.afterItemId}`);
+      }
+      filters.push("((occurred_at > ?) or (occurred_at = ? and item_id > ?))");
+      params.push(String(anchor.occurred_at), String(anchor.occurred_at), String(anchor.item_id));
+    }
+
     const rows = this.getAll(
-      "select * from inbox_items where inbox_id = ? order by occurred_at asc, item_id asc",
-      [inboxId],
+      `select * from inbox_items where ${filters.join(" and ")} order by occurred_at asc, item_id asc`,
+      params,
     );
     return rows.map((row) => this.mapInboxItem(row));
   }
@@ -955,7 +976,7 @@ export class AgentInboxStore {
     return Number(row?.rowid ?? 0);
   }
 
-  private getOne(sql: string, params: unknown[] = []): Record<string, unknown> | undefined {
+  private getOne(sql: string, params: BindParams = []): Record<string, unknown> | undefined {
     const statement = this.db.prepare(sql);
     try {
       statement.bind(params);
@@ -968,7 +989,7 @@ export class AgentInboxStore {
     }
   }
 
-  private getAll(sql: string, params: unknown[] = []): Record<string, unknown>[] {
+  private getAll(sql: string, params: BindParams = []): Record<string, unknown>[] {
     const statement = this.db.prepare(sql);
     try {
       statement.bind(params);

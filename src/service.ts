@@ -8,12 +8,14 @@ import {
   DeliveryRequest,
   Inbox,
   InboxItem,
+  InboxWatchEvent,
   RegisterSourceInput,
   RegisterSubscriptionInput,
   SourcePollResult,
   Subscription,
   SubscriptionPollResult,
   SubscriptionSource,
+  WatchInboxOptions,
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { AdapterRegistry } from "./adapters";
@@ -52,12 +54,23 @@ interface ActivationPolicy {
   maxItems?: number;
 }
 
+interface InboxWatcher {
+  onItems(items: InboxItem[]): void;
+}
+
+export interface InboxWatchSession {
+  initialItems: InboxItem[];
+  start(): void;
+  close(): void;
+}
+
 export class AgentInboxService {
   private readonly backend: EventBusBackend;
   private readonly inFlightSubscriptions = new Set<string>();
   private readonly activationWindowMs: number;
   private readonly activationMaxItems: number;
   private readonly activationBuffers = new Map<string, ActivationBuffer>();
+  private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private subscriptionInterval: NodeJS.Timeout | null = null;
   private stopping = false;
 
@@ -179,8 +192,88 @@ export class AgentInboxService {
     return this.store.listInboxes().map((inbox) => inbox.inboxId);
   }
 
-  listInboxItems(inboxId: string): InboxItem[] {
-    return this.store.listInboxItems(inboxId);
+  listInboxItems(inboxId: string, options?: WatchInboxOptions): InboxItem[] {
+    return this.store.listInboxItems(inboxId, options);
+  }
+
+  watchInbox(
+    inboxId: string,
+    options: WatchInboxOptions,
+    onEvent: (event: InboxWatchEvent) => void,
+  ): InboxWatchSession {
+    const inbox = this.store.getInbox(inboxId);
+    if (!inbox) {
+      throw new Error(`unknown inbox: ${inboxId}`);
+    }
+
+    const pendingItems: InboxItem[] = [];
+    let started = false;
+    const emitItems = (items: InboxItem[]) => {
+      if (items.length === 0) {
+        return;
+      }
+      onEvent({
+        event: "items",
+        inboxId,
+        items,
+      });
+    };
+
+    const watcher: InboxWatcher = {
+      onItems: (items) => {
+        if (!started) {
+          pendingItems.push(...items);
+          return;
+        }
+        emitItems(items);
+      },
+    };
+
+    let watchers = this.inboxWatchers.get(inboxId);
+    if (!watchers) {
+      watchers = new Set();
+      this.inboxWatchers.set(inboxId, watchers);
+    }
+    watchers.add(watcher);
+
+    let initialItems: InboxItem[];
+    try {
+      initialItems = this.store.listInboxItems(inbox.inboxId, {
+        afterItemId: options.afterItemId,
+        includeAcked: options.includeAcked ?? false,
+      });
+    } catch (error) {
+      watchers.delete(watcher);
+      if (watchers.size === 0) {
+        this.inboxWatchers.delete(inboxId);
+      }
+      throw error;
+    }
+
+    const initialItemIds = new Set(initialItems.map((item) => item.itemId));
+
+    return {
+      initialItems,
+      start: () => {
+        if (started) {
+          return;
+        }
+        started = true;
+        const replayItems = pendingItems.filter((item) => !initialItemIds.has(item.itemId));
+        pendingItems.length = 0;
+        emitItems(replayItems);
+      },
+      close: () => {
+        const activeWatchers = this.inboxWatchers.get(inboxId);
+        if (!activeWatchers) {
+          return;
+        }
+        activeWatchers.delete(watcher);
+        if (activeWatchers.size === 0) {
+          this.inboxWatchers.delete(inboxId);
+        }
+      },
+    };
   }
 
   ackInboxItems(inboxId: string, itemIds: string[]): { acked: number } {
@@ -240,6 +333,7 @@ export class AgentInboxService {
       let matched = 0;
       let inboxItemsCreated = 0;
       let lastProcessedOffset: number | null = null;
+      const insertedItems: InboxItem[] = [];
       try {
         for (const event of batch.events) {
           lastProcessedOffset = event.offset;
@@ -265,6 +359,7 @@ export class AgentInboxService {
             continue;
           }
           inboxItemsCreated += 1;
+          insertedItems.push(item);
           this.enqueueActivation({
             agentId: subscription.agentId,
             inboxId: subscription.inboxId,
@@ -289,6 +384,9 @@ export class AgentInboxService {
           });
         }
       } catch (error) {
+        if (insertedItems.length > 0) {
+          this.notifyInboxWatchers(subscription.inboxId, insertedItems);
+        }
         if (lastProcessedOffset != null) {
           await this.backend.commit({
             consumerId: consumer.consumerId,
@@ -296,6 +394,10 @@ export class AgentInboxService {
           });
         }
         throw error;
+      }
+
+      if (insertedItems.length > 0) {
+        this.notifyInboxWatchers(subscription.inboxId, insertedItems);
       }
 
       if (lastProcessedOffset != null) {
@@ -387,6 +489,16 @@ export class AgentInboxService {
       } catch (error) {
         console.warn(`subscription poll failed for ${subscription.subscriptionId}:`, error);
       }
+    }
+  }
+
+  private notifyInboxWatchers(inboxId: string, items: InboxItem[]): void {
+    const watchers = this.inboxWatchers.get(inboxId);
+    if (!watchers || watchers.size === 0) {
+      return;
+    }
+    for (const watcher of watchers) {
+      watcher.onItems(items);
     }
   }
 

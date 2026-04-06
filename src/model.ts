@@ -165,3 +165,26 @@ export interface SubscriptionPollResult {
   committedOffset: number | null;
   note: string;
 }
+
+export interface ListInboxItemsOptions {
+  afterItemId?: string;
+  includeAcked?: boolean;
+}
+
+export interface WatchInboxOptions extends ListInboxItemsOptions {
+  heartbeatMs?: number;
+}
+
+export interface InboxWatchItemsEvent {
+  event: "items";
+  inboxId: string;
+  items: InboxItem[];
+}
+
+export interface InboxWatchHeartbeatEvent {
+  event: "heartbeat";
+  inboxId: string;
+  timestamp: string;
+}
+
+export type InboxWatchEvent = InboxWatchItemsEvent | InboxWatchHeartbeatEvent;

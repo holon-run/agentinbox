@@ -8,7 +8,7 @@ import { AgentInboxStore } from "../src/store";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
-import { Activation } from "../src/model";
+import { Activation, InboxWatchEvent } from "../src/model";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
   public readonly calls: Array<{ target: string | null | undefined; activation: Activation }> = [];
@@ -78,6 +78,52 @@ test("shared source can route one stream event to multiple agent inboxes", async
     await service.stop();
     assert.equal(store.listActivations().length, 2);
     assert.equal(store.listSources().length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("watchInbox receives inserted items without auto-acking them", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "watch-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: "alpha",
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    const seenEvents: InboxWatchEvent[] = [];
+    const session = service.watchInbox(subscription.inboxId, {}, (event) => {
+      seenEvents.push(event);
+    });
+
+    assert.equal(session.initialItems.length, 0);
+    session.start();
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-watch-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: { text: "watch me" },
+    });
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 1);
+    assert.equal(seenEvents.length, 1);
+    assert.equal(seenEvents[0].event, "items");
+
+    const items = service.listInboxItems(subscription.inboxId);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].ackedAt, null);
+
+    session.close();
   } finally {
     await service.stop();
     store.close();
