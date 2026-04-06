@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import initSqlJs, { type BindParams, Database, SqlJsStatic } from "sql.js";
+import initSqlJs, { Database, SqlJsStatic } from "sql.js";
 import type {
   ConsumerRecord,
   StreamEventRecord,
@@ -23,6 +23,7 @@ import {
 import { generateId, nowIso } from "./util";
 
 const SCHEMA_VERSION = 4;
+type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
   if (!value) {
@@ -976,7 +977,7 @@ export class AgentInboxStore {
     return Number(row?.rowid ?? 0);
   }
 
-  private getOne(sql: string, params: BindParams = []): Record<string, unknown> | undefined {
+  private getOne(sql: string, params: SqlBindParams = []): Record<string, unknown> | undefined {
     const statement = this.db.prepare(sql);
     try {
       statement.bind(params);
@@ -989,7 +990,7 @@ export class AgentInboxStore {
     }
   }
 
-  private getAll(sql: string, params: BindParams = []): Record<string, unknown>[] {
+  private getAll(sql: string, params: SqlBindParams = []): Record<string, unknown>[] {
     const statement = this.db.prepare(sql);
     try {
       statement.bind(params);

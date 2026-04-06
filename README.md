@@ -9,6 +9,64 @@ arrive, and delivering agent replies or updates back to external systems.
 `AgentInbox` is not an agent runtime. It is the layer between outside systems
 and local runtimes such as `Louke`.
 
+## Status
+
+`AgentInbox` is still early-stage infrastructure software.
+
+- the local control plane, inbox model, and custom source flow are implemented
+- GitHub repo, GitHub repo CI, and Feishu bot source adapters are implemented
+- the public CLI shape is stabilizing, but source adapter behavior should still
+  be treated as beta
+
+## Install
+
+Requires:
+
+- Node.js 20 or newer
+- a local `uxc` daemon if you want to use GitHub or Feishu adapters
+
+Install globally:
+
+```bash
+npm install -g @holon-run/agentinbox
+```
+
+Or run directly with `npx`:
+
+```bash
+npx @holon-run/agentinbox --help
+```
+
+If you are developing from source:
+
+```bash
+npm install
+npm run build
+node dist/src/cli.js --help
+```
+
+## Runtime Paths
+
+By default `AgentInbox` uses a local home directory at:
+
+```text
+~/.agentinbox
+```
+
+Default files:
+
+- database: `~/.agentinbox/agentinbox.sqlite`
+- socket: `~/.agentinbox/agentinbox.sock`
+
+You can override these with:
+
+- `AGENTINBOX_HOME`
+- `AGENTINBOX_SOCKET`
+- `AGENTINBOX_URL`
+- `agentinbox serve --home ...`
+- `agentinbox serve --socket ...`
+- `agentinbox serve --port ...`
+
 ## One Sentence
 
 `AgentInbox` is the shared subscription and delivery layer for local agents.
@@ -179,19 +237,12 @@ This repository now includes the first runnable `M0/M1` scaffold:
 The current implementation proves the source-ingress / event-log / inbox-delivery
 boundary with per-subscription consumer offsets.
 
-## Commands
-
-Install dependencies and build:
-
-```bash
-npm install
-npm run build
-```
+## Quick Start
 
 Start the daemon:
 
 ```bash
-node dist/src/cli.js serve
+agentinbox serve
 ```
 
 By default this listens on `~/.agentinbox/agentinbox.sock` and stores state in
@@ -200,7 +251,7 @@ By default this listens on `~/.agentinbox/agentinbox.sock` and stores state in
 Use TCP only when you explicitly want it:
 
 ```bash
-node dist/src/cli.js serve --port 4747
+agentinbox serve --port 4747
 ```
 
 All client commands accept:
@@ -211,52 +262,122 @@ All client commands accept:
 --url <http://127.0.0.1:4747>
 ```
 
-Register a shared source and subscription:
-
-```bash
-node dist/src/cli.js source add fixture demo
-node dist/src/cli.js subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
-```
-
 Create a programmable local event bus source and publish events into it:
 
 ```bash
-node dist/src/cli.js source add custom project-alpha
-node dist/src/cli.js subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
-node dist/src/cli.js source event <source_id> \
+agentinbox source add custom project-alpha
+agentinbox subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
+agentinbox source event <source_id> \
   --native-id evt-1 \
   --event message.created \
   --metadata-json '{"channel":"engineering"}' \
   --payload-json '{"text":"hello from a local producer"}'
-node dist/src/cli.js subscription poll <subscription_id>
-node dist/src/cli.js inbox read inbox_alpha
+agentinbox subscription poll <subscription_id>
+agentinbox inbox read inbox_alpha
 ```
 
-Subscriptions default to `activation_only`. For low-frequency flows, you can push the newly created inbox items directly in the activation webhook body:
+For a long-lived local consumer, keep a watch open:
 
 ```bash
-node dist/src/cli.js subscription add alpha <source_id> \
+agentinbox inbox watch inbox_alpha
+```
+
+## Source Adapters
+
+### Custom source
+
+`custom` sources let any local producer use `AgentInbox` as a lightweight local
+event bus.
+
+```bash
+agentinbox source add custom project-alpha
+agentinbox source event <source_id> --native-id evt-1 --event message.created
+```
+
+### GitHub repo
+
+`github_repo` watches the GitHub repository activity feed and is best suited for:
+
+- issues
+- issue comments
+- pull requests
+- review comments
+- mentions and collaboration activity
+
+Example:
+
+```bash
+agentinbox source add github_repo holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
+agentinbox subscription add alpha <source_id> --match-json '{"mentions":["alpha"]}'
+agentinbox source poll <source_id>
+```
+
+### GitHub repo CI
+
+`github_repo_ci` polls GitHub Actions workflow runs and is best suited for CI
+state transitions such as failures on a branch or workflow.
+
+```bash
+agentinbox source add github_repo_ci holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30,"perPage":20}'
+agentinbox subscription add alpha <source_id> --match-json '{"conclusion":"failure","headBranch":"main"}'
+agentinbox source poll <source_id>
+```
+
+### Feishu bot
+
+`feishu_bot` uses `uxc` long-connection subscriptions for inbound messages and
+`uxc` OpenAPI delivery for replies and sends.
+
+Prerequisites:
+
+- a configured Feishu credential in `uxc`
+- the required bot event subscription and IM permissions enabled in Feishu
+
+## Activations
+
+Subscriptions default to `activation_only`.
+
+For low-frequency flows, you can push the newly created inbox items directly in
+the activation webhook body:
+
+```bash
+agentinbox subscription add alpha <source_id> \
   --activation-target http://127.0.0.1:8080/webhooks/agentinbox/alpha \
   --activation-mode activation_with_items
 ```
 
-Register a GitHub repo source backed by `uxc` poll subscription:
+## CLI
+
+`help` and `version` are text-first:
 
 ```bash
-node dist/src/cli.js source add github_repo holon-run/agentinbox \
-  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
-node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions":["alpha"]}'
-node dist/src/cli.js source poll <source_id>
+agentinbox --help
+agentinbox source --help
+agentinbox help inbox
+agentinbox --version
 ```
 
-Register a GitHub repo CI source backed by GitHub Actions workflow run polling:
+Resource and control-plane commands default to JSON output.
+
+## Development
+
+Run the test suite:
 
 ```bash
-node dist/src/cli.js source add github_repo_ci holon-run/agentinbox \
-  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30,"perPage":20}'
-node dist/src/cli.js subscription add alpha <source_id> --match-json '{"conclusion":"failure","headBranch":"main"}'
-node dist/src/cli.js source poll <source_id>
+npm test
 ```
+
+Build the published CLI artifact:
+
+```bash
+npm run build
+```
+
+## License
+
+Apache-2.0
 
 Register a Feishu bot source backed by `uxc` long-connection subscription:
 

@@ -24,5 +24,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build
+        run: npm run build
+
       - name: Run tests
         run: npm test
+
+      - name: Pack dry run
+        run: npm pack --dry-run
+
+      - name: Pack tarball
+        run: npm pack --json > pack.json
+
+      - name: Smoke install packaged CLI
+        run: |
+          PACK_FILE=$(node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('pack.json','utf8')); process.stdout.write(data[0].filename)")
+          mkdir -p /tmp/agentinbox-smoke
+          cd /tmp/agentinbox-smoke
+          npm init -y
+          npm install "$GITHUB_WORKSPACE/$PACK_FILE"
+          npx agentinbox --version
+          npx agentinbox --help
