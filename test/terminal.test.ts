@@ -81,6 +81,7 @@ test("TerminalDispatcher uses osascript for iTerm2 targets", async () => {
   assert.deepEqual(calls[0].args.slice(0, 1), ["-e"]);
   assert.equal(calls[0].env?.TARGET_SESSION_ID, "4B4CB6B2-A73B-4420-94A7-BD2CA216A285");
   assert.equal(calls[0].env?.AGENT_PROMPT, "AgentInbox: hello");
+  assert.match(calls[0].args[1] ?? "", /activate/);
   assert.match(calls[0].args[1] ?? "", /select/);
   assert.match(calls[0].args[1] ?? "", /write text promptText newline NO/);
   assert.match(calls[0].args[1] ?? "", /key code 36/);

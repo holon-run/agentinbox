@@ -209,6 +209,7 @@ set targetTty to system attribute "TARGET_TTY"
 set targetSessionId to system attribute "TARGET_SESSION_ID"
 set promptText to system attribute "AGENT_PROMPT"
 tell application "iTerm2"
+  activate
   repeat with aWindow in windows
     repeat with aTab in tabs of aWindow
       repeat with aSession in sessions of aTab
