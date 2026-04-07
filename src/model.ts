@@ -2,6 +2,9 @@ export type SourceType = "fixture" | "custom" | "github_repo" | "github_repo_ci"
 
 export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
 export type ActivationMode = "activation_only" | "activation_with_items";
+export type TerminalBackend = "tmux" | "iterm2";
+export type TerminalMode = "agent_prompt";
+export type RuntimeKind = "codex" | "claude_code" | "unknown";
 
 export interface DeliveryHandle {
   provider: string;
@@ -36,11 +39,41 @@ export interface Subscription {
   inboxId: string;
   matchRules: Record<string, unknown>;
   activationTarget?: string | null;
+  terminalTargetId?: string | null;
   activationMode: ActivationMode;
   startPolicy: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
   createdAt: string;
+}
+
+export interface TerminalTarget {
+  targetId: string;
+  agentId: string;
+  runtimeKind: RuntimeKind;
+  runtimeSessionId?: string | null;
+  backend: TerminalBackend;
+  mode: TerminalMode;
+  tmuxPaneId?: string | null;
+  tty?: string | null;
+  termProgram?: string | null;
+  itermSessionId?: string | null;
+  notifyLeaseMs: number;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
+export interface TerminalDispatchState {
+  inboxId: string;
+  targetId: string;
+  status: "notified" | "dirty";
+  leaseExpiresAt: string | null;
+  pendingNewItemCount: number;
+  pendingSummary: string | null;
+  pendingSubscriptionIds: string[];
+  pendingSourceIds: string[];
+  updatedAt: string;
 }
 
 export interface InboxItem {
@@ -108,10 +141,23 @@ export interface RegisterSubscriptionInput {
   inboxId?: string;
   matchRules?: Record<string, unknown>;
   activationTarget?: string | null;
+  terminalTargetId?: string | null;
   activationMode?: ActivationMode;
   startPolicy?: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
+}
+
+export interface RegisterTerminalTargetInput {
+  backend: TerminalBackend;
+  runtimeKind?: RuntimeKind | null;
+  runtimeSessionId?: string | null;
+  mode?: TerminalMode;
+  tmuxPaneId?: string | null;
+  tty?: string | null;
+  termProgram?: string | null;
+  itermSessionId?: string | null;
+  notifyLeaseMs?: number | null;
 }
 
 export interface AppendSourceEventInput {

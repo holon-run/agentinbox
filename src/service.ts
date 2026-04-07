@@ -11,10 +11,13 @@ import {
   InboxWatchEvent,
   RegisterSourceInput,
   RegisterSubscriptionInput,
+  RegisterTerminalTargetInput,
   SourcePollResult,
   Subscription,
   SubscriptionPollResult,
   SubscriptionSource,
+  TerminalDispatchState,
+  TerminalTarget,
   WatchInboxOptions,
 } from "./model";
 import { AgentInboxStore } from "./store";
@@ -29,12 +32,16 @@ import {
 } from "./backend";
 import { generateId, nowIso } from "./util";
 import { matchSubscription } from "./matcher";
+import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
+const DEFAULT_TERMINAL_NOTIFY_LEASE_MS = 10 * 60 * 1000;
+const DEFAULT_TERMINAL_RETRY_MS = 5_000;
 const ACTIVATION_MODES = new Set<Subscription["activationMode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
+const TERMINAL_MODES = new Set<TerminalTarget["mode"]>(["agent_prompt"]);
 
 interface ActivationBuffer {
   agentId: string;
@@ -56,6 +63,19 @@ interface ActivationPolicy {
   maxItems?: number;
 }
 
+interface BufferedTerminalNotification {
+  inboxId: string;
+  terminalTargetId: string;
+  agentId: string;
+  pending: Array<{
+    subscriptionId: string;
+    sourceId: string;
+    summary: string;
+  }>;
+  timer: NodeJS.Timeout | null;
+  inFlight: boolean;
+}
+
 interface InboxWatcher {
   onItems(items: InboxItem[]): void;
 }
@@ -72,6 +92,7 @@ export class AgentInboxService {
   private readonly activationWindowMs: number;
   private readonly activationMaxItems: number;
   private readonly activationBuffers = new Map<string, ActivationBuffer>();
+  private readonly terminalBuffers = new Map<string, BufferedTerminalNotification>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private subscriptionInterval: NodeJS.Timeout | null = null;
   private stopping = false;
@@ -82,14 +103,17 @@ export class AgentInboxService {
     activationDispatcher: ActivationDispatcher = new ActivationDispatcher(),
     backend?: EventBusBackend,
     activationPolicy?: ActivationPolicy,
+    terminalDispatcher: TerminalDispatcher = new TerminalDispatcher(),
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
     this.activationWindowMs = activationPolicy?.windowMs ?? DEFAULT_ACTIVATION_WINDOW_MS;
     this.activationMaxItems = activationPolicy?.maxItems ?? DEFAULT_ACTIVATION_MAX_ITEMS;
+    this.terminalDispatcher = terminalDispatcher;
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
+  private readonly terminalDispatcher: TerminalDispatcher;
 
   async start(): Promise<void> {
     if (this.subscriptionInterval) {
@@ -98,13 +122,21 @@ export class AgentInboxService {
     this.stopping = false;
     this.subscriptionInterval = setInterval(() => {
       void this.syncAllSubscriptions();
+      void this.syncTerminalDispatchStates();
     }, 2_000);
     await this.syncAllSubscriptions();
+    await this.syncTerminalDispatchStates();
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
     for (const buffer of this.activationBuffers.values()) {
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+        buffer.timer = null;
+      }
+    }
+    for (const buffer of this.terminalBuffers.values()) {
       if (buffer.timer) {
         clearTimeout(buffer.timer);
         buffer.timer = null;
@@ -168,6 +200,9 @@ export class AgentInboxService {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
     const activationMode = normalizeActivationMode(input.activationMode);
+    const terminalTarget = input.terminalTargetId
+      ? this.getTerminalTarget(input.terminalTargetId)
+      : null;
 
     const inboxId = input.inboxId ?? defaultInboxIdForAgent(input.agentId);
     this.ensureInbox(inboxId, input.agentId);
@@ -178,6 +213,7 @@ export class AgentInboxService {
       inboxId,
       matchRules: input.matchRules ?? {},
       activationTarget: input.activationTarget ?? null,
+      terminalTargetId: terminalTarget?.targetId ?? null,
       activationMode,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
@@ -196,6 +232,75 @@ export class AgentInboxService {
       startTime: subscription.startTime ?? null,
     });
     return subscription;
+  }
+
+  registerTerminalTarget(input: RegisterTerminalTargetInput): TerminalTarget {
+    const mode = normalizeTerminalMode(input.mode);
+    validateTerminalIdentity(input);
+    const runtimeKind = input.runtimeKind ?? "unknown";
+    const agentId = assignedAgentIdFromContext({
+      runtimeKind,
+      runtimeSessionId: input.runtimeSessionId ?? null,
+      backend: input.backend,
+      tmuxPaneId: input.tmuxPaneId ?? null,
+      itermSessionId: input.itermSessionId ?? null,
+      tty: input.tty ?? null,
+    });
+
+    const now = nowIso();
+    const existing = findExistingTerminalTarget(this.store, input);
+    if (existing) {
+      return this.store.updateTerminalTargetHeartbeat(existing.targetId, {
+        updatedAt: now,
+        lastSeenAt: now,
+      });
+    }
+
+    const target: TerminalTarget = {
+      targetId: generateId("term"),
+      agentId,
+      runtimeKind,
+      runtimeSessionId: input.runtimeSessionId ?? null,
+      backend: input.backend,
+      mode,
+      tmuxPaneId: input.tmuxPaneId ?? null,
+      tty: input.tty ?? null,
+      termProgram: input.termProgram ?? null,
+      itermSessionId: input.itermSessionId ?? null,
+      notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_TERMINAL_NOTIFY_LEASE_MS,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+    };
+    this.store.insertTerminalTarget(target);
+    return target;
+  }
+
+  detectAndRegisterTerminalTarget(notifyLeaseMs?: number | null, env: NodeJS.ProcessEnv = process.env): TerminalTarget {
+    const detected = detectTerminalContext(env);
+    return this.registerTerminalTarget({
+      runtimeKind: detected.runtimeKind,
+      runtimeSessionId: detected.runtimeSessionId ?? null,
+      backend: detected.backend,
+      mode: "agent_prompt",
+      tmuxPaneId: detected.tmuxPaneId ?? null,
+      tty: detected.tty ?? null,
+      termProgram: detected.termProgram ?? null,
+      itermSessionId: detected.itermSessionId ?? null,
+      notifyLeaseMs: notifyLeaseMs ?? null,
+    });
+  }
+
+  listTerminalTargets(): TerminalTarget[] {
+    return this.store.listTerminalTargets();
+  }
+
+  getTerminalTarget(targetId: string): TerminalTarget {
+    const target = this.store.getTerminalTarget(targetId);
+    if (!target) {
+      throw new Error(`unknown terminal target: ${targetId}`);
+    }
+    return target;
   }
 
   listSubscriptions(filters?: {
@@ -235,6 +340,7 @@ export class AgentInboxService {
       subscription,
       source: this.getSource(subscription.sourceId),
       inbox: this.getInbox(subscription.inboxId),
+      terminalTarget: subscription.terminalTargetId ? this.getTerminalTarget(subscription.terminalTargetId) : null,
       consumer,
       lag: await this.backend.getConsumerLag({ consumerId: consumer.consumerId }),
     };
@@ -355,10 +461,11 @@ export class AgentInboxService {
     return {
       inbox,
       subscriptions,
+      terminalDispatchStates: this.store.listTerminalDispatchStatesForInbox(inboxId),
       itemCounts: {
-        total: this.store.listInboxItems(inboxId).length,
-        unacked: this.store.listInboxItems(inboxId, { includeAcked: false }).length,
-        acked: this.store.listInboxItems(inboxId).filter((item) => item.ackedAt != null).length,
+        total: this.store.countInboxItems(inboxId, true),
+        unacked: this.store.countInboxItems(inboxId, false),
+        acked: this.store.countInboxItems(inboxId, true) - this.store.countInboxItems(inboxId, false),
       },
     };
   }
@@ -448,12 +555,20 @@ export class AgentInboxService {
   }
 
   ackInboxItems(inboxId: string, itemIds: string[]): { acked: number } {
-    return { acked: this.store.ackItems(inboxId, itemIds, nowIso()) };
+    const acked = this.store.ackItems(inboxId, itemIds, nowIso());
+    if (acked > 0) {
+      void this.handleInboxAckEffects(inboxId);
+    }
+    return { acked };
   }
 
   ackAllInboxItems(inboxId: string): { acked: number } {
     const itemIds = this.store.listInboxItems(inboxId, { includeAcked: false }).map((item) => item.itemId);
-    return { acked: this.store.ackItems(inboxId, itemIds, nowIso()) };
+    const acked = this.store.ackItems(inboxId, itemIds, nowIso());
+    if (acked > 0) {
+      void this.handleInboxAckEffects(inboxId);
+    }
+    return { acked };
   }
 
   async pollSource(sourceId: string): Promise<SourcePollResult> {
@@ -558,6 +673,18 @@ export class AgentInboxService {
               deliveryHandle: item.deliveryHandle,
             },
           });
+          if (subscription.terminalTargetId) {
+            this.enqueueTerminalNotification({
+              agentId: subscription.agentId,
+              inboxId: subscription.inboxId,
+              terminalTargetId: subscription.terminalTargetId,
+              subscriptionId: subscription.subscriptionId,
+              sourceId: source.sourceId,
+              eventVariant: event.eventVariant,
+              sourceType: source.sourceType,
+              sourceKey: source.sourceKey,
+            });
+          }
         }
       } catch (error) {
         if (insertedItems.length > 0) {
@@ -629,6 +756,8 @@ export class AgentInboxService {
       adapters: this.adapters.status(),
       recentActivations: this.store.listActivations().slice(0, 10),
       recentDeliveries: this.store.listDeliveries().slice(0, 10),
+      terminalTargets: this.store.listTerminalTargets(),
+      terminalDispatchStates: this.store.listTerminalDispatchStates(),
     };
   }
 
@@ -668,6 +797,25 @@ export class AgentInboxService {
     }
   }
 
+  private async syncTerminalDispatchStates(): Promise<void> {
+    const now = Date.now();
+    const states = this.store.listTerminalDispatchStates();
+    for (const state of states) {
+      if (!state.leaseExpiresAt) {
+        continue;
+      }
+      const expiresAt = Date.parse(state.leaseExpiresAt);
+      if (Number.isNaN(expiresAt) || expiresAt > now) {
+        continue;
+      }
+      try {
+        await this.maybeDispatchTerminalNotification(state.inboxId, state.targetId, "lease");
+      } catch (error) {
+        console.warn(`terminal notify lease sync failed for ${state.targetId}/${state.inboxId}:`, error);
+      }
+    }
+  }
+
   private notifyInboxWatchers(inboxId: string, items: InboxItem[]): void {
     const watchers = this.inboxWatchers.get(inboxId);
     if (!watchers || watchers.size === 0) {
@@ -675,6 +823,51 @@ export class AgentInboxService {
     }
     for (const watcher of watchers) {
       watcher.onItems(items);
+    }
+  }
+
+  private enqueueTerminalNotification(input: {
+    agentId: string;
+    inboxId: string;
+    terminalTargetId: string;
+    subscriptionId: string;
+    sourceId: string;
+    eventVariant: string;
+    sourceType: string;
+    sourceKey: string;
+  }): void {
+    const key = terminalBufferKey(input.inboxId, input.terminalTargetId);
+    let buffer = this.terminalBuffers.get(key);
+    if (!buffer) {
+      buffer = {
+        inboxId: input.inboxId,
+        terminalTargetId: input.terminalTargetId,
+        agentId: input.agentId,
+        pending: [],
+        timer: null,
+        inFlight: false,
+      };
+      this.terminalBuffers.set(key, buffer);
+    }
+
+    buffer.pending.push({
+      subscriptionId: input.subscriptionId,
+      sourceId: input.sourceId,
+      summary: `${input.sourceType}:${input.sourceKey}:${input.eventVariant}`,
+    });
+
+    if (!buffer.timer && !buffer.inFlight) {
+      buffer.timer = setTimeout(() => {
+        void this.flushTerminalBuffer(key);
+      }, this.activationWindowMs);
+    }
+
+    if (buffer.pending.length >= this.activationMaxItems) {
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+        buffer.timer = null;
+      }
+      void this.flushTerminalBuffer(key);
     }
   }
 
@@ -794,6 +987,168 @@ export class AgentInboxService {
       throw error;
     }
   }
+
+  private async flushTerminalBuffer(key: string): Promise<void> {
+    const buffer = this.terminalBuffers.get(key);
+    if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
+      return;
+    }
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = null;
+    }
+
+    buffer.inFlight = true;
+    const entries = buffer.pending.splice(0, buffer.pending.length);
+    try {
+      const summary = entries[0]?.summary ?? null;
+      const state = this.store.getTerminalDispatchState(buffer.inboxId, buffer.terminalTargetId);
+      if (!state) {
+        const dispatched = await this.dispatchTerminalNotification({
+          inboxId: buffer.inboxId,
+          targetId: buffer.terminalTargetId,
+          agentId: buffer.agentId,
+          newItemCount: entries.length,
+          summary,
+          subscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
+          sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
+        });
+        if (!dispatched) {
+          this.upsertDirtyTerminalState(buffer.inboxId, buffer.terminalTargetId, entries);
+        }
+      } else {
+        this.store.upsertTerminalDispatchState({
+          inboxId: buffer.inboxId,
+          targetId: buffer.terminalTargetId,
+          status: "dirty",
+          leaseExpiresAt: state.leaseExpiresAt,
+          pendingNewItemCount: state.pendingNewItemCount + entries.length,
+          pendingSummary: state.pendingSummary ?? summary,
+          pendingSubscriptionIds: uniqueSorted([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
+          pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
+          updatedAt: nowIso(),
+        });
+      }
+
+      const hasPendingDuringFlight = buffer.pending.length > 0;
+      buffer.inFlight = false;
+      if (hasPendingDuringFlight) {
+        buffer.timer = setTimeout(() => {
+          void this.flushTerminalBuffer(key);
+        }, this.activationWindowMs);
+        return;
+      }
+      this.terminalBuffers.delete(key);
+    } catch (error) {
+      buffer.pending.unshift(...entries);
+      buffer.inFlight = false;
+      if (!this.stopping && !buffer.timer) {
+        buffer.timer = setTimeout(() => {
+          void this.flushTerminalBuffer(key);
+        }, this.activationWindowMs);
+      }
+      throw error;
+    }
+  }
+
+  private async handleInboxAckEffects(inboxId: string): Promise<void> {
+    const states = this.store.listTerminalDispatchStatesForInbox(inboxId);
+    for (const state of states) {
+      await this.maybeDispatchTerminalNotification(inboxId, state.targetId, "ack");
+    }
+  }
+
+  private async maybeDispatchTerminalNotification(
+    inboxId: string,
+    targetId: string,
+    reason: "ack" | "lease",
+  ): Promise<void> {
+    const state = this.store.getTerminalDispatchState(inboxId, targetId);
+    if (!state) {
+      return;
+    }
+    const unacked = this.store.countInboxItems(inboxId, false);
+    if (unacked === 0) {
+      this.store.deleteTerminalDispatchState(inboxId, targetId);
+      return;
+    }
+
+    if (reason === "ack" && state.status !== "dirty") {
+      return;
+    }
+
+    const dispatched = await this.dispatchTerminalNotification({
+      inboxId,
+      targetId,
+      agentId: this.getTerminalTarget(targetId).agentId,
+      newItemCount: state.pendingNewItemCount > 0 ? state.pendingNewItemCount : unacked,
+      summary: state.pendingSummary,
+      subscriptionIds: state.pendingSubscriptionIds,
+      sourceIds: state.pendingSourceIds,
+    });
+
+    if (!dispatched) {
+      this.store.upsertTerminalDispatchState({
+        ...state,
+        status: "dirty",
+        leaseExpiresAt: new Date(Date.now() + DEFAULT_TERMINAL_RETRY_MS).toISOString(),
+        updatedAt: nowIso(),
+      });
+    }
+  }
+
+  private async dispatchTerminalNotification(input: {
+    inboxId: string;
+    targetId: string;
+    agentId: string;
+    newItemCount: number;
+    summary: string | null;
+    subscriptionIds: string[];
+    sourceIds: string[];
+  }): Promise<boolean> {
+    const target = this.getTerminalTarget(input.targetId);
+    const prompt = renderAgentPrompt({
+      inboxId: input.inboxId,
+      newItemCount: input.newItemCount,
+      summary: input.summary,
+    });
+    try {
+      await this.terminalDispatcher.dispatch(target, prompt);
+      this.store.upsertTerminalDispatchState({
+        inboxId: input.inboxId,
+        targetId: input.targetId,
+        status: "notified",
+        leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
+        pendingNewItemCount: 0,
+        pendingSummary: null,
+        pendingSubscriptionIds: [],
+        pendingSourceIds: [],
+        updatedAt: nowIso(),
+      });
+      return true;
+    } catch (error) {
+      console.warn(`terminal dispatch failed for ${target.targetId}:`, error);
+      return false;
+    }
+  }
+
+  private upsertDirtyTerminalState(
+    inboxId: string,
+    targetId: string,
+    entries: Array<{ subscriptionId: string; sourceId: string; summary: string }>,
+  ): void {
+    this.store.upsertTerminalDispatchState({
+      inboxId,
+      targetId,
+      status: "dirty",
+      leaseExpiresAt: new Date(Date.now() + DEFAULT_TERMINAL_RETRY_MS).toISOString(),
+      pendingNewItemCount: entries.length,
+      pendingSummary: entries[0]?.summary ?? null,
+      pendingSubscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
+      pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
+      updatedAt: nowIso(),
+    });
+  }
 }
 
 function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {
@@ -854,4 +1209,54 @@ function normalizeActivationMode(mode: RegisterSubscriptionInput["activationMode
     throw new Error(`unsupported activation mode: ${String(mode)}`);
   }
   return resolved;
+}
+
+function normalizeTerminalMode(mode: RegisterTerminalTargetInput["mode"]): TerminalTarget["mode"] {
+  const resolved = mode ?? "agent_prompt";
+  if (!TERMINAL_MODES.has(resolved)) {
+    throw new Error(`unsupported terminal mode: ${String(mode)}`);
+  }
+  return resolved;
+}
+
+function validateTerminalIdentity(input: RegisterTerminalTargetInput): void {
+  if (input.backend === "tmux") {
+    if (!input.tmuxPaneId) {
+      throw new Error("tmux terminal target requires tmuxPaneId");
+    }
+    return;
+  }
+  if (input.backend === "iterm2") {
+    if (!input.itermSessionId && !input.tty) {
+      throw new Error("iterm2 terminal target requires itermSessionId or tty");
+    }
+    return;
+  }
+  throw new Error(`unsupported terminal backend: ${String(input.backend)}`);
+}
+
+function findExistingTerminalTarget(store: AgentInboxStore, input: RegisterTerminalTargetInput): TerminalTarget | null {
+  if (input.runtimeSessionId) {
+    return store.getTerminalTargetByRuntimeSession(input.runtimeKind ?? "unknown", input.runtimeSessionId);
+  }
+  if (input.backend === "tmux" && input.tmuxPaneId) {
+    return store.getTerminalTargetByTmuxPaneId(input.tmuxPaneId);
+  }
+  if (input.backend === "iterm2") {
+    if (input.itermSessionId) {
+      return store.getTerminalTargetByItermSessionId(input.itermSessionId);
+    }
+    if (input.tty) {
+      return store.getTerminalTargetByTty(input.tty);
+    }
+  }
+  return null;
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
+}
+
+function terminalBufferKey(inboxId: string, terminalTargetId: string): string {
+  return `${inboxId}::${terminalTargetId}`;
 }

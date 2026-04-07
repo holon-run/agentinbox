@@ -8,8 +8,9 @@ import { AgentInboxStore } from "../src/store";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
-import { Activation, InboxWatchEvent, SubscriptionSource } from "../src/model";
+import { Activation, InboxWatchEvent, SubscriptionSource, TerminalTarget } from "../src/model";
 import { nowIso } from "../src/util";
+import { TerminalDispatcher } from "../src/terminal";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
   public readonly calls: Array<{ target: string | null | undefined; activation: Activation }> = [];
@@ -19,8 +20,17 @@ class RecordingActivationDispatcher extends ActivationDispatcher {
   }
 }
 
+class RecordingTerminalDispatcher extends TerminalDispatcher {
+  public readonly calls: Array<{ target: TerminalTarget; prompt: string }> = [];
+
+  override async dispatch(target: TerminalTarget, prompt: string): Promise<void> {
+    this.calls.push({ target, prompt });
+  }
+}
+
 async function makeAsyncService(options?: {
   dispatcher?: ActivationDispatcher;
+  terminalDispatcher?: TerminalDispatcher;
   activationWindowMs?: number;
   activationMaxItems?: number;
 }): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
@@ -37,6 +47,7 @@ async function makeAsyncService(options?: {
       windowMs: options?.activationWindowMs,
       maxItems: options?.activationMaxItems,
     },
+    options?.terminalDispatcher,
   );
   return { store, service, dir };
 }
@@ -675,6 +686,133 @@ test("activation_with_items includes inbox item snapshots in the webhook body", 
     assert.equal(activation.items[0].rawPayload.text, "hello");
     assert.equal(store.listActivations().length, 1);
     assert.equal(store.listActivations()[0].items?.length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal targets can be registered and attached to subscriptions", async () => {
+  const { store, service, dir } = await makeAsyncService();
+  try {
+    const target = service.registerTerminalTarget({
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-123",
+      backend: "tmux",
+      tmuxPaneId: "%42",
+      tty: "/dev/ttys042",
+      termProgram: "tmux",
+    });
+    assert.equal(target.backend, "tmux");
+    assert.equal(target.tmuxPaneId, "%42");
+    assert.equal(target.runtimeKind, "codex");
+    assert.equal(target.runtimeSessionId, "thread-123");
+    assert.match(target.agentId, /^agent_codex_/);
+
+    const duplicate = service.registerTerminalTarget({
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-123",
+      backend: "tmux",
+      tmuxPaneId: "%42",
+      tty: "/dev/ttys042",
+      termProgram: "tmux",
+    });
+    assert.equal(duplicate.targetId, target.targetId);
+
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "project-alpha",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: target.agentId,
+      sourceId: source.sourceId,
+      terminalTargetId: target.targetId,
+    });
+    const details = await service.getSubscriptionDetails(subscription.subscriptionId);
+    assert.equal((details.terminalTarget as TerminalTarget).targetId, target.targetId);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal notifications are gated by ack and retried after lease expiry", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeAsyncService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+  });
+  try {
+    const target = service.registerTerminalTarget({
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-lease",
+      backend: "tmux",
+      tmuxPaneId: "%7",
+      notifyLeaseMs: 30,
+    });
+    const source = await service.registerSource({
+      sourceType: "fixture",
+      sourceKey: "terminal-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: target.agentId,
+      sourceId: source.sourceId,
+      terminalTargetId: target.targetId,
+      startPolicy: "earliest",
+    });
+
+    await service.start();
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(terminalDispatcher.calls[0].prompt, new RegExp(subscription.inboxId));
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.equal(store.listTerminalDispatchStatesForInbox(subscription.inboxId)[0]?.status, "dirty");
+
+    const currentItems = service.listInboxItems(subscription.inboxId, { includeAcked: false });
+    service.ackInboxItems(subscription.inboxId, [currentItems[0].itemId]);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.equal(terminalDispatcher.calls.length, 2);
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-3",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    assert.equal(terminalDispatcher.calls.length, 2);
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    assert.equal(terminalDispatcher.calls.length, 3);
   } finally {
     await service.stop();
     store.close();
