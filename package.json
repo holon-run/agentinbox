@@ -1,7 +1,7 @@
 {
   "name": "@holon-run/agentinbox",
   "version": "0.1.0",
-  "description": "Shared ingress and delivery layer for local agents.",
+  "description": "Local event subscription and delivery service for agents.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

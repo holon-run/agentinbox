@@ -1,13 +1,13 @@
 # AgentInbox
 
-`AgentInbox` is the shared ingress and delivery layer for local agents.
+`AgentInbox` is the local event subscription and delivery service for agents.
 
-It is responsible for bringing external message streams and event streams into
-the local agent environment, activating target agents when relevant signals
-arrive, and delivering agent replies or updates back to external systems.
+It connects external and local event sources, stores them as durable streams,
+routes them by subscription, and lets agents read, watch, acknowledge, and
+reply through one boundary.
 
-`AgentInbox` is not an agent runtime. It is the layer between outside systems
-and local runtimes such as `Louke`.
+`AgentInbox` is not an agent runtime. It sits between outside systems and local
+runtimes such as `Louke`.
 
 ## Status
 
@@ -69,7 +69,7 @@ You can override these with:
 
 ## One Sentence
 
-`AgentInbox` is the shared subscription and delivery layer for local agents.
+`AgentInbox` is the local event subscription and delivery service for agents.
 
 ## Product Position
 
