@@ -203,6 +203,9 @@ export class AgentInboxService {
     const terminalTarget = input.terminalTargetId
       ? this.getTerminalTarget(input.terminalTargetId)
       : null;
+    if (terminalTarget && terminalTarget.agentId !== input.agentId) {
+      throw new Error(`terminal target ${terminalTarget.targetId} does not belong to agent ${input.agentId}`);
+    }
 
     const inboxId = input.inboxId ?? defaultInboxIdForAgent(input.agentId);
     this.ensureInbox(inboxId, input.agentId);
@@ -237,6 +240,7 @@ export class AgentInboxService {
   registerTerminalTarget(input: RegisterTerminalTargetInput): TerminalTarget {
     const mode = normalizeTerminalMode(input.mode);
     validateTerminalIdentity(input);
+    validateNotifyLeaseMs(input.notifyLeaseMs);
     const runtimeKind = input.runtimeKind ?? "unknown";
     const agentId = assignedAgentIdFromContext({
       runtimeKind,
@@ -251,6 +255,12 @@ export class AgentInboxService {
     const existing = findExistingTerminalTarget(this.store, input);
     if (existing) {
       return this.store.updateTerminalTargetHeartbeat(existing.targetId, {
+        runtimeKind,
+        runtimeSessionId: input.runtimeSessionId ?? null,
+        tmuxPaneId: input.tmuxPaneId ?? null,
+        tty: input.tty ?? null,
+        termProgram: input.termProgram ?? null,
+        itermSessionId: input.itermSessionId ?? null,
         updatedAt: now,
         lastSeenAt: now,
       });
@@ -1235,9 +1245,21 @@ function validateTerminalIdentity(input: RegisterTerminalTargetInput): void {
   throw new Error(`unsupported terminal backend: ${String(input.backend)}`);
 }
 
+function validateNotifyLeaseMs(value: number | null | undefined): void {
+  if (value == null) {
+    return;
+  }
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error("notifyLeaseMs must be a positive integer");
+  }
+}
+
 function findExistingTerminalTarget(store: AgentInboxStore, input: RegisterTerminalTargetInput): TerminalTarget | null {
   if (input.runtimeSessionId) {
-    return store.getTerminalTargetByRuntimeSession(input.runtimeKind ?? "unknown", input.runtimeSessionId);
+    const target = store.getTerminalTargetByRuntimeSession(input.runtimeKind ?? "unknown", input.runtimeSessionId);
+    if (target) {
+      return target;
+    }
   }
   if (input.backend === "tmux" && input.tmuxPaneId) {
     return store.getTerminalTargetByTmuxPaneId(input.tmuxPaneId);

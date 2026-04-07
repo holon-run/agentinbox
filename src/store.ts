@@ -107,6 +107,7 @@ export class AgentInboxStore {
       this.upgradeTerminalRuntimeSchema();
     }
 
+    this.createCurrentIndexes();
     this.setUserVersion(SCHEMA_VERSION);
   }
 
@@ -747,7 +748,16 @@ export class AgentInboxStore {
 
   updateTerminalTargetHeartbeat(
     targetId: string,
-    input: { updatedAt: string; lastSeenAt: string },
+    input: {
+      updatedAt: string;
+      lastSeenAt: string;
+      runtimeKind?: TerminalTarget["runtimeKind"];
+      runtimeSessionId?: string | null;
+      tty?: string | null;
+      termProgram?: string | null;
+      itermSessionId?: string | null;
+      tmuxPaneId?: string | null;
+    },
   ): TerminalTarget {
     const target = this.getTerminalTarget(targetId);
     if (!target) {
@@ -756,10 +766,16 @@ export class AgentInboxStore {
     this.db.run(
       `
       update terminal_targets
-      set updated_at = ?, last_seen_at = ?
+      set runtime_kind = ?, runtime_session_id = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
       where target_id = ?
     `,
       [
+        input.runtimeKind ?? target.runtimeKind,
+        input.runtimeSessionId ?? target.runtimeSessionId ?? null,
+        input.tmuxPaneId ?? target.tmuxPaneId ?? null,
+        input.tty ?? target.tty ?? null,
+        input.termProgram ?? target.termProgram ?? null,
+        input.itermSessionId ?? target.itermSessionId ?? null,
         input.updatedAt,
         input.lastSeenAt,
         targetId,
