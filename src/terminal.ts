@@ -4,6 +4,13 @@ import crypto from "node:crypto";
 import { RuntimeKind, TerminalBackend, TerminalTarget } from "./model";
 
 const execFileAsync = promisify(execFile);
+type ExecFileAsyncLike = (
+  file: string,
+  args: readonly string[],
+  options?: {
+    env?: NodeJS.ProcessEnv;
+  },
+) => Promise<{ stdout: string; stderr: string }>;
 
 export interface DetectedTerminalContext {
   runtimeKind: RuntimeKind;
@@ -84,17 +91,21 @@ export function assignedAgentIdFromContext(input: {
 }
 
 export class TerminalDispatcher {
+  constructor(
+    private readonly execAsync: ExecFileAsyncLike = execFileAsync,
+  ) {}
+
   async dispatch(target: TerminalTarget, prompt: string): Promise<void> {
     if (target.backend === "tmux") {
       if (!target.tmuxPaneId) {
         throw new Error(`tmux terminal target ${target.targetId} is missing tmuxPaneId`);
       }
-      await execFileAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, prompt, "Enter"]);
+      await this.execAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, prompt, "Enter"]);
       return;
     }
 
     if (target.backend === "iterm2") {
-      await dispatchToIterm2(target, prompt);
+      await dispatchToIterm2(target, prompt, this.execAsync);
       return;
     }
 
@@ -188,7 +199,11 @@ function normalizeOptionalString(value: string | undefined | null): string | nul
   return trimmed.length > 0 ? trimmed : null;
 }
 
-async function dispatchToIterm2(target: TerminalTarget, prompt: string): Promise<void> {
+async function dispatchToIterm2(
+  target: TerminalTarget,
+  prompt: string,
+  execAsync: ExecFileAsyncLike,
+): Promise<void> {
   const script = `
 set targetTty to system attribute "TARGET_TTY"
 set targetSessionId to system attribute "TARGET_SESSION_ID"
@@ -210,7 +225,7 @@ end tell
 return "not-found"
 `;
 
-  const { stdout } = await execFileAsync("osascript", ["-e", script], {
+  const { stdout } = await execAsync("osascript", ["-e", script], {
     env: {
       ...process.env,
       TARGET_TTY: target.tty ?? "",
