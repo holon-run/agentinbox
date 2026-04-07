@@ -9,6 +9,7 @@ import { AdapterRegistry } from "../src/adapters";
 import { AppendSourceEventInput, SubscriptionSource } from "../src/model";
 import { nowIso } from "../src/util";
 import { GithubActionsUxcClient, GithubCiSourceRuntime, normalizeGithubWorkflowRunEvent } from "../src/sources/github_ci";
+import { TerminalDispatcher } from "../src/terminal";
 
 class FakeGithubActionsClient {
   public calls: Array<Record<string, unknown>> = [];
@@ -34,7 +35,10 @@ async function makeService(): Promise<{ store: AgentInboxStore; service: AgentIn
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
   return { store, service, adapters, dir };
 }
 
@@ -120,8 +124,14 @@ test("github_repo_ci source runtime appends workflow run events and subscription
       updatedAt: nowIso(),
     };
     store.insertSource(source);
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-ci-thread",
+      tmuxPaneId: "%202",
+    });
     const subscription = await service.registerSubscription({
-      agentId: "alpha",
+      agentId: agent.agent.agentId,
       sourceId: source.sourceId,
       matchRules: { conclusion: "failure", headBranch: "main" },
       startPolicy: "earliest",
@@ -167,7 +177,7 @@ test("github_repo_ci source runtime appends workflow run events and subscription
     await runtime.ensureSource(source);
     const sourceResult = await runtime.pollSource(source.sourceId);
     const subscriptionResult = await service.pollSubscription(subscription.subscriptionId);
-    const items = service.listInboxItems(subscription.inboxId);
+    const items = service.listInboxItems(subscription.agentId);
 
     assert.equal(fake.calls[0]?.operation, "get:/repos/{owner}/{repo}/actions/runs");
     assert.equal(sourceResult.appended, 2);

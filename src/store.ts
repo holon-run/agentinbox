@@ -9,22 +9,26 @@ import type {
 } from "./backend";
 import {
   Activation,
-  ActivationItem,
+  ActivationDispatchState,
+  ActivationTarget,
+  AddWebhookActivationTargetInput,
+  Agent,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
   Inbox,
   InboxItem,
   ListInboxItemsOptions,
+  RegisterAgentInput,
   Subscription,
   SubscriptionSource,
   SubscriptionStartPolicy,
-  TerminalDispatchState,
-  TerminalTarget,
+  TerminalActivationTarget,
+  WebhookActivationTarget,
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -69,249 +73,49 @@ export class AgentInboxStore {
 
   private migrate(): void {
     const userVersion = this.userVersion();
-    if (userVersion >= SCHEMA_VERSION) {
+    if (userVersion === 0) {
+      this.dropKnownTables();
       this.createCurrentSchema();
+      this.setUserVersion(SCHEMA_VERSION);
       return;
     }
+    if (userVersion !== SCHEMA_VERSION) {
+      throw new Error(
+        `unsupported database schema version ${userVersion}; delete ${this.dbPath} to recreate`,
+      );
+    }
+    this.createCurrentSchema();
+  }
 
-    if (userVersion < 1) {
-      if (this.hasLegacySchema()) {
-        this.migrateLegacySchema();
-      } else {
-        this.createCurrentSchema();
+  private dropKnownTables(): void {
+    const tables = [
+      "consumer_commits",
+      "consumers",
+      "stream_events",
+      "streams",
+      "deliveries",
+      "activations",
+      "inbox_items",
+      "activation_dispatch_states",
+      "activation_targets",
+      "subscriptions",
+      "inboxes",
+      "agents",
+      "sources",
+      "terminal_dispatch_states",
+      "terminal_targets",
+      "interests",
+    ];
+    this.inTransaction(() => {
+      for (const table of tables) {
+        if (this.tableExists(table)) {
+          this.db.exec(`drop table ${table};`);
+        }
       }
-      this.setUserVersion(1);
-    }
-
-    if (userVersion < 2 && this.needsActivationSchemaUpgrade()) {
-      this.upgradeActivationSchema();
-    }
-
-    if (userVersion < 3 && this.needsSubscriptionActivationModeUpgrade()) {
-      this.upgradeSubscriptionActivationModeSchema();
-    }
-
-    if (userVersion < 4 && this.needsActivationItemsUpgrade()) {
-      this.upgradeActivationItemsSchema();
-    }
-
-    if (userVersion < 5 && this.needsSubscriptionTerminalTargetUpgrade()) {
-      this.upgradeSubscriptionTerminalTargetSchema();
-    }
-
-    if (userVersion < 6) {
-      this.createTerminalSchema();
-    }
-
-    if (userVersion < 7 && this.needsTerminalRuntimeUpgrade()) {
-      this.upgradeTerminalRuntimeSchema();
-    }
-
-    this.createCurrentIndexes();
-    this.setUserVersion(SCHEMA_VERSION);
-  }
-
-  private hasLegacySchema(): boolean {
-    return this.tableExists("interests")
-      || this.columnExists("inbox_items", "mailbox_id")
-      || this.columnExists("activations", "mailbox_id");
-  }
-
-  private migrateLegacySchema(): void {
-    this.inTransaction(() => {
-      this.createCurrentSchemaBase();
-
-      this.db.exec(`
-        create table if not exists inbox_items_v2 (
-          item_id text primary key,
-          source_id text not null,
-          source_native_id text not null,
-          event_variant text not null,
-          inbox_id text not null,
-          occurred_at text not null,
-          metadata_json text not null,
-          raw_payload_json text not null,
-          delivery_handle_json text,
-          acked_at text,
-          unique(source_id, source_native_id, event_variant, inbox_id)
-        );
-
-        create table if not exists activations_v2 (
-          activation_id text primary key,
-          kind text not null,
-          agent_id text not null,
-          inbox_id text not null,
-          subscription_ids_json text not null,
-          source_ids_json text not null,
-          new_item_count integer not null,
-          summary text not null,
-          items_json text,
-          created_at text not null,
-          delivered_at text
-        );
-      `);
-
-      this.db.exec(`
-        insert or ignore into inboxes (inbox_id, owner_agent_id, created_at)
-        select mailbox_id, min(agent_id), min(created_at)
-        from interests
-        group by mailbox_id;
-
-        insert or ignore into subscriptions (
-          subscription_id, agent_id, source_id, inbox_id, match_rules_json,
-          activation_target, activation_mode, start_policy, start_offset, start_time, created_at
-        )
-        select
-          interest_id, agent_id, source_id, mailbox_id, match_rules_json,
-          activation_target, 'activation_only', 'latest', null, null, created_at
-        from interests;
-
-        insert or ignore into inbox_items_v2 (
-          item_id, source_id, source_native_id, event_variant, inbox_id, occurred_at,
-          metadata_json, raw_payload_json, delivery_handle_json, acked_at
-        )
-        select
-          item_id, source_id, source_native_id, event_variant, mailbox_id, occurred_at,
-          metadata_json, raw_payload_json, delivery_handle_json, acked_at
-        from inbox_items;
-
-        insert or ignore into activations_v2 (
-          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
-        )
-        select
-          activation_id, 'agentinbox.activation', agent_id, mailbox_id, '[]', '[]', new_item_count, summary, null, created_at, delivered_at
-        from activations;
-
-        insert or ignore into streams (stream_id, source_id, stream_key, backend, created_at)
-        select
-          'stream_' || source_id,
-          source_id,
-          source_type || ':' || source_key,
-          'sqlite',
-          created_at
-        from sources;
-
-        insert or ignore into consumers (
-          consumer_id, stream_id, subscription_id, consumer_key, start_policy,
-          start_offset, start_time, next_offset, created_at, updated_at
-        )
-        select
-          'consumer_' || subscription_id,
-          'stream_' || source_id,
-          subscription_id,
-          'subscription:' || subscription_id,
-          'latest',
-          null,
-          null,
-          1,
-          created_at,
-          created_at
-        from subscriptions;
-      `);
-
-      if (this.tableExists("interests")) {
-        this.db.exec("drop table interests;");
-      }
-      if (this.tableExists("inbox_items")) {
-        this.db.exec("drop table inbox_items;");
-      }
-      if (this.tableExists("activations")) {
-        this.db.exec("drop table activations;");
-      }
-
-      this.db.exec(`
-        alter table inbox_items_v2 rename to inbox_items;
-        alter table activations_v2 rename to activations;
-      `);
-
-      this.createCurrentIndexes();
-    });
-  }
-
-  private needsActivationSchemaUpgrade(): boolean {
-    return !this.columnExists("activations", "kind")
-      || !this.columnExists("activations", "subscription_ids_json")
-      || !this.columnExists("activations", "source_ids_json");
-  }
-
-  private needsSubscriptionActivationModeUpgrade(): boolean {
-    return !this.columnExists("subscriptions", "activation_mode");
-  }
-
-  private needsActivationItemsUpgrade(): boolean {
-    return !this.columnExists("activations", "items_json");
-  }
-
-  private needsSubscriptionTerminalTargetUpgrade(): boolean {
-    return !this.columnExists("subscriptions", "terminal_target_id");
-  }
-
-  private upgradeActivationSchema(): void {
-    this.inTransaction(() => {
-      this.db.exec(`
-        create table if not exists activations_v3 (
-          activation_id text primary key,
-          kind text not null,
-          agent_id text not null,
-          inbox_id text not null,
-          subscription_ids_json text not null,
-          source_ids_json text not null,
-          new_item_count integer not null,
-          summary text not null,
-          items_json text,
-          created_at text not null,
-          delivered_at text
-        );
-      `);
-
-      this.db.exec(`
-        insert or ignore into activations_v3 (
-          activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
-        )
-        select
-          activation_id,
-          'agentinbox.activation',
-          agent_id,
-          inbox_id,
-          '[]',
-          '[]',
-          new_item_count,
-          summary,
-          null,
-          created_at,
-          delivered_at
-        from activations;
-      `);
-
-      this.db.exec("drop table activations;");
-      this.db.exec("alter table activations_v3 rename to activations;");
-    });
-  }
-
-  private upgradeSubscriptionActivationModeSchema(): void {
-    this.inTransaction(() => {
-      this.db.exec("alter table subscriptions add column activation_mode text not null default 'activation_only';");
-    });
-  }
-
-  private upgradeActivationItemsSchema(): void {
-    this.inTransaction(() => {
-      this.db.exec("alter table activations add column items_json text;");
-    });
-  }
-
-  private upgradeSubscriptionTerminalTargetSchema(): void {
-    this.inTransaction(() => {
-      this.db.exec("alter table subscriptions add column terminal_target_id text;");
     });
   }
 
   private createCurrentSchema(): void {
-    this.createCurrentSchemaBase();
-    this.createCurrentIndexes();
-  }
-
-  private createCurrentSchemaBase(): void {
     this.db.exec(`
       create table if not exists sources (
         source_id text primary key,
@@ -326,9 +130,18 @@ export class AgentInboxStore {
         unique(source_type, source_key)
       );
 
+      create table if not exists agents (
+        agent_id text primary key,
+        runtime_kind text not null,
+        runtime_session_id text,
+        created_at text not null,
+        updated_at text not null,
+        last_seen_at text not null
+      );
+
       create table if not exists inboxes (
         inbox_id text primary key,
-        owner_agent_id text not null,
+        owner_agent_id text not null unique,
         created_at text not null
       );
 
@@ -336,15 +149,43 @@ export class AgentInboxStore {
         subscription_id text primary key,
         agent_id text not null,
         source_id text not null,
-        inbox_id text not null,
         match_rules_json text not null,
-        activation_target text,
-        terminal_target_id text,
-        activation_mode text not null,
         start_policy text not null,
         start_offset integer,
         start_time text,
         created_at text not null
+      );
+
+      create table if not exists activation_targets (
+        target_id text primary key,
+        agent_id text not null,
+        kind text not null,
+        mode text not null,
+        notify_lease_ms integer not null,
+        url text,
+        runtime_kind text,
+        runtime_session_id text,
+        backend text,
+        tmux_pane_id text,
+        tty text,
+        term_program text,
+        iterm_session_id text,
+        created_at text not null,
+        updated_at text not null,
+        last_seen_at text not null
+      );
+
+      create table if not exists activation_dispatch_states (
+        agent_id text not null,
+        target_id text not null,
+        status text not null,
+        lease_expires_at text,
+        pending_new_item_count integer not null,
+        pending_summary text,
+        pending_subscription_ids_json text not null,
+        pending_source_ids_json text not null,
+        updated_at text not null,
+        primary key (agent_id, target_id)
       );
 
       create table if not exists inbox_items (
@@ -366,6 +207,8 @@ export class AgentInboxStore {
         kind text not null,
         agent_id text not null,
         inbox_id text not null,
+        target_id text not null,
+        target_kind text not null,
         subscription_ids_json text not null,
         source_ids_json text not null,
         new_item_count integer not null,
@@ -431,62 +274,22 @@ export class AgentInboxStore {
         committed_offset integer not null,
         committed_at text not null
       );
-    `);
-    this.createTerminalSchema();
-  }
 
-  private createTerminalSchema(): void {
-    this.db.exec(`
-      create table if not exists terminal_targets (
-        target_id text primary key,
-        agent_id text not null,
-        runtime_kind text not null default 'unknown',
-        runtime_session_id text,
-        backend text not null,
-        mode text not null,
-        tmux_pane_id text,
-        tty text,
-        term_program text,
-        iterm_session_id text,
-        notify_lease_ms integer not null,
-        created_at text not null,
-        updated_at text not null,
-        last_seen_at text not null
-      );
+      create unique index if not exists idx_activation_targets_terminal_tmux
+        on activation_targets(tmux_pane_id)
+        where kind = 'terminal' and tmux_pane_id is not null;
 
-      create table if not exists terminal_dispatch_states (
-        inbox_id text not null,
-        target_id text not null,
-        status text not null,
-        lease_expires_at text,
-        pending_new_item_count integer not null,
-        pending_summary text,
-        pending_subscription_ids_json text not null,
-        pending_source_ids_json text not null,
-        updated_at text not null,
-        primary key (inbox_id, target_id)
-      );
-    `);
-  }
+      create unique index if not exists idx_activation_targets_terminal_iterm
+        on activation_targets(iterm_session_id)
+        where kind = 'terminal' and iterm_session_id is not null;
 
-  private needsTerminalRuntimeUpgrade(): boolean {
-    return !this.columnExists("terminal_targets", "runtime_kind")
-      || !this.columnExists("terminal_targets", "runtime_session_id");
-  }
+      create unique index if not exists idx_activation_targets_runtime_session
+        on activation_targets(runtime_kind, runtime_session_id)
+        where kind = 'terminal' and runtime_session_id is not null;
 
-  private upgradeTerminalRuntimeSchema(): void {
-    this.inTransaction(() => {
-      if (!this.columnExists("terminal_targets", "runtime_kind")) {
-        this.db.exec("alter table terminal_targets add column runtime_kind text not null default 'unknown';");
-      }
-      if (!this.columnExists("terminal_targets", "runtime_session_id")) {
-        this.db.exec("alter table terminal_targets add column runtime_session_id text;");
-      }
-    });
-  }
+      create index if not exists idx_activation_dispatch_states_target
+        on activation_dispatch_states(target_id, lease_expires_at);
 
-  private createCurrentIndexes(): void {
-    this.db.exec(`
       create index if not exists idx_stream_events_stream_offset
         on stream_events(stream_id, offset);
 
@@ -498,21 +301,6 @@ export class AgentInboxStore {
 
       create index if not exists idx_consumer_commits_consumer
         on consumer_commits(consumer_id, committed_offset);
-
-      create unique index if not exists idx_terminal_targets_tmux_pane
-        on terminal_targets(tmux_pane_id)
-        where tmux_pane_id is not null;
-
-      create unique index if not exists idx_terminal_targets_iterm_session
-        on terminal_targets(iterm_session_id)
-        where iterm_session_id is not null;
-
-      create unique index if not exists idx_terminal_targets_runtime_session
-        on terminal_targets(runtime_kind, runtime_session_id)
-        where runtime_session_id is not null;
-
-      create index if not exists idx_terminal_dispatch_states_target
-        on terminal_dispatch_states(target_id, lease_expires_at);
     `);
   }
 
@@ -550,14 +338,6 @@ export class AgentInboxStore {
       [name],
     );
     return Boolean(row);
-  }
-
-  private columnExists(tableName: string, columnName: string): boolean {
-    if (!this.tableExists(tableName)) {
-      return false;
-    }
-    const rows = this.getAll(`pragma table_info(${tableName});`);
-    return rows.some((row) => String(row.name) === columnName);
   }
 
   getSourceByKey(sourceType: string, sourceKey: string): SubscriptionSource | null {
@@ -625,17 +405,72 @@ export class AgentInboxStore {
     this.persist();
   }
 
+  getAgent(agentId: string): Agent | null {
+    const row = this.getOne("select * from agents where agent_id = ?", [agentId]);
+    return row ? this.mapAgent(row) : null;
+  }
+
+  insertAgent(agent: Agent): void {
+    this.db.run(
+      `
+      insert into agents (
+        agent_id, runtime_kind, runtime_session_id, created_at, updated_at, last_seen_at
+      ) values (?, ?, ?, ?, ?, ?)
+    `,
+      [
+        agent.agentId,
+        agent.runtimeKind,
+        agent.runtimeSessionId ?? null,
+        agent.createdAt,
+        agent.updatedAt,
+        agent.lastSeenAt,
+      ],
+    );
+    this.persist();
+  }
+
+  updateAgent(agentId: string, input: {
+    runtimeKind: Agent["runtimeKind"];
+    runtimeSessionId?: string | null;
+    updatedAt: string;
+    lastSeenAt: string;
+  }): Agent {
+    this.db.run(
+      `
+      update agents
+      set runtime_kind = ?, runtime_session_id = ?, updated_at = ?, last_seen_at = ?
+      where agent_id = ?
+    `,
+      [
+        input.runtimeKind,
+        input.runtimeSessionId ?? null,
+        input.updatedAt,
+        input.lastSeenAt,
+        agentId,
+      ],
+    );
+    this.persist();
+    return this.getAgent(agentId)!;
+  }
+
+  listAgents(): Agent[] {
+    const rows = this.getAll("select * from agents order by created_at asc");
+    return rows.map((row) => this.mapAgent(row));
+  }
+
   getInbox(inboxId: string): Inbox | null {
     const row = this.getOne("select * from inboxes where inbox_id = ?", [inboxId]);
     return row ? this.mapInbox(row) : null;
   }
 
+  getInboxByAgentId(agentId: string): Inbox | null {
+    const row = this.getOne("select * from inboxes where owner_agent_id = ?", [agentId]);
+    return row ? this.mapInbox(row) : null;
+  }
+
   insertInbox(inbox: Inbox): void {
     this.db.run(
-      `
-      insert into inboxes (inbox_id, owner_agent_id, created_at)
-      values (?, ?, ?)
-    `,
+      "insert into inboxes (inbox_id, owner_agent_id, created_at) values (?, ?, ?)",
       [inbox.inboxId, inbox.ownerAgentId, inbox.createdAt],
     );
     this.persist();
@@ -655,19 +490,14 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into subscriptions (
-        subscription_id, agent_id, source_id, inbox_id, match_rules_json,
-        activation_target, terminal_target_id, activation_mode, start_policy, start_offset, start_time, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subscription_id, agent_id, source_id, match_rules_json, start_policy, start_offset, start_time, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         subscription.subscriptionId,
         subscription.agentId,
         subscription.sourceId,
-        subscription.inboxId,
         JSON.stringify(subscription.matchRules),
-        subscription.activationTarget ?? null,
-        subscription.terminalTargetId ?? null,
-        subscription.activationMode,
         subscription.startPolicy,
         subscription.startOffset ?? null,
         subscription.startTime ?? null,
@@ -690,135 +520,195 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapSubscription(row));
   }
 
-  getTerminalTarget(targetId: string): TerminalTarget | null {
-    const row = this.getOne("select * from terminal_targets where target_id = ?", [targetId]);
-    return row ? this.mapTerminalTarget(row) : null;
+  listSubscriptionsForAgent(agentId: string): Subscription[] {
+    const rows = this.getAll(
+      "select * from subscriptions where agent_id = ? order by created_at asc",
+      [agentId],
+    );
+    return rows.map((row) => this.mapSubscription(row));
   }
 
-  getTerminalTargetByTmuxPaneId(tmuxPaneId: string): TerminalTarget | null {
-    const row = this.getOne("select * from terminal_targets where tmux_pane_id = ?", [tmuxPaneId]);
-    return row ? this.mapTerminalTarget(row) : null;
+  getActivationTarget(targetId: string): ActivationTarget | null {
+    const row = this.getOne("select * from activation_targets where target_id = ?", [targetId]);
+    return row ? this.mapActivationTarget(row) : null;
   }
 
-  getTerminalTargetByItermSessionId(itermSessionId: string): TerminalTarget | null {
-    const row = this.getOne("select * from terminal_targets where iterm_session_id = ?", [itermSessionId]);
-    return row ? this.mapTerminalTarget(row) : null;
-  }
-
-  getTerminalTargetByTty(tty: string): TerminalTarget | null {
-    const row = this.getOne("select * from terminal_targets where tty = ?", [tty]);
-    return row ? this.mapTerminalTarget(row) : null;
-  }
-
-  getTerminalTargetByRuntimeSession(runtimeKind: string, runtimeSessionId: string): TerminalTarget | null {
+  getTerminalActivationTargetByTmuxPaneId(tmuxPaneId: string): TerminalActivationTarget | null {
     const row = this.getOne(
-      "select * from terminal_targets where runtime_kind = ? and runtime_session_id = ?",
+      "select * from activation_targets where kind = 'terminal' and tmux_pane_id = ?",
+      [tmuxPaneId],
+    );
+    const target = row ? this.mapActivationTarget(row) : null;
+    return target?.kind === "terminal" ? target : null;
+  }
+
+  getTerminalActivationTargetByItermSessionId(itermSessionId: string): TerminalActivationTarget | null {
+    const row = this.getOne(
+      "select * from activation_targets where kind = 'terminal' and iterm_session_id = ?",
+      [itermSessionId],
+    );
+    const target = row ? this.mapActivationTarget(row) : null;
+    return target?.kind === "terminal" ? target : null;
+  }
+
+  getTerminalActivationTargetByTty(tty: string): TerminalActivationTarget | null {
+    const row = this.getOne(
+      "select * from activation_targets where kind = 'terminal' and tty = ?",
+      [tty],
+    );
+    const target = row ? this.mapActivationTarget(row) : null;
+    return target?.kind === "terminal" ? target : null;
+  }
+
+  getTerminalActivationTargetByRuntimeSession(runtimeKind: string, runtimeSessionId: string): TerminalActivationTarget | null {
+    const row = this.getOne(
+      "select * from activation_targets where kind = 'terminal' and runtime_kind = ? and runtime_session_id = ?",
       [runtimeKind, runtimeSessionId],
     );
-    return row ? this.mapTerminalTarget(row) : null;
+    const target = row ? this.mapActivationTarget(row) : null;
+    return target?.kind === "terminal" ? target : null;
   }
 
-  insertTerminalTarget(target: TerminalTarget): void {
-    this.db.run(
-      `
-      insert into terminal_targets (
-        target_id, agent_id, runtime_kind, runtime_session_id, backend, mode, tmux_pane_id, tty, term_program, iterm_session_id,
-        notify_lease_ms, created_at, updated_at, last_seen_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
-        target.targetId,
-        target.agentId,
-        target.runtimeKind,
-        target.runtimeSessionId ?? null,
-        target.backend,
-        target.mode,
-        target.tmuxPaneId ?? null,
-        target.tty ?? null,
-        target.termProgram ?? null,
-        target.itermSessionId ?? null,
-        target.notifyLeaseMs,
-        target.createdAt,
-        target.updatedAt,
-        target.lastSeenAt,
-      ],
-    );
+  insertActivationTarget(target: ActivationTarget): void {
+    if (target.kind === "webhook") {
+      this.db.run(
+        `
+        insert into activation_targets (
+          target_id, agent_id, kind, mode, notify_lease_ms, url, created_at, updated_at, last_seen_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          target.targetId,
+          target.agentId,
+          target.kind,
+          target.mode,
+          target.notifyLeaseMs,
+          target.url,
+          target.createdAt,
+          target.updatedAt,
+          target.lastSeenAt,
+        ],
+      );
+    } else {
+      this.db.run(
+        `
+        insert into activation_targets (
+          target_id, agent_id, kind, mode, notify_lease_ms,
+          runtime_kind, runtime_session_id, backend, tmux_pane_id, tty, term_program, iterm_session_id,
+          created_at, updated_at, last_seen_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          target.targetId,
+          target.agentId,
+          target.kind,
+          target.mode,
+          target.notifyLeaseMs,
+          target.runtimeKind,
+          target.runtimeSessionId ?? null,
+          target.backend,
+          target.tmuxPaneId ?? null,
+          target.tty ?? null,
+          target.termProgram ?? null,
+          target.itermSessionId ?? null,
+          target.createdAt,
+          target.updatedAt,
+          target.lastSeenAt,
+        ],
+      );
+    }
     this.persist();
   }
 
-  updateTerminalTargetHeartbeat(
+  updateTerminalActivationTargetHeartbeat(
     targetId: string,
     input: {
-      updatedAt: string;
-      lastSeenAt: string;
-      runtimeKind?: TerminalTarget["runtimeKind"];
+      runtimeKind: TerminalActivationTarget["runtimeKind"];
       runtimeSessionId?: string | null;
+      tmuxPaneId?: string | null;
       tty?: string | null;
       termProgram?: string | null;
       itermSessionId?: string | null;
-      tmuxPaneId?: string | null;
+      updatedAt: string;
+      lastSeenAt: string;
     },
-  ): TerminalTarget {
-    const target = this.getTerminalTarget(targetId);
-    if (!target) {
-      throw new Error(`unknown terminal target: ${targetId}`);
-    }
+  ): TerminalActivationTarget {
     this.db.run(
       `
-      update terminal_targets
+      update activation_targets
       set runtime_kind = ?, runtime_session_id = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
-      where target_id = ?
+      where target_id = ? and kind = 'terminal'
     `,
       [
-        input.runtimeKind ?? target.runtimeKind,
-        input.runtimeSessionId ?? target.runtimeSessionId ?? null,
-        input.tmuxPaneId ?? target.tmuxPaneId ?? null,
-        input.tty ?? target.tty ?? null,
-        input.termProgram ?? target.termProgram ?? null,
-        input.itermSessionId ?? target.itermSessionId ?? null,
+        input.runtimeKind,
+        input.runtimeSessionId ?? null,
+        input.tmuxPaneId ?? null,
+        input.tty ?? null,
+        input.termProgram ?? null,
+        input.itermSessionId ?? null,
         input.updatedAt,
         input.lastSeenAt,
         targetId,
       ],
     );
     this.persist();
-    return this.getTerminalTarget(targetId)!;
+    const target = this.getActivationTarget(targetId);
+    if (!target || target.kind !== "terminal") {
+      throw new Error(`unknown terminal activation target: ${targetId}`);
+    }
+    return target;
   }
 
-  listTerminalTargets(): TerminalTarget[] {
-    const rows = this.getAll("select * from terminal_targets order by created_at asc");
-    return rows.map((row) => this.mapTerminalTarget(row));
+  listActivationTargets(): ActivationTarget[] {
+    const rows = this.getAll("select * from activation_targets order by created_at asc");
+    return rows.map((row) => this.mapActivationTarget(row));
   }
 
-  getTerminalDispatchState(inboxId: string, targetId: string): TerminalDispatchState | null {
-    const row = this.getOne(
-      "select * from terminal_dispatch_states where inbox_id = ? and target_id = ?",
-      [inboxId, targetId],
-    );
-    return row ? this.mapTerminalDispatchState(row) : null;
-  }
-
-  listTerminalDispatchStates(): TerminalDispatchState[] {
-    const rows = this.getAll("select * from terminal_dispatch_states order by updated_at asc");
-    return rows.map((row) => this.mapTerminalDispatchState(row));
-  }
-
-  listTerminalDispatchStatesForInbox(inboxId: string): TerminalDispatchState[] {
+  listActivationTargetsForAgent(agentId: string): ActivationTarget[] {
     const rows = this.getAll(
-      "select * from terminal_dispatch_states where inbox_id = ? order by updated_at asc",
-      [inboxId],
+      "select * from activation_targets where agent_id = ? order by created_at asc",
+      [agentId],
     );
-    return rows.map((row) => this.mapTerminalDispatchState(row));
+    return rows.map((row) => this.mapActivationTarget(row));
   }
 
-  upsertTerminalDispatchState(state: TerminalDispatchState): void {
+  deleteActivationTarget(agentId: string, targetId: string): void {
+    this.inTransaction(() => {
+      this.db.run("delete from activation_dispatch_states where agent_id = ? and target_id = ?", [agentId, targetId]);
+      this.db.run("delete from activation_targets where agent_id = ? and target_id = ?", [agentId, targetId]);
+    });
+    this.persist();
+  }
+
+  getActivationDispatchState(agentId: string, targetId: string): ActivationDispatchState | null {
+    const row = this.getOne(
+      "select * from activation_dispatch_states where agent_id = ? and target_id = ?",
+      [agentId, targetId],
+    );
+    return row ? this.mapActivationDispatchState(row) : null;
+  }
+
+  listActivationDispatchStates(): ActivationDispatchState[] {
+    const rows = this.getAll("select * from activation_dispatch_states order by updated_at asc");
+    return rows.map((row) => this.mapActivationDispatchState(row));
+  }
+
+  listActivationDispatchStatesForAgent(agentId: string): ActivationDispatchState[] {
+    const rows = this.getAll(
+      "select * from activation_dispatch_states where agent_id = ? order by updated_at asc",
+      [agentId],
+    );
+    return rows.map((row) => this.mapActivationDispatchState(row));
+  }
+
+  upsertActivationDispatchState(state: ActivationDispatchState): void {
     this.db.run(
       `
-      insert into terminal_dispatch_states (
-        inbox_id, target_id, status, lease_expires_at, pending_new_item_count, pending_summary,
+      insert into activation_dispatch_states (
+        agent_id, target_id, status, lease_expires_at, pending_new_item_count, pending_summary,
         pending_subscription_ids_json, pending_source_ids_json, updated_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      on conflict(inbox_id, target_id) do update set
+      on conflict(agent_id, target_id) do update set
         status = excluded.status,
         lease_expires_at = excluded.lease_expires_at,
         pending_new_item_count = excluded.pending_new_item_count,
@@ -828,7 +718,7 @@ export class AgentInboxStore {
         updated_at = excluded.updated_at
     `,
       [
-        state.inboxId,
+        state.agentId,
         state.targetId,
         state.status,
         state.leaseExpiresAt ?? null,
@@ -842,10 +732,10 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  deleteTerminalDispatchState(inboxId: string, targetId: string): void {
+  deleteActivationDispatchState(agentId: string, targetId: string): void {
     this.db.run(
-      "delete from terminal_dispatch_states where inbox_id = ? and target_id = ?",
-      [inboxId, targetId],
+      "delete from activation_dispatch_states where agent_id = ? and target_id = ?",
+      [agentId, targetId],
     );
     this.persist();
   }
@@ -910,7 +800,6 @@ export class AgentInboxStore {
   ackItems(inboxId: string, itemIds: string[], ackedAt: string): number {
     let changes = 0;
     for (const itemId of itemIds) {
-      const before = this.changes();
       this.db.run(
         `
         update inbox_items
@@ -919,8 +808,7 @@ export class AgentInboxStore {
       `,
         [ackedAt, inboxId, itemId],
       );
-      const after = this.changes();
-      changes += after - before;
+      changes += this.changes();
     }
     if (changes > 0) {
       this.persist();
@@ -945,14 +833,17 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into activations (
-        activation_id, kind, agent_id, inbox_id, subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        activation_id, kind, agent_id, inbox_id, target_id, target_kind,
+        subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         activation.activationId,
         activation.kind,
         activation.agentId,
         activation.inboxId,
+        activation.targetId,
+        activation.targetKind,
         JSON.stringify(activation.subscriptionIds),
         JSON.stringify(activation.sourceIds),
         activation.newItemCount,
@@ -1001,10 +892,7 @@ export class AgentInboxStore {
 
   insertStream(stream: StreamRecord): void {
     this.db.run(
-      `
-      insert into streams (stream_id, source_id, stream_key, backend, created_at)
-      values (?, ?, ?, ?, ?)
-    `,
+      "insert into streams (stream_id, source_id, stream_key, backend, created_at) values (?, ?, ?, ?, ?)",
       [stream.streamId, stream.sourceId, stream.streamKey, stream.backend, stream.createdAt],
     );
     this.persist();
@@ -1025,10 +913,7 @@ export class AgentInboxStore {
     return row ? this.mapStream(row) : null;
   }
 
-  insertStreamEvent(
-    streamId: string,
-    event: AppendSourceEventInput,
-  ): AppendSourceEventResult {
+  insertStreamEvent(streamId: string, event: AppendSourceEventInput): AppendSourceEventResult {
     const before = this.changes();
     this.db.run(
       `
@@ -1087,9 +972,7 @@ export class AgentInboxStore {
     return {
       streamId,
       eventCount: Number(row?.event_count ?? 0),
-      highWatermarkOffset: row?.high_watermark_offset != null
-        ? Number(row.high_watermark_offset)
-        : null,
+      highWatermarkOffset: row?.high_watermark_offset != null ? Number(row.high_watermark_offset) : null,
     };
   }
 
@@ -1154,11 +1037,7 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapConsumer(row));
   }
 
-  updateConsumerOffset(
-    consumerId: string,
-    nextOffset: number,
-    committedOffset: number,
-  ): ConsumerRecord {
+  updateConsumerOffset(consumerId: string, nextOffset: number, committedOffset: number): ConsumerRecord {
     const consumer = this.getConsumer(consumerId);
     if (!consumer) {
       throw new Error(`unknown consumer: ${consumerId}`);
@@ -1166,11 +1045,7 @@ export class AgentInboxStore {
     const updatedAt = nowIso();
     this.inTransaction(() => {
       this.db.run(
-        `
-        update consumers
-        set next_offset = ?, updated_at = ?
-        where consumer_id = ?
-      `,
+        "update consumers set next_offset = ?, updated_at = ? where consumer_id = ?",
         [nextOffset, updatedAt, consumerId],
       );
       this.db.run(
@@ -1217,16 +1092,17 @@ export class AgentInboxStore {
   getCounts(): Record<string, number> {
     return {
       sources: this.count("sources"),
+      agents: this.count("agents"),
       subscriptions: this.count("subscriptions"),
       inboxes: this.count("inboxes"),
+      activationTargets: this.count("activation_targets"),
+      activationDispatchStates: this.count("activation_dispatch_states"),
       streamEvents: this.count("stream_events"),
       consumers: this.count("consumers"),
       inboxItems: this.count("inbox_items"),
       pendingInboxItems: this.count("inbox_items where acked_at is null"),
       activations: this.count("activations"),
       deliveries: this.count("deliveries"),
-      terminalTargets: this.count("terminal_targets"),
-      terminalDispatchStates: this.count("terminal_dispatch_states"),
     };
   }
 
@@ -1286,6 +1162,17 @@ export class AgentInboxStore {
     };
   }
 
+  private mapAgent(row: Record<string, unknown>): Agent {
+    return {
+      agentId: String(row.agent_id),
+      runtimeKind: row.runtime_kind as Agent["runtimeKind"],
+      runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      lastSeenAt: String(row.last_seen_at),
+    };
+  }
+
   private mapInbox(row: Record<string, unknown>): Inbox {
     return {
       inboxId: String(row.inbox_id),
@@ -1299,15 +1186,62 @@ export class AgentInboxStore {
       subscriptionId: String(row.subscription_id),
       agentId: String(row.agent_id),
       sourceId: String(row.source_id),
-      inboxId: String(row.inbox_id),
       matchRules: parseJson<Record<string, unknown>>(row.match_rules_json as string),
-      activationTarget: row.activation_target ? String(row.activation_target) : null,
-      terminalTargetId: row.terminal_target_id ? String(row.terminal_target_id) : null,
-      activationMode: (row.activation_mode ? String(row.activation_mode) : "activation_only") as Subscription["activationMode"],
       startPolicy: row.start_policy as SubscriptionStartPolicy,
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
       startTime: row.start_time ? String(row.start_time) : null,
       createdAt: String(row.created_at),
+    };
+  }
+
+  private mapActivationTarget(row: Record<string, unknown>): ActivationTarget {
+    if (String(row.kind) === "webhook") {
+      const url = typeof row.url === "string" && row.url.trim().length > 0 ? row.url.trim() : null;
+      if (!url) {
+        throw new Error(`invalid webhook activation target: ${String(row.target_id)}`);
+      }
+      return {
+        targetId: String(row.target_id),
+        agentId: String(row.agent_id),
+        kind: "webhook",
+        mode: row.mode as WebhookActivationTarget["mode"],
+        url,
+        notifyLeaseMs: Number(row.notify_lease_ms),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+        lastSeenAt: String(row.last_seen_at),
+      };
+    }
+    return {
+      targetId: String(row.target_id),
+      agentId: String(row.agent_id),
+      kind: "terminal",
+      mode: row.mode as TerminalActivationTarget["mode"],
+      notifyLeaseMs: Number(row.notify_lease_ms),
+      runtimeKind: (row.runtime_kind ? String(row.runtime_kind) : "unknown") as TerminalActivationTarget["runtimeKind"],
+      runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
+      backend: row.backend as TerminalActivationTarget["backend"],
+      tmuxPaneId: row.tmux_pane_id ? String(row.tmux_pane_id) : null,
+      tty: row.tty ? String(row.tty) : null,
+      termProgram: row.term_program ? String(row.term_program) : null,
+      itermSessionId: row.iterm_session_id ? String(row.iterm_session_id) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      lastSeenAt: String(row.last_seen_at),
+    };
+  }
+
+  private mapActivationDispatchState(row: Record<string, unknown>): ActivationDispatchState {
+    return {
+      agentId: String(row.agent_id),
+      targetId: String(row.target_id),
+      status: row.status as ActivationDispatchState["status"],
+      leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
+      pendingNewItemCount: Number(row.pending_new_item_count),
+      pendingSummary: row.pending_summary ? String(row.pending_summary) : null,
+      pendingSubscriptionIds: parseJson<string[]>(row.pending_subscription_ids_json as string),
+      pendingSourceIds: parseJson<string[]>(row.pending_source_ids_json as string),
+      updatedAt: String(row.updated_at),
     };
   }
 
@@ -1322,7 +1256,7 @@ export class AgentInboxStore {
       metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
       rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json as string),
       deliveryHandle: row.delivery_handle_json
-        ? parseJson(row.delivery_handle_json as string)
+        ? parseJson<InboxItem["deliveryHandle"]>(row.delivery_handle_json as string)
         : null,
       ackedAt: row.acked_at ? String(row.acked_at) : null,
     };
@@ -1334,11 +1268,13 @@ export class AgentInboxStore {
       activationId: String(row.activation_id),
       agentId: String(row.agent_id),
       inboxId: String(row.inbox_id),
+      targetId: String(row.target_id),
+      targetKind: row.target_kind as Activation["targetKind"],
       subscriptionIds: parseJson<string[]>(row.subscription_ids_json as string),
       sourceIds: parseJson<string[]>(row.source_ids_json as string),
       newItemCount: Number(row.new_item_count),
       summary: String(row.summary),
-      items: row.items_json ? parseJson<ActivationItem[]>(row.items_json as string) : undefined,
+      items: row.items_json ? parseJson<Activation["items"]>(row.items_json as string) : undefined,
       createdAt: String(row.created_at),
       deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
     };
@@ -1356,39 +1292,6 @@ export class AgentInboxStore {
       payload: parseJson<Record<string, unknown>>(row.payload_json as string),
       status: row.status as DeliveryAttempt["status"],
       createdAt: String(row.created_at),
-    };
-  }
-
-  private mapTerminalTarget(row: Record<string, unknown>): TerminalTarget {
-    return {
-      targetId: String(row.target_id),
-      agentId: String(row.agent_id),
-      runtimeKind: row.runtime_kind ? String(row.runtime_kind) as TerminalTarget["runtimeKind"] : "unknown",
-      runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
-      backend: row.backend as TerminalTarget["backend"],
-      mode: row.mode as TerminalTarget["mode"],
-      tmuxPaneId: row.tmux_pane_id ? String(row.tmux_pane_id) : null,
-      tty: row.tty ? String(row.tty) : null,
-      termProgram: row.term_program ? String(row.term_program) : null,
-      itermSessionId: row.iterm_session_id ? String(row.iterm_session_id) : null,
-      notifyLeaseMs: Number(row.notify_lease_ms),
-      createdAt: String(row.created_at),
-      updatedAt: String(row.updated_at),
-      lastSeenAt: String(row.last_seen_at),
-    };
-  }
-
-  private mapTerminalDispatchState(row: Record<string, unknown>): TerminalDispatchState {
-    return {
-      inboxId: String(row.inbox_id),
-      targetId: String(row.target_id),
-      status: row.status as TerminalDispatchState["status"],
-      leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
-      pendingNewItemCount: Number(row.pending_new_item_count),
-      pendingSummary: row.pending_summary ? String(row.pending_summary) : null,
-      pendingSubscriptionIds: parseJson<string[]>(row.pending_subscription_ids_json as string),
-      pendingSourceIds: parseJson<string[]>(row.pending_source_ids_json as string),
-      updatedAt: String(row.updated_at),
     };
   }
 

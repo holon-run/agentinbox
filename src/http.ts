@@ -1,7 +1,7 @@
 import http from "node:http";
 import { AgentInboxService } from "./service";
+import { ActivationMode, DeliveryHandle, WatchInboxOptions } from "./model";
 import { asObject, jsonResponse } from "./util";
-import { DeliveryHandle, WatchInboxOptions } from "./model";
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -37,6 +37,7 @@ export function createServer(service: AgentInboxService): http.Server {
         send(res, 400, { error: "missing request metadata" });
         return;
       }
+
       const url = new URL(req.url, "http://127.0.0.1");
 
       if (req.method === "GET" && url.pathname === "/healthz") {
@@ -55,8 +56,7 @@ export function createServer(service: AgentInboxService): http.Server {
       }
 
       if (req.method === "POST" && url.pathname === "/sources/register") {
-        const source = await service.registerSource(await readJson(req) as never);
-        send(res, 200, source);
+        send(res, 200, await service.registerSource(await readJson(req) as never));
         return;
       }
 
@@ -68,71 +68,40 @@ export function createServer(service: AgentInboxService): http.Server {
 
       const sourcePollMatch = url.pathname.match(/^\/sources\/([^/]+)\/poll$/);
       if (req.method === "POST" && sourcePollMatch) {
-        const result = await service.pollSource(decodeURIComponent(sourcePollMatch[1]));
-        send(res, 200, result);
+        send(res, 200, await service.pollSource(decodeURIComponent(sourcePollMatch[1])));
         return;
       }
 
       const sourceEventsMatch = url.pathname.match(/^\/sources\/([^/]+)\/events$/);
       if (req.method === "POST" && sourceEventsMatch) {
-        const sourceId = decodeURIComponent(sourceEventsMatch[1]);
         const body = await readJson(req);
+        const sourceId = decodeURIComponent(sourceEventsMatch[1]);
         const sourceNativeId = parseRequiredString(body.sourceNativeId, "sources/events requires sourceNativeId");
         const eventVariant = parseRequiredString(body.eventVariant, "sources/events requires eventVariant");
-        if (!sourceNativeId) {
-          send(res, 400, { error: "sources/events requires sourceNativeId" });
-          return;
-        }
-        if (!eventVariant) {
-          send(res, 400, { error: "sources/events requires eventVariant" });
-          return;
-        }
-        const result = await service.appendSourceEventByCaller(sourceId, {
+        send(res, 200, await service.appendSourceEventByCaller(sourceId, {
           sourceNativeId,
           eventVariant,
           occurredAt: parseOptionalString(body.occurredAt),
           metadata: asObject(body.metadata),
           rawPayload: asObject(body.rawPayload),
           deliveryHandle: parseOptionalDeliveryHandle(body.deliveryHandle),
-        });
-        send(res, 200, result);
+        }));
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/subscriptions") {
-        send(res, 200, {
-          subscriptions: service.listSubscriptions({
-            sourceId: url.searchParams.get("source_id") ?? undefined,
-            agentId: url.searchParams.get("agent_id") ?? undefined,
-            inboxId: url.searchParams.get("inbox_id") ?? undefined,
-          }),
-        });
+      if (req.method === "GET" && url.pathname === "/agents") {
+        send(res, 200, { agents: service.listAgents() });
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/subscriptions/register") {
-        const subscription = await service.registerSubscription(await readJson(req) as never);
-        send(res, 200, subscription);
-        return;
-      }
-
-      if (req.method === "GET" && url.pathname === "/terminals") {
-        send(res, 200, { terminals: service.listTerminalTargets() });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/terminals/register") {
+      if (req.method === "POST" && url.pathname === "/agents/register") {
         const body = await readJson(req);
-        const backend = parseRequiredString(body.backend, "terminals/register requires backend");
-        if (!backend) {
-          send(res, 400, { error: "terminals/register requires backend" });
-          return;
-        }
-        send(res, 200, service.registerTerminalTarget({
+        const backend = parseRequiredString(body.backend, "agents/register requires backend");
+        send(res, 200, service.registerAgent({
           backend: backend as never,
           runtimeKind: parseOptionalString(body.runtimeKind) as never,
           runtimeSessionId: parseOptionalString(body.runtimeSessionId),
-          mode: parseOptionalString(body.mode) as never,
+          mode: "agent_prompt",
           tmuxPaneId: parseOptionalString(body.tmuxPaneId),
           tty: parseOptionalString(body.tty),
           termProgram: parseOptionalString(body.termProgram),
@@ -142,9 +111,58 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      const terminalMatch = url.pathname.match(/^\/terminals\/([^/]+)$/);
-      if (req.method === "GET" && terminalMatch) {
-        send(res, 200, service.getTerminalTarget(decodeURIComponent(terminalMatch[1])));
+      const agentMatch = url.pathname.match(/^\/agents\/([^/]+)$/);
+      if (req.method === "GET" && agentMatch) {
+        send(res, 200, service.getAgentDetails(decodeURIComponent(agentMatch[1])));
+        return;
+      }
+
+      const agentTargetsMatch = url.pathname.match(/^\/agents\/([^/]+)\/targets$/);
+      if (req.method === "GET" && agentTargetsMatch) {
+        send(res, 200, {
+          targets: service.listActivationTargets(decodeURIComponent(agentTargetsMatch[1])),
+        });
+        return;
+      }
+
+      if (req.method === "POST" && agentTargetsMatch) {
+        const body = await readJson(req);
+        const agentId = decodeURIComponent(agentTargetsMatch[1]);
+        const kind = parseRequiredString(body.kind, "agents/targets requires kind");
+        if (kind !== "webhook") {
+          send(res, 400, { error: `unsupported activation target kind: ${kind}` });
+          return;
+        }
+        const urlValue = parseRequiredString(body.url, "agents/targets requires url");
+        send(res, 200, service.addWebhookActivationTarget(agentId, {
+          url: urlValue,
+          activationMode: parseOptionalString(body.activationMode) as ActivationMode | undefined,
+          notifyLeaseMs: parseOptionalInteger(body.notifyLeaseMs) ?? null,
+        }));
+        return;
+      }
+
+      const agentTargetMatch = url.pathname.match(/^\/agents\/([^/]+)\/targets\/([^/]+)$/);
+      if (req.method === "DELETE" && agentTargetMatch) {
+        send(res, 200, service.removeActivationTarget(
+          decodeURIComponent(agentTargetMatch[1]),
+          decodeURIComponent(agentTargetMatch[2]),
+        ));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/subscriptions") {
+        send(res, 200, {
+          subscriptions: service.listSubscriptions({
+            sourceId: url.searchParams.get("source_id") ?? undefined,
+            agentId: url.searchParams.get("agent_id") ?? undefined,
+          }),
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/subscriptions/register") {
+        send(res, 200, await service.registerSubscription(await readJson(req) as never));
         return;
       }
 
@@ -156,8 +174,7 @@ export function createServer(service: AgentInboxService): http.Server {
 
       const subscriptionPollMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/poll$/);
       if (req.method === "POST" && subscriptionPollMatch) {
-        const result = await service.pollSubscription(decodeURIComponent(subscriptionPollMatch[1]));
-        send(res, 200, result);
+        send(res, 200, await service.pollSubscription(decodeURIComponent(subscriptionPollMatch[1])));
         return;
       }
 
@@ -171,10 +188,6 @@ export function createServer(service: AgentInboxService): http.Server {
       if (req.method === "POST" && subscriptionResetMatch) {
         const body = await readJson(req);
         const startPolicy = parseRequiredString(body.startPolicy, "subscriptions/reset requires startPolicy");
-        if (!startPolicy) {
-          send(res, 400, { error: "subscriptions/reset requires startPolicy" });
-          return;
-        }
         send(res, 200, await service.resetSubscription({
           subscriptionId: decodeURIComponent(subscriptionResetMatch[1]),
           startPolicy: startPolicy as never,
@@ -187,63 +200,29 @@ export function createServer(service: AgentInboxService): http.Server {
       if (req.method === "POST" && url.pathname === "/fixtures/emit") {
         const body = await readJson(req);
         const sourceId = parseRequiredString(body.sourceId, "fixtures/emit requires sourceId");
-        if (!sourceId) {
-          send(res, 400, { error: "fixtures/emit requires sourceId" });
-          return;
-        }
         const sourceNativeId = parseRequiredString(body.sourceNativeId, "fixtures/emit requires sourceNativeId");
-        if (!sourceNativeId) {
-          send(res, 400, { error: "fixtures/emit requires sourceNativeId" });
-          return;
-        }
         const eventVariant = parseRequiredString(body.eventVariant, "fixtures/emit requires eventVariant");
-        if (!eventVariant) {
-          send(res, 400, { error: "fixtures/emit requires eventVariant" });
-          return;
-        }
-        const result = await service.appendFixtureEvent(sourceId, {
+        send(res, 200, await service.appendFixtureEvent(sourceId, {
           sourceNativeId,
           eventVariant,
           occurredAt: parseOptionalString(body.occurredAt),
           metadata: asObject(body.metadata),
           rawPayload: asObject(body.rawPayload),
           deliveryHandle: parseOptionalDeliveryHandle(body.deliveryHandle),
-        });
-        send(res, 200, result);
+        }));
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/inboxes") {
-        send(res, 200, { inboxes: service.listInboxes() });
+      const agentInboxMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox$/);
+      if (req.method === "GET" && agentInboxMatch) {
+        send(res, 200, service.getInboxDetailsByAgent(decodeURIComponent(agentInboxMatch[1])));
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/inboxes/ensure") {
-        const body = await readJson(req);
-        const inboxId = parseRequiredString(body.inboxId, "inboxes/ensure requires inboxId");
-        const agentId = parseRequiredString(body.agentId, "inboxes/ensure requires agentId");
-        if (!inboxId) {
-          send(res, 400, { error: "inboxes/ensure requires inboxId" });
-          return;
-        }
-        if (!agentId) {
-          send(res, 400, { error: "inboxes/ensure requires agentId" });
-          return;
-        }
-        send(res, 200, service.ensureInboxByCaller(inboxId, agentId));
-        return;
-      }
-
-      const inboxShowMatch = url.pathname.match(/^\/inboxes\/([^/]+)$/);
-      if (req.method === "GET" && inboxShowMatch) {
-        send(res, 200, service.getInboxDetails(decodeURIComponent(inboxShowMatch[1])));
-        return;
-      }
-
-      const inboxMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/items$/);
-      if (req.method === "GET" && inboxMatch) {
+      const agentInboxItemsMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/items$/);
+      if (req.method === "GET" && agentInboxItemsMatch) {
         send(res, 200, {
-          items: service.listInboxItems(decodeURIComponent(inboxMatch[1]), {
+          items: service.listInboxItems(decodeURIComponent(agentInboxItemsMatch[1]), {
             afterItemId: url.searchParams.get("after_item_id") ?? undefined,
             includeAcked: url.searchParams.has("include_acked")
               ? url.searchParams.get("include_acked") === "true"
@@ -253,41 +232,43 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      const inboxWatchMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/watch$/);
-      if (req.method === "GET" && inboxWatchMatch) {
-        const inboxId = decodeURIComponent(inboxWatchMatch[1]);
+      const agentInboxWatchMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/watch$/);
+      if (req.method === "GET" && agentInboxWatchMatch) {
+        const agentId = decodeURIComponent(agentInboxWatchMatch[1]);
         const watchOptions: WatchInboxOptions = {
           afterItemId: url.searchParams.get("after_item_id") ?? undefined,
-          includeAcked: url.searchParams.get("include_acked") === "true",
-          heartbeatMs: parsePositiveInteger(url.searchParams.get("heartbeat_ms")) ?? 15_000,
+          includeAcked: url.searchParams.has("include_acked")
+            ? url.searchParams.get("include_acked") === "true"
+            : undefined,
+          heartbeatMs: url.searchParams.has("heartbeat_ms")
+            ? parsePositiveInteger(url.searchParams.get("heartbeat_ms"))
+            : undefined,
         };
-        const session = service.watchInbox(inboxId, watchOptions, (event) => {
-          sendSse(res, event.event, event);
-        });
 
         res.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache, no-transform",
           connection: "keep-alive",
         });
-        res.flushHeaders?.();
 
-        if (session.initialItems.length > 0) {
-          sendSse(res, "items", {
-            event: "items",
-            inboxId,
-            items: session.initialItems,
-          });
-        }
+        const session = service.watchInbox(agentId, watchOptions, (event) => {
+          sendSse(res, event.event, event);
+        });
+        sendSse(res, "items", {
+          event: "items",
+          agentId,
+          items: session.initialItems,
+        });
         session.start();
 
+        const heartbeatMs = watchOptions.heartbeatMs ?? 15_000;
         const heartbeat = setInterval(() => {
           sendSse(res, "heartbeat", {
             event: "heartbeat",
-            inboxId,
+            agentId,
             timestamp: new Date().toISOString(),
           });
-        }, watchOptions.heartbeatMs ?? 15_000);
+        }, heartbeatMs);
 
         const cleanup = () => {
           clearInterval(heartbeat);
@@ -298,53 +279,37 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      const inboxAckMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/ack$/);
-      if (req.method === "POST" && inboxAckMatch) {
-        const body = await readJson(req);
-        const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map(String) : [];
-        send(res, 200, service.ackInboxItems(decodeURIComponent(inboxAckMatch[1]), itemIds));
+      const agentInboxAckAllMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/ack-all$/);
+      if (req.method === "POST" && agentInboxAckAllMatch) {
+        send(res, 200, service.ackAllInboxItems(decodeURIComponent(agentInboxAckAllMatch[1])));
         return;
       }
 
-      const inboxAckAllMatch = url.pathname.match(/^\/inboxes\/([^/]+)\/ack-all$/);
-      if (req.method === "POST" && inboxAckAllMatch) {
-        send(res, 200, service.ackAllInboxItems(decodeURIComponent(inboxAckAllMatch[1])));
+      const agentInboxAckMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/ack$/);
+      if (req.method === "POST" && agentInboxAckMatch) {
+        const body = await readJson(req);
+        const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map((itemId) => String(itemId)) : [];
+        send(res, 200, service.ackInboxItems(decodeURIComponent(agentInboxAckMatch[1]), itemIds));
         return;
       }
 
       if (req.method === "POST" && url.pathname === "/deliveries/send") {
-        const result = await service.sendDelivery(await readJson(req) as never);
-        send(res, 200, result);
+        send(res, 200, await service.sendDelivery(await readJson(req) as never));
         return;
       }
 
       send(res, 404, { error: "not found" });
     } catch (error) {
+      if (error instanceof SyntaxError) {
+        send(res, 400, { error: error.message });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith("unknown ")) {
         send(res, 404, { error: message });
         return;
       }
-      if (
-        message.startsWith("manual append is not supported") ||
-        message.startsWith("fixtures/emit requires") ||
-        message.startsWith("sources/events requires") ||
-        message.startsWith("deliveryHandle requires") ||
-        message.startsWith("subscriptions/reset requires") ||
-        message.startsWith("terminals/register requires") ||
-        message.startsWith("inboxes/ensure requires") ||
-        message.startsWith("inbox ") ||
-        message.startsWith("unsupported start policy") ||
-        message.startsWith("unsupported terminal") ||
-        message.includes("requires tmuxPaneId") ||
-        message.includes("requires itermSessionId") ||
-        message.includes("already belongs to agent") ||
-        message.includes("belongs to agent")
-      ) {
-        send(res, 400, { error: message });
-        return;
-      }
-      if (message.startsWith("expected positive integer") || message.startsWith("expected integer")) {
+      if (isBadRequestError(message)) {
         send(res, 400, { error: message });
         return;
       }
@@ -353,33 +318,12 @@ export function createServer(service: AgentInboxService): http.Server {
   });
 }
 
-function parsePositiveInteger(value: string | null): number | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`expected positive integer, received ${value}`);
+function parseRequiredString(value: unknown, message: string): string {
+  const parsed = parseOptionalString(value);
+  if (!parsed) {
+    throw new Error(message);
   }
   return parsed;
-}
-
-function parseOptionalInteger(value: unknown): number | undefined {
-  if (value == null) {
-    return undefined;
-  }
-  if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new Error(`expected integer, received ${String(value)}`);
-  }
-  return value;
-}
-
-function parseRequiredString(value: unknown, _errorMessage: string): string {
-  if (typeof value !== "string") {
-    return "";
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : "";
 }
 
 function parseOptionalString(value: unknown): string | undefined {
@@ -390,22 +334,61 @@ function parseOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseOptionalDeliveryHandle(value: unknown): DeliveryHandle | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+function parseOptionalInteger(value: unknown): number | undefined {
+  if (value == null) {
     return undefined;
   }
-  const record = value as Record<string, unknown>;
-  const provider = parseOptionalString(record.provider);
-  const surface = parseOptionalString(record.surface);
-  const targetRef = parseOptionalString(record.targetRef);
-  if (!provider || !surface || !targetRef) {
-    throw new Error("deliveryHandle requires provider, surface, and targetRef");
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) {
+    throw new Error(`expected integer, received ${String(value)}`);
   }
+  return parsed;
+}
+
+function parsePositiveInteger(value: unknown): number {
+  const parsed = parseOptionalInteger(value);
+  if (parsed == null || parsed <= 0) {
+    throw new Error(`expected positive integer, received ${String(value)}`);
+  }
+  return parsed;
+}
+
+function isBadRequestError(message: string): boolean {
+  return (
+    message.startsWith("manual append is not supported") ||
+    message.startsWith("fixtures/emit requires") ||
+    message.startsWith("sources/events requires") ||
+    message.startsWith("deliveryHandle requires") ||
+    message.startsWith("subscriptions/reset requires") ||
+    message.startsWith("agents/register requires") ||
+    message.startsWith("agents/targets requires") ||
+    message.startsWith("unsupported activation target kind") ||
+    message.startsWith("unsupported start policy") ||
+    message.startsWith("unsupported terminal") ||
+    message.startsWith("expected integer") ||
+    message.startsWith("expected positive integer") ||
+    message.startsWith("notifyLeaseMs must be a positive integer") ||
+    message.startsWith("invalid webhook activation target") ||
+    message.includes("requires tmuxPaneId") ||
+    message.includes("requires iTerm2 session identity") ||
+    message.includes("requires a supported terminal context") ||
+    message.includes("belongs to agent")
+  );
+}
+
+function parseOptionalDeliveryHandle(value: unknown): DeliveryHandle | null {
+  if (!value) {
+    return null;
+  }
+  const object = asObject(value);
+  const provider = parseRequiredString(object.provider, "deliveryHandle.provider is required");
+  const surface = parseRequiredString(object.surface, "deliveryHandle.surface is required");
+  const targetRef = parseRequiredString(object.targetRef, "deliveryHandle.targetRef is required");
   return {
     provider,
     surface,
     targetRef,
-    threadRef: parseOptionalString(record.threadRef) ?? null,
-    replyMode: parseOptionalString(record.replyMode) ?? null,
+    threadRef: parseOptionalString(object.threadRef) ?? null,
+    replyMode: parseOptionalString(object.replyMode) ?? null,
   };
 }

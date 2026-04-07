@@ -1,6 +1,9 @@
 import {
   Activation,
   ActivationItem,
+  ActivationTarget,
+  AddWebhookActivationTargetInput,
+  Agent,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
@@ -9,24 +12,25 @@ import {
   Inbox,
   InboxItem,
   InboxWatchEvent,
+  RegisterAgentInput,
+  RegisterAgentResult,
   RegisterSourceInput,
   RegisterSubscriptionInput,
-  RegisterTerminalTargetInput,
   SourcePollResult,
   Subscription,
   SubscriptionPollResult,
   SubscriptionSource,
-  TerminalDispatchState,
-  TerminalTarget,
+  TerminalActivationTarget,
   WatchInboxOptions,
+  WebhookActivationTarget,
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { AdapterRegistry } from "./adapters";
 import {
-  defaultInboxIdForAgent,
   ConsumerLag,
   EventBusBackend,
   SqliteEventBusBackend,
+  defaultInboxIdForAgent,
   streamKeyForSource,
   toAppendResult,
 } from "./backend";
@@ -37,40 +41,24 @@ import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, T
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
-const DEFAULT_TERMINAL_NOTIFY_LEASE_MS = 10 * 60 * 1000;
-const DEFAULT_TERMINAL_RETRY_MS = 5_000;
-const ACTIVATION_MODES = new Set<Subscription["activationMode"]>(["activation_only", "activation_with_items"]);
+const DEFAULT_NOTIFY_LEASE_MS = 10 * 60 * 1000;
+const DEFAULT_NOTIFY_RETRY_MS = 5_000;
+const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
-const TERMINAL_MODES = new Set<TerminalTarget["mode"]>(["agent_prompt"]);
-
-interface ActivationBuffer {
-  agentId: string;
-  inboxId: string;
-  activationTarget: string | null;
-  activationMode: Subscription["activationMode"];
-  pending: Array<{
-    subscriptionId: string;
-    sourceId: string;
-    summary: string;
-    item?: ActivationItem;
-  }>;
-  timer: NodeJS.Timeout | null;
-  inFlight: boolean;
-}
 
 interface ActivationPolicy {
   windowMs?: number;
   maxItems?: number;
 }
 
-interface BufferedTerminalNotification {
-  inboxId: string;
-  terminalTargetId: string;
+interface BufferedNotification {
   agentId: string;
+  targetId: string;
   pending: Array<{
     subscriptionId: string;
     sourceId: string;
     summary: string;
+    item: ActivationItem;
   }>;
   timer: NodeJS.Timeout | null;
   inFlight: boolean;
@@ -91,10 +79,9 @@ export class AgentInboxService {
   private readonly inFlightSubscriptions = new Set<string>();
   private readonly activationWindowMs: number;
   private readonly activationMaxItems: number;
-  private readonly activationBuffers = new Map<string, ActivationBuffer>();
-  private readonly terminalBuffers = new Map<string, BufferedTerminalNotification>();
+  private readonly notificationBuffers = new Map<string, BufferedNotification>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
-  private subscriptionInterval: NodeJS.Timeout | null = null;
+  private syncInterval: NodeJS.Timeout | null = null;
   private stopping = false;
 
   constructor(
@@ -116,39 +103,31 @@ export class AgentInboxService {
   private readonly terminalDispatcher: TerminalDispatcher;
 
   async start(): Promise<void> {
-    if (this.subscriptionInterval) {
+    if (this.syncInterval) {
       return;
     }
     this.stopping = false;
-    this.subscriptionInterval = setInterval(() => {
+    this.syncInterval = setInterval(() => {
       void this.syncAllSubscriptions();
-      void this.syncTerminalDispatchStates();
+      void this.syncActivationDispatchStates();
     }, 2_000);
     await this.syncAllSubscriptions();
-    await this.syncTerminalDispatchStates();
+    await this.syncActivationDispatchStates();
   }
 
   async stop(): Promise<void> {
     this.stopping = true;
-    for (const buffer of this.activationBuffers.values()) {
+    for (const buffer of this.notificationBuffers.values()) {
       if (buffer.timer) {
         clearTimeout(buffer.timer);
         buffer.timer = null;
       }
     }
-    for (const buffer of this.terminalBuffers.values()) {
-      if (buffer.timer) {
-        clearTimeout(buffer.timer);
-        buffer.timer = null;
-      }
+    if (this.syncInterval) {
+      clearInterval(this.syncInterval);
+      this.syncInterval = null;
     }
-    if (!this.subscriptionInterval) {
-      await this.flushAllPendingActivations();
-      return;
-    }
-    clearInterval(this.subscriptionInterval);
-    this.subscriptionInterval = null;
-    await this.flushAllPendingActivations();
+    await this.flushAllPendingNotifications();
   }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
@@ -156,6 +135,7 @@ export class AgentInboxService {
     if (existing) {
       return existing;
     }
+    const now = nowIso();
     const source: SubscriptionSource = {
       sourceId: generateId("src"),
       sourceType: input.sourceType,
@@ -164,8 +144,8 @@ export class AgentInboxService {
       config: input.config ?? {},
       status: "active",
       checkpoint: null,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      createdAt: now,
+      updatedAt: now,
     };
     this.store.insertSource(source);
     await this.ensureStreamForSource(source);
@@ -194,35 +174,151 @@ export class AgentInboxService {
     };
   }
 
+  registerAgent(input: RegisterAgentInput): RegisterAgentResult {
+    validateNotifyLeaseMs(input.notifyLeaseMs);
+    validateTerminalRegistration(input);
+
+    const runtimeKind = input.runtimeKind ?? "unknown";
+    const agentId = assignedAgentIdFromContext({
+      runtimeKind,
+      runtimeSessionId: input.runtimeSessionId ?? null,
+      backend: input.backend,
+      tmuxPaneId: input.tmuxPaneId ?? null,
+      itermSessionId: input.itermSessionId ?? null,
+      tty: input.tty ?? null,
+    });
+    const now = nowIso();
+    const existingAgent = this.store.getAgent(agentId);
+    const agent = existingAgent
+      ? this.store.updateAgent(agentId, {
+          runtimeKind,
+          runtimeSessionId: input.runtimeSessionId ?? null,
+          updatedAt: now,
+          lastSeenAt: now,
+        })
+      : (() => {
+          const created: Agent = {
+            agentId,
+            runtimeKind,
+            runtimeSessionId: input.runtimeSessionId ?? null,
+            createdAt: now,
+            updatedAt: now,
+            lastSeenAt: now,
+          };
+          this.store.insertAgent(created);
+          return created;
+        })();
+
+    const terminalTarget = this.upsertTerminalActivationTarget(agent.agentId, input, now);
+    const inbox = this.ensureInboxForAgent(agent.agentId);
+    return {
+      agent,
+      terminalTarget,
+      inbox,
+    };
+  }
+
+  detectAndRegisterAgent(notifyLeaseMs?: number | null, env: NodeJS.ProcessEnv = process.env): RegisterAgentResult {
+    const detected = detectTerminalContext(env);
+    return this.registerAgent({
+      runtimeKind: detected.runtimeKind,
+      runtimeSessionId: detected.runtimeSessionId ?? null,
+      backend: detected.backend,
+      mode: "agent_prompt",
+      tmuxPaneId: detected.tmuxPaneId ?? null,
+      tty: detected.tty ?? null,
+      termProgram: detected.termProgram ?? null,
+      itermSessionId: detected.itermSessionId ?? null,
+      notifyLeaseMs: notifyLeaseMs ?? null,
+    });
+  }
+
+  listAgents(): Agent[] {
+    return this.store.listAgents();
+  }
+
+  getAgent(agentId: string): Agent {
+    const agent = this.store.getAgent(agentId);
+    if (!agent) {
+      throw new Error(`unknown agent: ${agentId}`);
+    }
+    return agent;
+  }
+
+  getAgentDetails(agentId: string): Record<string, unknown> {
+    const agent = this.getAgent(agentId);
+    return {
+      agent,
+      inbox: this.ensureInboxForAgent(agent.agentId),
+      subscriptions: this.store.listSubscriptionsForAgent(agent.agentId),
+      activationTargets: this.store.listActivationTargetsForAgent(agent.agentId),
+      activationDispatchStates: this.store.listActivationDispatchStatesForAgent(agent.agentId),
+      itemCounts: this.inboxCounts(agent.agentId),
+    };
+  }
+
+  addWebhookActivationTarget(agentId: string, input: AddWebhookActivationTargetInput): WebhookActivationTarget {
+    this.getAgent(agentId);
+    validateNotifyLeaseMs(input.notifyLeaseMs);
+    const mode = normalizeWebhookActivationMode(input.activationMode);
+    const now = nowIso();
+    const target: WebhookActivationTarget = {
+      targetId: generateId("tgt"),
+      agentId,
+      kind: "webhook",
+      mode,
+      url: input.url,
+      notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+    };
+    this.store.insertActivationTarget(target);
+    return target;
+  }
+
+  listActivationTargets(agentId?: string): ActivationTarget[] {
+    if (agentId) {
+      this.getAgent(agentId);
+      return this.store.listActivationTargetsForAgent(agentId);
+    }
+    return this.store.listActivationTargets();
+  }
+
+  getActivationTarget(targetId: string): ActivationTarget {
+    const target = this.store.getActivationTarget(targetId);
+    if (!target) {
+      throw new Error(`unknown activation target: ${targetId}`);
+    }
+    return target;
+  }
+
+  removeActivationTarget(agentId: string, targetId: string): { removed: boolean } {
+    const target = this.getActivationTarget(targetId);
+    if (target.agentId !== agentId) {
+      throw new Error(`activation target ${targetId} does not belong to agent ${agentId}`);
+    }
+    this.store.deleteActivationTarget(agentId, targetId);
+    return { removed: true };
+  }
+
   async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
+    this.getAgent(input.agentId);
     const source = this.store.getSource(input.sourceId);
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
-    const activationMode = normalizeActivationMode(input.activationMode);
-    const terminalTarget = input.terminalTargetId
-      ? this.getTerminalTarget(input.terminalTargetId)
-      : null;
-    if (terminalTarget && terminalTarget.agentId !== input.agentId) {
-      throw new Error(`terminal target ${terminalTarget.targetId} does not belong to agent ${input.agentId}`);
-    }
-
-    const inboxId = input.inboxId ?? defaultInboxIdForAgent(input.agentId);
-    this.ensureInbox(inboxId, input.agentId);
     const subscription: Subscription = {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
-      inboxId,
       matchRules: input.matchRules ?? {},
-      activationTarget: input.activationTarget ?? null,
-      terminalTargetId: terminalTarget?.targetId ?? null,
-      activationMode,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
       createdAt: nowIso(),
     };
+    this.ensureInboxForAgent(subscription.agentId);
     this.store.insertSubscription(subscription);
 
     const stream = await this.ensureStreamForSource(source);
@@ -237,95 +333,15 @@ export class AgentInboxService {
     return subscription;
   }
 
-  registerTerminalTarget(input: RegisterTerminalTargetInput): TerminalTarget {
-    const mode = normalizeTerminalMode(input.mode);
-    validateTerminalIdentity(input);
-    validateNotifyLeaseMs(input.notifyLeaseMs);
-    const runtimeKind = input.runtimeKind ?? "unknown";
-    const agentId = assignedAgentIdFromContext({
-      runtimeKind,
-      runtimeSessionId: input.runtimeSessionId ?? null,
-      backend: input.backend,
-      tmuxPaneId: input.tmuxPaneId ?? null,
-      itermSessionId: input.itermSessionId ?? null,
-      tty: input.tty ?? null,
-    });
-
-    const now = nowIso();
-    const existing = findExistingTerminalTarget(this.store, input);
-    if (existing) {
-      return this.store.updateTerminalTargetHeartbeat(existing.targetId, {
-        runtimeKind,
-        runtimeSessionId: input.runtimeSessionId ?? null,
-        tmuxPaneId: input.tmuxPaneId ?? null,
-        tty: input.tty ?? null,
-        termProgram: input.termProgram ?? null,
-        itermSessionId: input.itermSessionId ?? null,
-        updatedAt: now,
-        lastSeenAt: now,
-      });
-    }
-
-    const target: TerminalTarget = {
-      targetId: generateId("term"),
-      agentId,
-      runtimeKind,
-      runtimeSessionId: input.runtimeSessionId ?? null,
-      backend: input.backend,
-      mode,
-      tmuxPaneId: input.tmuxPaneId ?? null,
-      tty: input.tty ?? null,
-      termProgram: input.termProgram ?? null,
-      itermSessionId: input.itermSessionId ?? null,
-      notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_TERMINAL_NOTIFY_LEASE_MS,
-      createdAt: now,
-      updatedAt: now,
-      lastSeenAt: now,
-    };
-    this.store.insertTerminalTarget(target);
-    return target;
-  }
-
-  detectAndRegisterTerminalTarget(notifyLeaseMs?: number | null, env: NodeJS.ProcessEnv = process.env): TerminalTarget {
-    const detected = detectTerminalContext(env);
-    return this.registerTerminalTarget({
-      runtimeKind: detected.runtimeKind,
-      runtimeSessionId: detected.runtimeSessionId ?? null,
-      backend: detected.backend,
-      mode: "agent_prompt",
-      tmuxPaneId: detected.tmuxPaneId ?? null,
-      tty: detected.tty ?? null,
-      termProgram: detected.termProgram ?? null,
-      itermSessionId: detected.itermSessionId ?? null,
-      notifyLeaseMs: notifyLeaseMs ?? null,
-    });
-  }
-
-  listTerminalTargets(): TerminalTarget[] {
-    return this.store.listTerminalTargets();
-  }
-
-  getTerminalTarget(targetId: string): TerminalTarget {
-    const target = this.store.getTerminalTarget(targetId);
-    if (!target) {
-      throw new Error(`unknown terminal target: ${targetId}`);
-    }
-    return target;
-  }
-
   listSubscriptions(filters?: {
     sourceId?: string;
     agentId?: string;
-    inboxId?: string;
   }): Subscription[] {
     return this.store.listSubscriptions().filter((subscription) => {
       if (filters?.sourceId && subscription.sourceId !== filters.sourceId) {
         return false;
       }
       if (filters?.agentId && subscription.agentId !== filters.agentId) {
-        return false;
-      }
-      if (filters?.inboxId && subscription.inboxId !== filters.inboxId) {
         return false;
       }
       return true;
@@ -349,8 +365,8 @@ export class AgentInboxService {
     return {
       subscription,
       source: this.getSource(subscription.sourceId),
-      inbox: this.getInbox(subscription.inboxId),
-      terminalTarget: subscription.terminalTargetId ? this.getTerminalTarget(subscription.terminalTargetId) : null,
+      inbox: this.ensureInboxForAgent(subscription.agentId),
+      activationTargets: this.store.listActivationTargetsForAgent(subscription.agentId),
       consumer,
       lag: await this.backend.getConsumerLag({ consumerId: consumer.consumerId }),
     };
@@ -401,108 +417,58 @@ export class AgentInboxService {
     return toAppendResult(result);
   }
 
-  async appendSourceEventByCaller(
-    sourceId: string,
-    input: Omit<AppendSourceEventInput, "sourceId">,
-  ): Promise<AppendSourceEventResult> {
-    const source = this.store.getSource(sourceId);
-    if (!source) {
-      throw new Error(`unknown source: ${sourceId}`);
-    }
+  async appendSourceEventByCaller(sourceId: string, input: Omit<AppendSourceEventInput, "sourceId">): Promise<AppendSourceEventResult> {
+    const source = this.getSource(sourceId);
     if (source.sourceType !== "custom") {
       throw new Error(`manual append is not supported for source type: ${source.sourceType}`);
     }
-    return this.appendSourceEvent({
-      sourceId,
-      sourceNativeId: input.sourceNativeId,
-      eventVariant: input.eventVariant,
-      occurredAt: input.occurredAt,
-      metadata: input.metadata,
-      rawPayload: input.rawPayload,
-      deliveryHandle: input.deliveryHandle,
-    });
+    return this.appendSourceEvent({ ...input, sourceId });
   }
 
-  async appendFixtureEvent(
-    sourceId: string,
-    input: Omit<AppendSourceEventInput, "sourceId">,
-  ): Promise<AppendSourceEventResult> {
-    const source = this.store.getSource(sourceId);
-    if (!source) {
-      throw new Error(`unknown source: ${sourceId}`);
-    }
+  async appendFixtureEvent(sourceId: string, input: Omit<AppendSourceEventInput, "sourceId">): Promise<AppendSourceEventResult> {
+    const source = this.getSource(sourceId);
     if (source.sourceType !== "fixture") {
       throw new Error(`fixtures/emit requires fixture source, received: ${source.sourceType}`);
     }
-    return this.appendSourceEvent({
-      sourceId,
-      sourceNativeId: input.sourceNativeId,
-      eventVariant: input.eventVariant,
-      occurredAt: input.occurredAt,
-      metadata: input.metadata,
-      rawPayload: input.rawPayload,
-      deliveryHandle: input.deliveryHandle,
-    });
+    return this.appendSourceEvent({ ...input, sourceId });
   }
 
-  listInboxIds(): string[] {
-    return this.store.listInboxes().map((inbox) => inbox.inboxId);
+  listInboxAgentIds(): string[] {
+    return this.store.listInboxes().map((inbox) => inbox.ownerAgentId);
   }
 
-  listInboxes(): Inbox[] {
-    return this.store.listInboxes();
-  }
-
-  ensureInboxByCaller(inboxId: string, ownerAgentId: string): Inbox {
-    return this.ensureInbox(inboxId, ownerAgentId);
-  }
-
-  getInbox(inboxId: string): Inbox {
-    const inbox = this.store.getInbox(inboxId);
-    if (!inbox) {
-      throw new Error(`unknown inbox: ${inboxId}`);
-    }
-    return inbox;
-  }
-
-  getInboxDetails(inboxId: string): Record<string, unknown> {
-    const inbox = this.getInbox(inboxId);
-    const subscriptions = this.listSubscriptions({ inboxId });
+  getInboxDetailsByAgent(agentId: string): Record<string, unknown> {
+    const inbox = this.ensureInboxForAgent(agentId);
     return {
+      agent: this.getAgent(agentId),
       inbox,
-      subscriptions,
-      terminalDispatchStates: this.store.listTerminalDispatchStatesForInbox(inboxId),
-      itemCounts: {
-        total: this.store.countInboxItems(inboxId, true),
-        unacked: this.store.countInboxItems(inboxId, false),
-        acked: this.store.countInboxItems(inboxId, true) - this.store.countInboxItems(inboxId, false),
-      },
+      subscriptions: this.store.listSubscriptionsForAgent(agentId),
+      activationTargets: this.store.listActivationTargetsForAgent(agentId),
+      activationDispatchStates: this.store.listActivationDispatchStatesForAgent(agentId),
+      itemCounts: this.inboxCounts(agentId),
     };
   }
 
-  listInboxItems(inboxId: string, options?: WatchInboxOptions): InboxItem[] {
-    return this.store.listInboxItems(inboxId, options);
+  listInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {
+    return this.store.listInboxItems(this.ensureInboxForAgent(agentId).inboxId, options);
   }
 
   watchInbox(
-    inboxId: string,
+    agentId: string,
     options: WatchInboxOptions,
     onEvent: (event: InboxWatchEvent) => void,
   ): InboxWatchSession {
-    const inbox = this.store.getInbox(inboxId);
-    if (!inbox) {
-      throw new Error(`unknown inbox: ${inboxId}`);
-    }
-
+    const inbox = this.ensureInboxForAgent(agentId);
     const pendingItems: InboxItem[] = [];
     let started = false;
+
     const emitItems = (items: InboxItem[]) => {
       if (items.length === 0) {
         return;
       }
       onEvent({
         event: "items",
-        inboxId,
+        agentId,
         items,
       });
     };
@@ -517,10 +483,10 @@ export class AgentInboxService {
       },
     };
 
-    let watchers = this.inboxWatchers.get(inboxId);
+    let watchers = this.inboxWatchers.get(agentId);
     if (!watchers) {
       watchers = new Set();
-      this.inboxWatchers.set(inboxId, watchers);
+      this.inboxWatchers.set(agentId, watchers);
     }
     watchers.add(watcher);
 
@@ -533,13 +499,12 @@ export class AgentInboxService {
     } catch (error) {
       watchers.delete(watcher);
       if (watchers.size === 0) {
-        this.inboxWatchers.delete(inboxId);
+        this.inboxWatchers.delete(agentId);
       }
       throw error;
     }
 
     const initialItemIds = new Set(initialItems.map((item) => item.itemId));
-
     return {
       initialItems,
       start: () => {
@@ -552,49 +517,44 @@ export class AgentInboxService {
         emitItems(replayItems);
       },
       close: () => {
-        const activeWatchers = this.inboxWatchers.get(inboxId);
+        const activeWatchers = this.inboxWatchers.get(agentId);
         if (!activeWatchers) {
           return;
         }
         activeWatchers.delete(watcher);
         if (activeWatchers.size === 0) {
-          this.inboxWatchers.delete(inboxId);
+          this.inboxWatchers.delete(agentId);
         }
       },
     };
   }
 
-  ackInboxItems(inboxId: string, itemIds: string[]): { acked: number } {
-    const acked = this.store.ackItems(inboxId, itemIds, nowIso());
+  ackInboxItems(agentId: string, itemIds: string[]): { acked: number } {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const acked = this.store.ackItems(inbox.inboxId, itemIds, nowIso());
     if (acked > 0) {
-      void this.handleInboxAckEffects(inboxId);
+      void this.handleInboxAckEffects(agentId);
     }
     return { acked };
   }
 
-  ackAllInboxItems(inboxId: string): { acked: number } {
-    const itemIds = this.store.listInboxItems(inboxId, { includeAcked: false }).map((item) => item.itemId);
-    const acked = this.store.ackItems(inboxId, itemIds, nowIso());
+  ackAllInboxItems(agentId: string): { acked: number } {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const itemIds = this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => item.itemId);
+    const acked = this.store.ackItems(inbox.inboxId, itemIds, nowIso());
     if (acked > 0) {
-      void this.handleInboxAckEffects(inboxId);
+      void this.handleInboxAckEffects(agentId);
     }
     return { acked };
   }
 
   async pollSource(sourceId: string): Promise<SourcePollResult> {
-    const source = this.store.getSource(sourceId);
-    if (!source) {
-      throw new Error(`unknown source: ${sourceId}`);
-    }
-    return this.adapters.pollSource(source);
+    return this.adapters.pollSource(this.getSource(sourceId));
   }
 
   async pollSubscription(subscriptionId: string): Promise<SubscriptionPollResult> {
     if (this.inFlightSubscriptions.has(subscriptionId)) {
-      const subscription = this.store.getSubscription(subscriptionId);
-      if (!subscription) {
-        throw new Error(`unknown subscription: ${subscriptionId}`);
-      }
+      const subscription = this.getSubscription(subscriptionId);
       return {
         subscriptionId,
         sourceId: subscription.sourceId,
@@ -608,14 +568,8 @@ export class AgentInboxService {
 
     this.inFlightSubscriptions.add(subscriptionId);
     try {
-      const subscription = this.store.getSubscription(subscriptionId);
-      if (!subscription) {
-        throw new Error(`unknown subscription: ${subscriptionId}`);
-      }
-      const source = this.store.getSource(subscription.sourceId);
-      if (!source) {
-        throw new Error(`unknown source: ${subscription.sourceId}`);
-      }
+      const subscription = this.getSubscription(subscriptionId);
+      const source = this.getSource(subscription.sourceId);
       const stream = await this.ensureStreamForSource(source);
       const consumer = await this.backend.ensureConsumer({
         streamId: stream.streamId,
@@ -631,6 +585,8 @@ export class AgentInboxService {
         limit: DEFAULT_SUBSCRIPTION_POLL_LIMIT,
       });
 
+      const inbox = this.ensureInboxForAgent(subscription.agentId);
+      const targets = this.store.listActivationTargetsForAgent(subscription.agentId);
       let matched = 0;
       let inboxItemsCreated = 0;
       let lastProcessedOffset: number | null = null;
@@ -648,7 +604,7 @@ export class AgentInboxService {
             sourceId: event.sourceId,
             sourceNativeId: event.sourceNativeId,
             eventVariant: event.eventVariant,
-            inboxId: subscription.inboxId,
+            inboxId: inbox.inboxId,
             occurredAt: event.occurredAt,
             metadata: { ...event.metadata, matchReason: match.reason, agentId: subscription.agentId },
             rawPayload: event.rawPayload,
@@ -661,44 +617,31 @@ export class AgentInboxService {
           }
           inboxItemsCreated += 1;
           insertedItems.push(item);
-          this.enqueueActivation({
-            agentId: subscription.agentId,
-            inboxId: subscription.inboxId,
-            activationTarget: subscription.activationTarget ?? null,
-            activationMode: subscription.activationMode,
-            subscriptionId: subscription.subscriptionId,
-            sourceId: source.sourceId,
-            eventVariant: event.eventVariant,
-            sourceType: source.sourceType,
-            sourceKey: source.sourceKey,
-            item: {
-              itemId: item.itemId,
-              sourceId: item.sourceId,
-              sourceNativeId: item.sourceNativeId,
-              eventVariant: item.eventVariant,
-              inboxId: item.inboxId,
-              occurredAt: item.occurredAt,
-              metadata: item.metadata,
-              rawPayload: item.rawPayload,
-              deliveryHandle: item.deliveryHandle,
-            },
-          });
-          if (subscription.terminalTargetId) {
-            this.enqueueTerminalNotification({
+
+          const activationItem: ActivationItem = {
+            itemId: item.itemId,
+            sourceId: item.sourceId,
+            sourceNativeId: item.sourceNativeId,
+            eventVariant: item.eventVariant,
+            inboxId: item.inboxId,
+            occurredAt: item.occurredAt,
+            metadata: item.metadata,
+            rawPayload: item.rawPayload,
+            deliveryHandle: item.deliveryHandle,
+          };
+          for (const target of targets) {
+            this.enqueueActivationTarget(target, {
               agentId: subscription.agentId,
-              inboxId: subscription.inboxId,
-              terminalTargetId: subscription.terminalTargetId,
               subscriptionId: subscription.subscriptionId,
               sourceId: source.sourceId,
-              eventVariant: event.eventVariant,
-              sourceType: source.sourceType,
-              sourceKey: source.sourceKey,
+              summary: summarizeSourceEvent(source.sourceType, source.sourceKey, event.eventVariant),
+              item: activationItem,
             });
           }
         }
       } catch (error) {
         if (insertedItems.length > 0) {
-          this.notifyInboxWatchers(subscription.inboxId, insertedItems);
+          this.notifyInboxWatchers(subscription.agentId, insertedItems);
         }
         if (lastProcessedOffset != null) {
           await this.backend.commit({
@@ -710,9 +653,8 @@ export class AgentInboxService {
       }
 
       if (insertedItems.length > 0) {
-        this.notifyInboxWatchers(subscription.inboxId, insertedItems);
+        this.notifyInboxWatchers(subscription.agentId, insertedItems);
       }
-
       if (lastProcessedOffset != null) {
         await this.backend.commit({
           consumerId: consumer.consumerId,
@@ -758,34 +700,43 @@ export class AgentInboxService {
   status(): Record<string, unknown> {
     return {
       counts: this.store.getCounts(),
+      agents: this.store.listAgents(),
       sources: this.store.listSources(),
       subscriptions: this.store.listSubscriptions(),
       inboxes: this.store.listInboxes(),
+      activationTargets: this.store.listActivationTargets(),
+      activationDispatchStates: this.store.listActivationDispatchStates(),
       streams: this.store.listStreams(),
       consumers: this.store.listConsumers(),
       adapters: this.adapters.status(),
       recentActivations: this.store.listActivations().slice(0, 10),
       recentDeliveries: this.store.listDeliveries().slice(0, 10),
-      terminalTargets: this.store.listTerminalTargets(),
-      terminalDispatchStates: this.store.listTerminalDispatchStates(),
     };
   }
 
-  private ensureInbox(inboxId: string, ownerAgentId: string): Inbox {
-    const existing = this.store.getInbox(inboxId);
+  private ensureInboxForAgent(agentId: string): Inbox {
+    const existing = this.store.getInboxByAgentId(agentId);
     if (existing) {
-      if (existing.ownerAgentId !== ownerAgentId) {
-        throw new Error(`inbox ${inboxId} already belongs to agent ${existing.ownerAgentId}`);
-      }
       return existing;
     }
     const inbox: Inbox = {
-      inboxId,
-      ownerAgentId,
+      inboxId: defaultInboxIdForAgent(agentId),
+      ownerAgentId: agentId,
       createdAt: nowIso(),
     };
     this.store.insertInbox(inbox);
     return inbox;
+  }
+
+  private inboxCounts(agentId: string): Record<string, number> {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const total = this.store.countInboxItems(inbox.inboxId, true);
+    const unacked = this.store.countInboxItems(inbox.inboxId, false);
+    return {
+      total,
+      unacked,
+      acked: total - unacked,
+    };
   }
 
   private async ensureStreamForSource(source: SubscriptionSource) {
@@ -793,6 +744,304 @@ export class AgentInboxService {
       sourceId: source.sourceId,
       streamKey: streamKeyForSource(source.sourceType, source.sourceKey),
       backend: "sqlite",
+    });
+  }
+
+  private notifyInboxWatchers(agentId: string, items: InboxItem[]): void {
+    const watchers = this.inboxWatchers.get(agentId);
+    if (!watchers || watchers.size === 0) {
+      return;
+    }
+    for (const watcher of watchers) {
+      watcher.onItems(items);
+    }
+  }
+
+  private upsertTerminalActivationTarget(agentId: string, input: RegisterAgentInput, now: string): TerminalActivationTarget {
+    const existing = findExistingTerminalActivationTarget(this.store, input);
+    if (existing) {
+      const target = this.store.updateTerminalActivationTargetHeartbeat(existing.targetId, {
+        runtimeKind: input.runtimeKind ?? "unknown",
+        runtimeSessionId: input.runtimeSessionId ?? null,
+        tmuxPaneId: input.tmuxPaneId ?? null,
+        tty: input.tty ?? null,
+        termProgram: input.termProgram ?? null,
+        itermSessionId: input.itermSessionId ?? null,
+        updatedAt: now,
+        lastSeenAt: now,
+      });
+      if (target.agentId !== agentId) {
+        throw new Error(`terminal target ${target.targetId} is already bound to agent ${target.agentId}`);
+      }
+      return target;
+    }
+
+    const target: TerminalActivationTarget = {
+      targetId: generateId("tgt"),
+      agentId,
+      kind: "terminal",
+      mode: "agent_prompt",
+      notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
+      runtimeKind: input.runtimeKind ?? "unknown",
+      runtimeSessionId: input.runtimeSessionId ?? null,
+      backend: input.backend,
+      tmuxPaneId: input.tmuxPaneId ?? null,
+      tty: input.tty ?? null,
+      termProgram: input.termProgram ?? null,
+      itermSessionId: input.itermSessionId ?? null,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+    };
+    this.store.insertActivationTarget(target);
+    return target;
+  }
+
+  private enqueueActivationTarget(
+    target: ActivationTarget,
+    input: {
+      agentId: string;
+      subscriptionId: string;
+      sourceId: string;
+      summary: string;
+      item: ActivationItem;
+    },
+  ): void {
+    const key = notificationBufferKey(target.agentId, target.targetId);
+    let buffer = this.notificationBuffers.get(key);
+    if (!buffer) {
+      buffer = {
+        agentId: target.agentId,
+        targetId: target.targetId,
+        pending: [],
+        timer: null,
+        inFlight: false,
+      };
+      this.notificationBuffers.set(key, buffer);
+    }
+
+    buffer.pending.push({
+      subscriptionId: input.subscriptionId,
+      sourceId: input.sourceId,
+      summary: input.summary,
+      item: input.item,
+    });
+
+    if (!buffer.timer && !buffer.inFlight) {
+      buffer.timer = setTimeout(() => {
+        void this.flushNotificationBuffer(key);
+      }, this.activationWindowMs);
+    }
+
+    if (buffer.pending.length >= this.activationMaxItems) {
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+        buffer.timer = null;
+      }
+      void this.flushNotificationBuffer(key);
+    }
+  }
+
+  private async flushAllPendingNotifications(): Promise<void> {
+    const keys = Array.from(this.notificationBuffers.keys());
+    for (const key of keys) {
+      await this.flushNotificationBuffer(key);
+    }
+  }
+
+  private async flushNotificationBuffer(key: string): Promise<void> {
+    const buffer = this.notificationBuffers.get(key);
+    if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
+      return;
+    }
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = null;
+    }
+
+    buffer.inFlight = true;
+    const entries = buffer.pending.splice(0, buffer.pending.length);
+    try {
+      const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
+      if (!state) {
+        const dispatched = await this.dispatchActivationTarget({
+          agentId: buffer.agentId,
+          targetId: buffer.targetId,
+          newItemCount: entries.length,
+          summary: entries[0]?.summary ?? null,
+          subscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
+          sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
+          items: entries.map((entry) => entry.item),
+        });
+        if (!dispatched) {
+          this.upsertDirtyDispatchState(buffer.agentId, buffer.targetId, entries);
+        }
+      } else {
+        this.store.upsertActivationDispatchState({
+          agentId: buffer.agentId,
+          targetId: buffer.targetId,
+          status: "dirty",
+          leaseExpiresAt: state.leaseExpiresAt,
+          pendingNewItemCount: state.pendingNewItemCount + entries.length,
+          pendingSummary: state.pendingSummary ?? entries[0]?.summary ?? null,
+          pendingSubscriptionIds: uniqueSorted([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
+          pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
+          updatedAt: nowIso(),
+        });
+      }
+
+      const hasPendingDuringFlight = buffer.pending.length > 0;
+      buffer.inFlight = false;
+      if (hasPendingDuringFlight) {
+        buffer.timer = setTimeout(() => {
+          void this.flushNotificationBuffer(key);
+        }, this.activationWindowMs);
+        return;
+      }
+      this.notificationBuffers.delete(key);
+    } catch (error) {
+      buffer.pending.unshift(...entries);
+      buffer.inFlight = false;
+      if (!this.stopping && !buffer.timer) {
+        buffer.timer = setTimeout(() => {
+          void this.flushNotificationBuffer(key);
+        }, this.activationWindowMs);
+      }
+      throw error;
+    }
+  }
+
+  private async handleInboxAckEffects(agentId: string): Promise<void> {
+    const states = this.store.listActivationDispatchStatesForAgent(agentId);
+    for (const state of states) {
+      await this.maybeDispatchActivationTarget(agentId, state.targetId, "ack");
+    }
+  }
+
+  private async maybeDispatchActivationTarget(
+    agentId: string,
+    targetId: string,
+    reason: "ack" | "lease",
+  ): Promise<void> {
+    const state = this.store.getActivationDispatchState(agentId, targetId);
+    if (!state) {
+      return;
+    }
+
+    const inbox = this.ensureInboxForAgent(agentId);
+    const unacked = this.store.countInboxItems(inbox.inboxId, false);
+    if (unacked === 0) {
+      this.store.deleteActivationDispatchState(agentId, targetId);
+      return;
+    }
+
+    if (reason === "ack" && state.status !== "dirty") {
+      return;
+    }
+
+    const dispatched = await this.dispatchActivationTarget({
+      agentId,
+      targetId,
+      newItemCount: state.pendingNewItemCount > 0 ? state.pendingNewItemCount : unacked,
+      summary: state.pendingSummary,
+      subscriptionIds: state.pendingSubscriptionIds,
+      sourceIds: state.pendingSourceIds,
+      items: this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => ({
+        itemId: item.itemId,
+        sourceId: item.sourceId,
+        sourceNativeId: item.sourceNativeId,
+        eventVariant: item.eventVariant,
+        inboxId: item.inboxId,
+        occurredAt: item.occurredAt,
+        metadata: item.metadata,
+        rawPayload: item.rawPayload,
+        deliveryHandle: item.deliveryHandle,
+      })),
+    });
+
+    if (!dispatched) {
+      this.store.upsertActivationDispatchState({
+        ...state,
+        status: "dirty",
+        leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+        updatedAt: nowIso(),
+      });
+    }
+  }
+
+  private async dispatchActivationTarget(input: {
+    agentId: string;
+    targetId: string;
+    newItemCount: number;
+    summary: string | null;
+    subscriptionIds: string[];
+    sourceIds: string[];
+    items: ActivationItem[];
+  }): Promise<boolean> {
+    const target = this.getActivationTarget(input.targetId);
+    const inbox = this.ensureInboxForAgent(input.agentId);
+    const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
+    try {
+      if (target.kind === "terminal") {
+        const prompt = renderAgentPrompt({
+          inboxId: inbox.inboxId,
+          newItemCount: input.newItemCount,
+          summary: input.summary,
+        });
+        await this.terminalDispatcher.dispatch(target, prompt);
+      } else {
+        const activation: Activation = {
+          kind: "agentinbox.activation",
+          activationId: generateId("act"),
+          agentId: input.agentId,
+          inboxId: inbox.inboxId,
+          targetId: target.targetId,
+          targetKind: target.kind,
+          subscriptionIds: input.subscriptionIds,
+          sourceIds: input.sourceIds,
+          newItemCount: input.newItemCount,
+          summary,
+          items: target.mode === "activation_with_items" && input.items.length > 0 ? input.items : undefined,
+          createdAt: nowIso(),
+          deliveredAt: null,
+        };
+        await this.activationDispatcher.dispatch(target.url, activation);
+        this.store.insertActivation(activation);
+      }
+
+      this.store.upsertActivationDispatchState({
+        agentId: input.agentId,
+        targetId: input.targetId,
+        status: "notified",
+        leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
+        pendingNewItemCount: 0,
+        pendingSummary: null,
+        pendingSubscriptionIds: [],
+        pendingSourceIds: [],
+        updatedAt: nowIso(),
+      });
+      return true;
+    } catch (error) {
+      console.warn(`activation target dispatch failed for ${target.targetId}:`, error);
+      return false;
+    }
+  }
+
+  private upsertDirtyDispatchState(
+    agentId: string,
+    targetId: string,
+    entries: Array<{ subscriptionId: string; sourceId: string; summary: string }>,
+  ): void {
+    this.store.upsertActivationDispatchState({
+      agentId,
+      targetId,
+      status: "dirty",
+      leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+      pendingNewItemCount: entries.length,
+      pendingSummary: entries[0]?.summary ?? null,
+      pendingSubscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
+      pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
+      updatedAt: nowIso(),
     });
   }
 
@@ -807,9 +1056,9 @@ export class AgentInboxService {
     }
   }
 
-  private async syncTerminalDispatchStates(): Promise<void> {
+  private async syncActivationDispatchStates(): Promise<void> {
     const now = Date.now();
-    const states = this.store.listTerminalDispatchStates();
+    const states = this.store.listActivationDispatchStates();
     for (const state of states) {
       if (!state.leaseExpiresAt) {
         continue;
@@ -819,345 +1068,11 @@ export class AgentInboxService {
         continue;
       }
       try {
-        await this.maybeDispatchTerminalNotification(state.inboxId, state.targetId, "lease");
+        await this.maybeDispatchActivationTarget(state.agentId, state.targetId, "lease");
       } catch (error) {
-        console.warn(`terminal notify lease sync failed for ${state.targetId}/${state.inboxId}:`, error);
+        console.warn(`activation target lease sync failed for ${state.targetId}/${state.agentId}:`, error);
       }
     }
-  }
-
-  private notifyInboxWatchers(inboxId: string, items: InboxItem[]): void {
-    const watchers = this.inboxWatchers.get(inboxId);
-    if (!watchers || watchers.size === 0) {
-      return;
-    }
-    for (const watcher of watchers) {
-      watcher.onItems(items);
-    }
-  }
-
-  private enqueueTerminalNotification(input: {
-    agentId: string;
-    inboxId: string;
-    terminalTargetId: string;
-    subscriptionId: string;
-    sourceId: string;
-    eventVariant: string;
-    sourceType: string;
-    sourceKey: string;
-  }): void {
-    const key = terminalBufferKey(input.inboxId, input.terminalTargetId);
-    let buffer = this.terminalBuffers.get(key);
-    if (!buffer) {
-      buffer = {
-        inboxId: input.inboxId,
-        terminalTargetId: input.terminalTargetId,
-        agentId: input.agentId,
-        pending: [],
-        timer: null,
-        inFlight: false,
-      };
-      this.terminalBuffers.set(key, buffer);
-    }
-
-    buffer.pending.push({
-      subscriptionId: input.subscriptionId,
-      sourceId: input.sourceId,
-      summary: summarizeSourceEvent(input.sourceType, input.sourceKey, input.eventVariant),
-    });
-
-    if (!buffer.timer && !buffer.inFlight) {
-      buffer.timer = setTimeout(() => {
-        void this.flushTerminalBuffer(key);
-      }, this.activationWindowMs);
-    }
-
-    if (buffer.pending.length >= this.activationMaxItems) {
-      if (buffer.timer) {
-        clearTimeout(buffer.timer);
-        buffer.timer = null;
-      }
-      void this.flushTerminalBuffer(key);
-    }
-  }
-
-  private enqueueActivation(input: {
-    agentId: string;
-    inboxId: string;
-    activationTarget: string | null;
-    activationMode: Subscription["activationMode"];
-    subscriptionId: string;
-    sourceId: string;
-    eventVariant: string;
-    sourceType: string;
-    sourceKey: string;
-    item: ActivationItem;
-  }): void {
-    const key = activationBufferKey(input.inboxId, input.activationTarget, input.activationMode);
-    let buffer = this.activationBuffers.get(key);
-    if (!buffer) {
-      buffer = {
-        agentId: input.agentId,
-        inboxId: input.inboxId,
-        activationTarget: input.activationTarget,
-        activationMode: input.activationMode,
-        pending: [],
-        timer: null,
-        inFlight: false,
-      };
-      this.activationBuffers.set(key, buffer);
-    }
-
-    buffer.pending.push({
-      subscriptionId: input.subscriptionId,
-      sourceId: input.sourceId,
-      summary: summarizeSourceEvent(input.sourceType, input.sourceKey, input.eventVariant),
-      item: input.activationMode === "activation_with_items" ? input.item : undefined,
-    });
-
-    if (!buffer.timer && !buffer.inFlight) {
-      buffer.timer = setTimeout(() => {
-        void this.flushActivationBuffer(key);
-      }, this.activationWindowMs);
-    }
-
-    if (buffer.pending.length >= this.activationMaxItems) {
-      if (buffer.timer) {
-        clearTimeout(buffer.timer);
-        buffer.timer = null;
-      }
-      void this.flushActivationBuffer(key);
-    }
-  }
-
-  private async flushAllPendingActivations(): Promise<void> {
-    const keys = Array.from(this.activationBuffers.keys());
-    for (const key of keys) {
-      await this.flushActivationBuffer(key);
-    }
-  }
-
-  private async flushActivationBuffer(key: string): Promise<void> {
-    const buffer = this.activationBuffers.get(key);
-    if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
-      return;
-    }
-    if (buffer.timer) {
-      clearTimeout(buffer.timer);
-      buffer.timer = null;
-    }
-
-    buffer.inFlight = true;
-    const dispatchedEntries = buffer.pending.splice(0, buffer.pending.length);
-    try {
-      const dispatchedCount = dispatchedEntries.length;
-      const dispatchedSubscriptionIds = Array.from(new Set(dispatchedEntries.map((entry) => entry.subscriptionId))).sort();
-      const dispatchedSourceIds = Array.from(new Set(dispatchedEntries.map((entry) => entry.sourceId))).sort();
-      const dispatchedSummary = dispatchedEntries[0]?.summary ?? null;
-      const dispatchedItems = buffer.activationMode === "activation_with_items"
-        ? dispatchedEntries
-          .map((entry) => entry.item)
-          .filter((item): item is ActivationItem => Boolean(item))
-        : undefined;
-      const activation: Activation = {
-        kind: "agentinbox.activation",
-        activationId: generateId("act"),
-        agentId: buffer.agentId,
-        inboxId: buffer.inboxId,
-        subscriptionIds: dispatchedSubscriptionIds,
-        sourceIds: dispatchedSourceIds,
-        newItemCount: dispatchedCount,
-        summary: summarizeActivation(buffer.inboxId, dispatchedCount, dispatchedSummary),
-        items: dispatchedItems && dispatchedItems.length > 0 ? dispatchedItems : undefined,
-        createdAt: nowIso(),
-        deliveredAt: null,
-      };
-      await this.activationDispatcher.dispatch(buffer.activationTarget, activation);
-      this.store.insertActivation(activation);
-
-      const hasPendingDuringFlight = buffer.pending.length > 0;
-      buffer.inFlight = false;
-
-      if (hasPendingDuringFlight) {
-        buffer.timer = setTimeout(() => {
-          void this.flushActivationBuffer(key);
-        }, this.activationWindowMs);
-        return;
-      }
-
-      this.activationBuffers.delete(key);
-    } catch (error) {
-      buffer.pending.unshift(...dispatchedEntries);
-      buffer.inFlight = false;
-      if (!this.stopping && !buffer.timer) {
-        buffer.timer = setTimeout(() => {
-          void this.flushActivationBuffer(key);
-        }, this.activationWindowMs);
-      }
-      throw error;
-    }
-  }
-
-  private async flushTerminalBuffer(key: string): Promise<void> {
-    const buffer = this.terminalBuffers.get(key);
-    if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
-      return;
-    }
-    if (buffer.timer) {
-      clearTimeout(buffer.timer);
-      buffer.timer = null;
-    }
-
-    buffer.inFlight = true;
-    const entries = buffer.pending.splice(0, buffer.pending.length);
-    try {
-      const summary = entries[0]?.summary ?? null;
-      const state = this.store.getTerminalDispatchState(buffer.inboxId, buffer.terminalTargetId);
-      if (!state) {
-        const dispatched = await this.dispatchTerminalNotification({
-          inboxId: buffer.inboxId,
-          targetId: buffer.terminalTargetId,
-          agentId: buffer.agentId,
-          newItemCount: entries.length,
-          summary,
-          subscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
-          sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
-        });
-        if (!dispatched) {
-          this.upsertDirtyTerminalState(buffer.inboxId, buffer.terminalTargetId, entries);
-        }
-      } else {
-        this.store.upsertTerminalDispatchState({
-          inboxId: buffer.inboxId,
-          targetId: buffer.terminalTargetId,
-          status: "dirty",
-          leaseExpiresAt: state.leaseExpiresAt,
-          pendingNewItemCount: state.pendingNewItemCount + entries.length,
-          pendingSummary: state.pendingSummary ?? summary,
-          pendingSubscriptionIds: uniqueSorted([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
-          pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
-          updatedAt: nowIso(),
-        });
-      }
-
-      const hasPendingDuringFlight = buffer.pending.length > 0;
-      buffer.inFlight = false;
-      if (hasPendingDuringFlight) {
-        buffer.timer = setTimeout(() => {
-          void this.flushTerminalBuffer(key);
-        }, this.activationWindowMs);
-        return;
-      }
-      this.terminalBuffers.delete(key);
-    } catch (error) {
-      buffer.pending.unshift(...entries);
-      buffer.inFlight = false;
-      if (!this.stopping && !buffer.timer) {
-        buffer.timer = setTimeout(() => {
-          void this.flushTerminalBuffer(key);
-        }, this.activationWindowMs);
-      }
-      throw error;
-    }
-  }
-
-  private async handleInboxAckEffects(inboxId: string): Promise<void> {
-    const states = this.store.listTerminalDispatchStatesForInbox(inboxId);
-    for (const state of states) {
-      await this.maybeDispatchTerminalNotification(inboxId, state.targetId, "ack");
-    }
-  }
-
-  private async maybeDispatchTerminalNotification(
-    inboxId: string,
-    targetId: string,
-    reason: "ack" | "lease",
-  ): Promise<void> {
-    const state = this.store.getTerminalDispatchState(inboxId, targetId);
-    if (!state) {
-      return;
-    }
-    const unacked = this.store.countInboxItems(inboxId, false);
-    if (unacked === 0) {
-      this.store.deleteTerminalDispatchState(inboxId, targetId);
-      return;
-    }
-
-    if (reason === "ack" && state.status !== "dirty") {
-      return;
-    }
-
-    const dispatched = await this.dispatchTerminalNotification({
-      inboxId,
-      targetId,
-      agentId: this.getTerminalTarget(targetId).agentId,
-      newItemCount: state.pendingNewItemCount > 0 ? state.pendingNewItemCount : unacked,
-      summary: state.pendingSummary,
-      subscriptionIds: state.pendingSubscriptionIds,
-      sourceIds: state.pendingSourceIds,
-    });
-
-    if (!dispatched) {
-      this.store.upsertTerminalDispatchState({
-        ...state,
-        status: "dirty",
-        leaseExpiresAt: new Date(Date.now() + DEFAULT_TERMINAL_RETRY_MS).toISOString(),
-        updatedAt: nowIso(),
-      });
-    }
-  }
-
-  private async dispatchTerminalNotification(input: {
-    inboxId: string;
-    targetId: string;
-    agentId: string;
-    newItemCount: number;
-    summary: string | null;
-    subscriptionIds: string[];
-    sourceIds: string[];
-  }): Promise<boolean> {
-    const target = this.getTerminalTarget(input.targetId);
-    const prompt = renderAgentPrompt({
-      inboxId: input.inboxId,
-      newItemCount: input.newItemCount,
-      summary: input.summary,
-    });
-    try {
-      await this.terminalDispatcher.dispatch(target, prompt);
-      this.store.upsertTerminalDispatchState({
-        inboxId: input.inboxId,
-        targetId: input.targetId,
-        status: "notified",
-        leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
-        pendingNewItemCount: 0,
-        pendingSummary: null,
-        pendingSubscriptionIds: [],
-        pendingSourceIds: [],
-        updatedAt: nowIso(),
-      });
-      return true;
-    } catch (error) {
-      console.warn(`terminal dispatch failed for ${target.targetId}:`, error);
-      return false;
-    }
-  }
-
-  private upsertDirtyTerminalState(
-    inboxId: string,
-    targetId: string,
-    entries: Array<{ subscriptionId: string; sourceId: string; summary: string }>,
-  ): void {
-    this.store.upsertTerminalDispatchState({
-      inboxId,
-      targetId,
-      status: "dirty",
-      leaseExpiresAt: new Date(Date.now() + DEFAULT_TERMINAL_RETRY_MS).toISOString(),
-      pendingNewItemCount: entries.length,
-      pendingSummary: entries[0]?.summary ?? null,
-      pendingSubscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
-      pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
-      updatedAt: nowIso(),
-    });
   }
 }
 
@@ -1178,67 +1093,33 @@ function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {
 }
 
 export class ActivationDispatcher {
-  async dispatch(target: string | null | undefined, activation: Activation): Promise<void> {
-    if (!target) {
-      return;
-    }
+  async dispatch(targetUrl: string, activation: Activation): Promise<void> {
     try {
-      const response = await fetch(target, {
+      const response = await fetch(targetUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(activation),
       });
       if (!response.ok) {
-        console.warn(`activation dispatch failed for ${target}: ${response.status}`);
+        throw new Error(`activation dispatch failed for ${targetUrl}: ${response.status}`);
       }
     } catch (error) {
-      console.warn(`activation dispatch error for ${target}:`, error);
+      console.warn(`activation dispatch error for ${targetUrl}:`, error);
+      throw error;
     }
   }
 }
 
-function activationBufferKey(
-  inboxId: string,
-  activationTarget: string | null,
-  activationMode: Subscription["activationMode"],
-): string {
-  return `${inboxId}::${activationTarget ?? ""}::${activationMode}`;
-}
-
-function summarizeActivation(inboxId: string, newItemCount: number, firstSummary: string | null): string {
-  const itemWord = newItemCount === 1 ? "item" : "items";
-  if (firstSummary) {
-    return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
-  }
-  return `${newItemCount} new ${itemWord} in ${inboxId}`;
-}
-
-function normalizeActivationMode(mode: RegisterSubscriptionInput["activationMode"]): Subscription["activationMode"] {
-  const resolved = mode ?? "activation_only";
-  if (!ACTIVATION_MODES.has(resolved)) {
-    throw new Error(`unsupported activation mode: ${String(mode)}`);
-  }
-  return resolved;
-}
-
-function normalizeTerminalMode(mode: RegisterTerminalTargetInput["mode"]): TerminalTarget["mode"] {
-  const resolved = mode ?? "agent_prompt";
-  if (!TERMINAL_MODES.has(resolved)) {
-    throw new Error(`unsupported terminal mode: ${String(mode)}`);
-  }
-  return resolved;
-}
-
-function validateTerminalIdentity(input: RegisterTerminalTargetInput): void {
+function validateTerminalRegistration(input: RegisterAgentInput): void {
   if (input.backend === "tmux") {
     if (!input.tmuxPaneId) {
-      throw new Error("tmux terminal target requires tmuxPaneId");
+      throw new Error("tmux agent registration requires tmuxPaneId");
     }
     return;
   }
   if (input.backend === "iterm2") {
     if (!input.itermSessionId && !input.tty) {
-      throw new Error("iterm2 terminal target requires itermSessionId or tty");
+      throw new Error("iterm2 agent registration requires itermSessionId or tty");
     }
     return;
   }
@@ -1254,22 +1135,30 @@ function validateNotifyLeaseMs(value: number | null | undefined): void {
   }
 }
 
-function findExistingTerminalTarget(store: AgentInboxStore, input: RegisterTerminalTargetInput): TerminalTarget | null {
+function normalizeWebhookActivationMode(mode: AddWebhookActivationTargetInput["activationMode"]): WebhookActivationTarget["mode"] {
+  const resolved = mode ?? "activation_only";
+  if (!WEBHOOK_ACTIVATION_MODES.has(resolved)) {
+    throw new Error(`unsupported activation mode: ${String(mode)}`);
+  }
+  return resolved;
+}
+
+function findExistingTerminalActivationTarget(store: AgentInboxStore, input: RegisterAgentInput): TerminalActivationTarget | null {
   if (input.runtimeSessionId) {
-    const target = store.getTerminalTargetByRuntimeSession(input.runtimeKind ?? "unknown", input.runtimeSessionId);
+    const target = store.getTerminalActivationTargetByRuntimeSession(input.runtimeKind ?? "unknown", input.runtimeSessionId);
     if (target) {
       return target;
     }
   }
   if (input.backend === "tmux" && input.tmuxPaneId) {
-    return store.getTerminalTargetByTmuxPaneId(input.tmuxPaneId);
+    return store.getTerminalActivationTargetByTmuxPaneId(input.tmuxPaneId);
   }
   if (input.backend === "iterm2") {
     if (input.itermSessionId) {
-      return store.getTerminalTargetByItermSessionId(input.itermSessionId);
+      return store.getTerminalActivationTargetByItermSessionId(input.itermSessionId);
     }
     if (input.tty) {
-      return store.getTerminalTargetByTty(input.tty);
+      return store.getTerminalActivationTargetByTty(input.tty);
     }
   }
   return null;
@@ -1279,8 +1168,16 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort();
 }
 
-function terminalBufferKey(inboxId: string, terminalTargetId: string): string {
-  return `${inboxId}::${terminalTargetId}`;
+function notificationBufferKey(agentId: string, targetId: string): string {
+  return `${agentId}::${targetId}`;
+}
+
+function summarizeActivation(inboxId: string, newItemCount: number, firstSummary: string | null): string {
+  const itemWord = newItemCount === 1 ? "item" : "items";
+  if (firstSummary) {
+    return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
+  }
+  return `${newItemCount} new ${itemWord} in ${inboxId}`;
 }
 
 function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {

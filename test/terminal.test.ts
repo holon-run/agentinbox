@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assignedAgentIdFromContext, detectTerminalContext, TerminalDispatcher } from "../src/terminal";
-import { TerminalTarget } from "../src/model";
+import { TerminalActivationTarget } from "../src/model";
 
 test("detectTerminalContext derives codex runtime and iTerm2 session", () => {
   const detected = detectTerminalContext({
@@ -57,18 +57,19 @@ test("TerminalDispatcher uses osascript for iTerm2 targets", async () => {
     };
   });
 
-  const target: TerminalTarget = {
-    targetId: "term_1",
+  const target: TerminalActivationTarget = {
+    targetId: "tgt_1",
     agentId: "agent_codex_abc",
+    kind: "terminal",
+    mode: "agent_prompt",
+    notifyLeaseMs: 600000,
     runtimeKind: "codex",
     runtimeSessionId: "thread-1",
     backend: "iterm2",
-    mode: "agent_prompt",
     tmuxPaneId: null,
     tty: null,
     termProgram: "iTerm.app",
     itermSessionId: "4B4CB6B2-A73B-4420-94A7-BD2CA216A285",
-    notifyLeaseMs: 600000,
     createdAt: "2026-04-07T00:00:00.000Z",
     updatedAt: "2026-04-07T00:00:00.000Z",
     lastSeenAt: "2026-04-07T00:00:00.000Z",
