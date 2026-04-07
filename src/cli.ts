@@ -9,6 +9,7 @@ import { AdapterRegistry } from "./adapters";
 import { AgentInboxClient } from "./client";
 import { startControlServer } from "./control_server";
 import { resolveClientTransport, resolveServeConfig } from "./paths";
+import { detectTerminalContext } from "./terminal";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -109,7 +110,7 @@ async function main(): Promise<void> {
   if (command === "subscription" && normalized[1] === "add") {
     const [agentId, sourceId] = normalized.slice(2, 4);
     if (!agentId || !sourceId) {
-      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--terminal-target ID] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
     await printRemote(client, "/subscriptions/register", {
       agentId,
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
       inboxId: takeFlagValue(normalized, "--inbox-id") ?? undefined,
       matchRules: parseJsonArg(takeFlagValue(normalized, "--match-json")),
       activationTarget: takeFlagValue(normalized, "--activation-target") ?? null,
+      terminalTargetId: takeFlagValue(normalized, "--terminal-target") ?? null,
       activationMode: takeFlagValue(normalized, "--activation-mode") ?? undefined,
       startPolicy: takeFlagValue(normalized, "--start-policy") ?? undefined,
       startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
@@ -247,6 +249,41 @@ async function main(): Promise<void> {
       return;
     }
     await printRemote(client, `/inboxes/${encodeURIComponent(inboxId)}/ack`, { itemIds: [itemId] });
+    return;
+  }
+
+  if (command === "terminal" && hasHelpFlag(normalized.slice(1))) {
+    printHelp(["terminal"]);
+    return;
+  }
+
+  if (command === "terminal" && normalized[1] === "register") {
+    const detected = detectTerminalContext(process.env);
+    await printRemote(client, "/terminals/register", {
+      backend: detected.backend,
+      runtimeKind: detected.runtimeKind,
+      runtimeSessionId: detected.runtimeSessionId ?? null,
+      mode: "agent_prompt",
+      tmuxPaneId: detected.tmuxPaneId ?? null,
+      tty: detected.tty ?? null,
+      termProgram: detected.termProgram ?? null,
+      itermSessionId: detected.itermSessionId ?? null,
+      notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? null,
+    });
+    return;
+  }
+
+  if (command === "terminal" && normalized[1] === "list") {
+    await printRemote(client, "/terminals", undefined, "GET");
+    return;
+  }
+
+  if (command === "terminal" && normalized[1] === "show") {
+    const targetId = normalized[2];
+    if (!targetId) {
+      throw new Error("usage: agentinbox terminal show <targetId>");
+    }
+    await printRemote(client, `/terminals/${encodeURIComponent(targetId)}`, undefined, "GET");
     return;
   }
 
@@ -429,6 +466,7 @@ Commands:
   source
   subscription
   inbox
+  terminal
   fixture
   deliver
   status
@@ -455,7 +493,7 @@ Usage:
     subscription: `agentinbox subscription
 
 Usage:
-  agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <agentId> <sourceId> [--inbox-id ID] [--match-json JSON] [--activation-target URL] [--terminal-target ID] [--activation-mode MODE] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID] [--inbox-id ID]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription poll <subscriptionId>
@@ -471,6 +509,13 @@ Usage:
   agentinbox inbox read <inboxId>
   agentinbox inbox watch <inboxId> [--after-item ID] [--include-acked] [--heartbeat-ms N]
   agentinbox inbox ack <inboxId> (--item <itemId> | --all)
+`,
+    terminal: `agentinbox terminal
+
+Usage:
+  agentinbox terminal register [--notify-lease-ms N]
+  agentinbox terminal list
+  agentinbox terminal show <targetId>
 `,
     fixture: `agentinbox fixture
 

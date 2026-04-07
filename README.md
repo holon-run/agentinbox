@@ -346,6 +346,43 @@ agentinbox subscription add alpha <source_id> \
   --activation-mode activation_with_items
 ```
 
+## Terminal Targets
+
+For local agent sessions that do not expose a notification API, `AgentInbox`
+can register the current terminal session and inject an `agent_prompt` back
+into it when new inbox items arrive.
+
+Register the current session:
+
+```bash
+agentinbox terminal register
+```
+
+The response includes an assigned `agentId` and a `targetId`. Use the returned
+`agentId` for later subscription and inbox commands, and use the returned
+`targetId` when you want a subscription to notify this terminal session.
+
+Attach that terminal target to a subscription:
+
+```bash
+agentinbox subscription add <agent_id> <source_id> \
+  --terminal-target <target_id>
+```
+
+`AgentInbox` detects the current terminal context automatically. `tmux` targets
+are injected with `send-keys ... Enter`. `iTerm2` targets are injected through
+AppleScript using the current session identity. When available, runtime session
+identities such as `CODEX_THREAD_ID` are recorded and used to derive a stable
+assigned `agentId`.
+
+Terminal notifications are gated by inbox acknowledgement:
+
+- the first batch of new inbox items triggers one injected prompt
+- no further prompt is injected until the inbox is acknowledged
+- if more items arrive before acknowledgement, they are coalesced
+- if the session never acknowledges, the prompt is retried after the target's
+  notify lease expires
+
 ## CLI
 
 `help` and `version` are text-first:

@@ -116,6 +116,38 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      if (req.method === "GET" && url.pathname === "/terminals") {
+        send(res, 200, { terminals: service.listTerminalTargets() });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/terminals/register") {
+        const body = await readJson(req);
+        const backend = parseRequiredString(body.backend, "terminals/register requires backend");
+        if (!backend) {
+          send(res, 400, { error: "terminals/register requires backend" });
+          return;
+        }
+        send(res, 200, service.registerTerminalTarget({
+          backend: backend as never,
+          runtimeKind: parseOptionalString(body.runtimeKind) as never,
+          runtimeSessionId: parseOptionalString(body.runtimeSessionId),
+          mode: parseOptionalString(body.mode) as never,
+          tmuxPaneId: parseOptionalString(body.tmuxPaneId),
+          tty: parseOptionalString(body.tty),
+          termProgram: parseOptionalString(body.termProgram),
+          itermSessionId: parseOptionalString(body.itermSessionId),
+          notifyLeaseMs: parseOptionalInteger(body.notifyLeaseMs) ?? null,
+        }));
+        return;
+      }
+
+      const terminalMatch = url.pathname.match(/^\/terminals\/([^/]+)$/);
+      if (req.method === "GET" && terminalMatch) {
+        send(res, 200, service.getTerminalTarget(decodeURIComponent(terminalMatch[1])));
+        return;
+      }
+
       const subscriptionMatch = url.pathname.match(/^\/subscriptions\/([^/]+)$/);
       if (req.method === "GET" && subscriptionMatch) {
         send(res, 200, await service.getSubscriptionDetails(decodeURIComponent(subscriptionMatch[1])));
@@ -299,9 +331,15 @@ export function createServer(service: AgentInboxService): http.Server {
         message.startsWith("sources/events requires") ||
         message.startsWith("deliveryHandle requires") ||
         message.startsWith("subscriptions/reset requires") ||
+        message.startsWith("terminals/register requires") ||
         message.startsWith("inboxes/ensure requires") ||
         message.startsWith("inbox ") ||
-        message.startsWith("unsupported start policy")
+        message.startsWith("unsupported start policy") ||
+        message.startsWith("unsupported terminal") ||
+        message.includes("requires tmuxPaneId") ||
+        message.includes("requires itermSessionId") ||
+        message.includes("already belongs to agent") ||
+        message.includes("belongs to agent")
       ) {
         send(res, 400, { error: message });
         return;

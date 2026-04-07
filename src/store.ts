@@ -19,10 +19,12 @@ import {
   Subscription,
   SubscriptionSource,
   SubscriptionStartPolicy,
+  TerminalDispatchState,
+  TerminalTarget,
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 7;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -93,6 +95,19 @@ export class AgentInboxStore {
       this.upgradeActivationItemsSchema();
     }
 
+    if (userVersion < 5 && this.needsSubscriptionTerminalTargetUpgrade()) {
+      this.upgradeSubscriptionTerminalTargetSchema();
+    }
+
+    if (userVersion < 6) {
+      this.createTerminalSchema();
+    }
+
+    if (userVersion < 7 && this.needsTerminalRuntimeUpgrade()) {
+      this.upgradeTerminalRuntimeSchema();
+    }
+
+    this.createCurrentIndexes();
     this.setUserVersion(SCHEMA_VERSION);
   }
 
@@ -227,6 +242,10 @@ export class AgentInboxStore {
     return !this.columnExists("activations", "items_json");
   }
 
+  private needsSubscriptionTerminalTargetUpgrade(): boolean {
+    return !this.columnExists("subscriptions", "terminal_target_id");
+  }
+
   private upgradeActivationSchema(): void {
     this.inTransaction(() => {
       this.db.exec(`
@@ -281,6 +300,12 @@ export class AgentInboxStore {
     });
   }
 
+  private upgradeSubscriptionTerminalTargetSchema(): void {
+    this.inTransaction(() => {
+      this.db.exec("alter table subscriptions add column terminal_target_id text;");
+    });
+  }
+
   private createCurrentSchema(): void {
     this.createCurrentSchemaBase();
     this.createCurrentIndexes();
@@ -314,6 +339,7 @@ export class AgentInboxStore {
         inbox_id text not null,
         match_rules_json text not null,
         activation_target text,
+        terminal_target_id text,
         activation_mode text not null,
         start_policy text not null,
         start_offset integer,
@@ -406,6 +432,57 @@ export class AgentInboxStore {
         committed_at text not null
       );
     `);
+    this.createTerminalSchema();
+  }
+
+  private createTerminalSchema(): void {
+    this.db.exec(`
+      create table if not exists terminal_targets (
+        target_id text primary key,
+        agent_id text not null,
+        runtime_kind text not null default 'unknown',
+        runtime_session_id text,
+        backend text not null,
+        mode text not null,
+        tmux_pane_id text,
+        tty text,
+        term_program text,
+        iterm_session_id text,
+        notify_lease_ms integer not null,
+        created_at text not null,
+        updated_at text not null,
+        last_seen_at text not null
+      );
+
+      create table if not exists terminal_dispatch_states (
+        inbox_id text not null,
+        target_id text not null,
+        status text not null,
+        lease_expires_at text,
+        pending_new_item_count integer not null,
+        pending_summary text,
+        pending_subscription_ids_json text not null,
+        pending_source_ids_json text not null,
+        updated_at text not null,
+        primary key (inbox_id, target_id)
+      );
+    `);
+  }
+
+  private needsTerminalRuntimeUpgrade(): boolean {
+    return !this.columnExists("terminal_targets", "runtime_kind")
+      || !this.columnExists("terminal_targets", "runtime_session_id");
+  }
+
+  private upgradeTerminalRuntimeSchema(): void {
+    this.inTransaction(() => {
+      if (!this.columnExists("terminal_targets", "runtime_kind")) {
+        this.db.exec("alter table terminal_targets add column runtime_kind text not null default 'unknown';");
+      }
+      if (!this.columnExists("terminal_targets", "runtime_session_id")) {
+        this.db.exec("alter table terminal_targets add column runtime_session_id text;");
+      }
+    });
   }
 
   private createCurrentIndexes(): void {
@@ -421,6 +498,21 @@ export class AgentInboxStore {
 
       create index if not exists idx_consumer_commits_consumer
         on consumer_commits(consumer_id, committed_offset);
+
+      create unique index if not exists idx_terminal_targets_tmux_pane
+        on terminal_targets(tmux_pane_id)
+        where tmux_pane_id is not null;
+
+      create unique index if not exists idx_terminal_targets_iterm_session
+        on terminal_targets(iterm_session_id)
+        where iterm_session_id is not null;
+
+      create unique index if not exists idx_terminal_targets_runtime_session
+        on terminal_targets(runtime_kind, runtime_session_id)
+        where runtime_session_id is not null;
+
+      create index if not exists idx_terminal_dispatch_states_target
+        on terminal_dispatch_states(target_id, lease_expires_at);
     `);
   }
 
@@ -564,8 +656,8 @@ export class AgentInboxStore {
       `
       insert into subscriptions (
         subscription_id, agent_id, source_id, inbox_id, match_rules_json,
-        activation_target, activation_mode, start_policy, start_offset, start_time, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        activation_target, terminal_target_id, activation_mode, start_policy, start_offset, start_time, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         subscription.subscriptionId,
@@ -574,6 +666,7 @@ export class AgentInboxStore {
         subscription.inboxId,
         JSON.stringify(subscription.matchRules),
         subscription.activationTarget ?? null,
+        subscription.terminalTargetId ?? null,
         subscription.activationMode,
         subscription.startPolicy,
         subscription.startOffset ?? null,
@@ -595,6 +688,166 @@ export class AgentInboxStore {
       [sourceId],
     );
     return rows.map((row) => this.mapSubscription(row));
+  }
+
+  getTerminalTarget(targetId: string): TerminalTarget | null {
+    const row = this.getOne("select * from terminal_targets where target_id = ?", [targetId]);
+    return row ? this.mapTerminalTarget(row) : null;
+  }
+
+  getTerminalTargetByTmuxPaneId(tmuxPaneId: string): TerminalTarget | null {
+    const row = this.getOne("select * from terminal_targets where tmux_pane_id = ?", [tmuxPaneId]);
+    return row ? this.mapTerminalTarget(row) : null;
+  }
+
+  getTerminalTargetByItermSessionId(itermSessionId: string): TerminalTarget | null {
+    const row = this.getOne("select * from terminal_targets where iterm_session_id = ?", [itermSessionId]);
+    return row ? this.mapTerminalTarget(row) : null;
+  }
+
+  getTerminalTargetByTty(tty: string): TerminalTarget | null {
+    const row = this.getOne("select * from terminal_targets where tty = ?", [tty]);
+    return row ? this.mapTerminalTarget(row) : null;
+  }
+
+  getTerminalTargetByRuntimeSession(runtimeKind: string, runtimeSessionId: string): TerminalTarget | null {
+    const row = this.getOne(
+      "select * from terminal_targets where runtime_kind = ? and runtime_session_id = ?",
+      [runtimeKind, runtimeSessionId],
+    );
+    return row ? this.mapTerminalTarget(row) : null;
+  }
+
+  insertTerminalTarget(target: TerminalTarget): void {
+    this.db.run(
+      `
+      insert into terminal_targets (
+        target_id, agent_id, runtime_kind, runtime_session_id, backend, mode, tmux_pane_id, tty, term_program, iterm_session_id,
+        notify_lease_ms, created_at, updated_at, last_seen_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        target.targetId,
+        target.agentId,
+        target.runtimeKind,
+        target.runtimeSessionId ?? null,
+        target.backend,
+        target.mode,
+        target.tmuxPaneId ?? null,
+        target.tty ?? null,
+        target.termProgram ?? null,
+        target.itermSessionId ?? null,
+        target.notifyLeaseMs,
+        target.createdAt,
+        target.updatedAt,
+        target.lastSeenAt,
+      ],
+    );
+    this.persist();
+  }
+
+  updateTerminalTargetHeartbeat(
+    targetId: string,
+    input: {
+      updatedAt: string;
+      lastSeenAt: string;
+      runtimeKind?: TerminalTarget["runtimeKind"];
+      runtimeSessionId?: string | null;
+      tty?: string | null;
+      termProgram?: string | null;
+      itermSessionId?: string | null;
+      tmuxPaneId?: string | null;
+    },
+  ): TerminalTarget {
+    const target = this.getTerminalTarget(targetId);
+    if (!target) {
+      throw new Error(`unknown terminal target: ${targetId}`);
+    }
+    this.db.run(
+      `
+      update terminal_targets
+      set runtime_kind = ?, runtime_session_id = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
+      where target_id = ?
+    `,
+      [
+        input.runtimeKind ?? target.runtimeKind,
+        input.runtimeSessionId ?? target.runtimeSessionId ?? null,
+        input.tmuxPaneId ?? target.tmuxPaneId ?? null,
+        input.tty ?? target.tty ?? null,
+        input.termProgram ?? target.termProgram ?? null,
+        input.itermSessionId ?? target.itermSessionId ?? null,
+        input.updatedAt,
+        input.lastSeenAt,
+        targetId,
+      ],
+    );
+    this.persist();
+    return this.getTerminalTarget(targetId)!;
+  }
+
+  listTerminalTargets(): TerminalTarget[] {
+    const rows = this.getAll("select * from terminal_targets order by created_at asc");
+    return rows.map((row) => this.mapTerminalTarget(row));
+  }
+
+  getTerminalDispatchState(inboxId: string, targetId: string): TerminalDispatchState | null {
+    const row = this.getOne(
+      "select * from terminal_dispatch_states where inbox_id = ? and target_id = ?",
+      [inboxId, targetId],
+    );
+    return row ? this.mapTerminalDispatchState(row) : null;
+  }
+
+  listTerminalDispatchStates(): TerminalDispatchState[] {
+    const rows = this.getAll("select * from terminal_dispatch_states order by updated_at asc");
+    return rows.map((row) => this.mapTerminalDispatchState(row));
+  }
+
+  listTerminalDispatchStatesForInbox(inboxId: string): TerminalDispatchState[] {
+    const rows = this.getAll(
+      "select * from terminal_dispatch_states where inbox_id = ? order by updated_at asc",
+      [inboxId],
+    );
+    return rows.map((row) => this.mapTerminalDispatchState(row));
+  }
+
+  upsertTerminalDispatchState(state: TerminalDispatchState): void {
+    this.db.run(
+      `
+      insert into terminal_dispatch_states (
+        inbox_id, target_id, status, lease_expires_at, pending_new_item_count, pending_summary,
+        pending_subscription_ids_json, pending_source_ids_json, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(inbox_id, target_id) do update set
+        status = excluded.status,
+        lease_expires_at = excluded.lease_expires_at,
+        pending_new_item_count = excluded.pending_new_item_count,
+        pending_summary = excluded.pending_summary,
+        pending_subscription_ids_json = excluded.pending_subscription_ids_json,
+        pending_source_ids_json = excluded.pending_source_ids_json,
+        updated_at = excluded.updated_at
+    `,
+      [
+        state.inboxId,
+        state.targetId,
+        state.status,
+        state.leaseExpiresAt ?? null,
+        state.pendingNewItemCount,
+        state.pendingSummary ?? null,
+        JSON.stringify(state.pendingSubscriptionIds),
+        JSON.stringify(state.pendingSourceIds),
+        state.updatedAt,
+      ],
+    );
+    this.persist();
+  }
+
+  deleteTerminalDispatchState(inboxId: string, targetId: string): void {
+    this.db.run(
+      "delete from terminal_dispatch_states where inbox_id = ? and target_id = ?",
+      [inboxId, targetId],
+    );
+    this.persist();
   }
 
   insertInboxItem(item: InboxItem): boolean {
@@ -673,6 +926,19 @@ export class AgentInboxStore {
       this.persist();
     }
     return changes;
+  }
+
+  countInboxItems(inboxId: string, includeAcked: boolean): number {
+    const row = this.getOne(
+      `
+      select count(*) as count
+      from inbox_items
+      where inbox_id = ?
+      ${includeAcked ? "" : "and acked_at is null"}
+    `,
+      [inboxId],
+    );
+    return Number(row?.count ?? 0);
   }
 
   insertActivation(activation: Activation): void {
@@ -959,6 +1225,8 @@ export class AgentInboxStore {
       pendingInboxItems: this.count("inbox_items where acked_at is null"),
       activations: this.count("activations"),
       deliveries: this.count("deliveries"),
+      terminalTargets: this.count("terminal_targets"),
+      terminalDispatchStates: this.count("terminal_dispatch_states"),
     };
   }
 
@@ -980,7 +1248,7 @@ export class AgentInboxStore {
   private getOne(sql: string, params: SqlBindParams = []): Record<string, unknown> | undefined {
     const statement = this.db.prepare(sql);
     try {
-      statement.bind(params);
+      statement.bind(params as never);
       if (!statement.step()) {
         return undefined;
       }
@@ -993,7 +1261,7 @@ export class AgentInboxStore {
   private getAll(sql: string, params: SqlBindParams = []): Record<string, unknown>[] {
     const statement = this.db.prepare(sql);
     try {
-      statement.bind(params);
+      statement.bind(params as never);
       const rows: Record<string, unknown>[] = [];
       while (statement.step()) {
         rows.push(statement.getAsObject() as Record<string, unknown>);
@@ -1034,6 +1302,7 @@ export class AgentInboxStore {
       inboxId: String(row.inbox_id),
       matchRules: parseJson<Record<string, unknown>>(row.match_rules_json as string),
       activationTarget: row.activation_target ? String(row.activation_target) : null,
+      terminalTargetId: row.terminal_target_id ? String(row.terminal_target_id) : null,
       activationMode: (row.activation_mode ? String(row.activation_mode) : "activation_only") as Subscription["activationMode"],
       startPolicy: row.start_policy as SubscriptionStartPolicy,
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
@@ -1087,6 +1356,39 @@ export class AgentInboxStore {
       payload: parseJson<Record<string, unknown>>(row.payload_json as string),
       status: row.status as DeliveryAttempt["status"],
       createdAt: String(row.created_at),
+    };
+  }
+
+  private mapTerminalTarget(row: Record<string, unknown>): TerminalTarget {
+    return {
+      targetId: String(row.target_id),
+      agentId: String(row.agent_id),
+      runtimeKind: row.runtime_kind ? String(row.runtime_kind) as TerminalTarget["runtimeKind"] : "unknown",
+      runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
+      backend: row.backend as TerminalTarget["backend"],
+      mode: row.mode as TerminalTarget["mode"],
+      tmuxPaneId: row.tmux_pane_id ? String(row.tmux_pane_id) : null,
+      tty: row.tty ? String(row.tty) : null,
+      termProgram: row.term_program ? String(row.term_program) : null,
+      itermSessionId: row.iterm_session_id ? String(row.iterm_session_id) : null,
+      notifyLeaseMs: Number(row.notify_lease_ms),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      lastSeenAt: String(row.last_seen_at),
+    };
+  }
+
+  private mapTerminalDispatchState(row: Record<string, unknown>): TerminalDispatchState {
+    return {
+      inboxId: String(row.inbox_id),
+      targetId: String(row.target_id),
+      status: row.status as TerminalDispatchState["status"],
+      leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
+      pendingNewItemCount: Number(row.pending_new_item_count),
+      pendingSummary: row.pending_summary ? String(row.pending_summary) : null,
+      pendingSubscriptionIds: parseJson<string[]>(row.pending_subscription_ids_json as string),
+      pendingSourceIds: parseJson<string[]>(row.pending_source_ids_json as string),
+      updatedAt: String(row.updated_at),
     };
   }
 
