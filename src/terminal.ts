@@ -214,7 +214,8 @@ tell application "iTerm2"
       repeat with aSession in sessions of aTab
         tell aSession
           if ((targetTty is not "" and (tty as text) is equal to targetTty) or (targetSessionId is not "" and (unique ID as text) is equal to targetSessionId)) then
-            write text promptText
+            select
+            write text promptText newline YES
             return "sent"
           end if
         end tell
