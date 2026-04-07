@@ -7,7 +7,7 @@ routes them by subscription, and lets agents read, watch, acknowledge, and
 reply through one boundary.
 
 `AgentInbox` is not an agent runtime. It sits between outside systems and local
-runtimes such as `Louke`.
+agent runtimes.
 
 ## Status
 
@@ -77,7 +77,7 @@ You can override these with:
 
 - external systems such as GitHub, IM, MCP endpoints, workspace watchers, and
   web/app bridges
-- local agent runtimes such as `Louke`
+- local agent runtimes
 
 It should let multiple agents reuse the same local subscription sources without
 forcing each agent runtime to embed provider-specific connectors.
@@ -111,14 +111,14 @@ forcing each agent runtime to embed provider-specific connectors.
 Use this boundary consistently:
 
 - `AgentInbox` owns sources and delivery
-- `Louke` owns runtime meaning
+- downstream runtimes own runtime meaning
 
 That means:
 
 - `AgentInbox` decides how outside systems are watched and how messages are
   routed or delivered
-- `Louke` decides how inbound items become queue work, wakeups, task updates,
-  or follow-up reasoning
+- downstream runtimes decide how inbound items become queue work, wakeups, task
+  updates, or follow-up reasoning
 
 ## Current Mental Model
 
@@ -162,8 +162,6 @@ The runtime should decide what to say.
 
 ## Relationship To Other Projects
 
-- `Louke`
-  - headless long-lived runtime for agents
 - `uxc`
   - capability access layer
 - `webmcp-bridge`
@@ -173,9 +171,9 @@ The runtime should decide what to say.
 
 ## Execution Strategy
 
-`AgentInbox` and `Louke` should develop in parallel.
+`AgentInbox` should stay loosely coupled to the runtime layer.
 
-They should share one forcing function:
+The forcing function is still:
 
 - a real workflow where external systems activate a local agent
 - the agent reads pending inbox items
@@ -203,7 +201,7 @@ Reasoning:
 - this layer is connector-heavy
 - SDK and CLI integrations are easier to move quickly in TypeScript
 - web/app and IM integrations are usually better supported there
-- `Louke` can remain the Rust runtime core
+- the runtime core can evolve independently
 
 If the product later needs stronger daemon constraints or deeper local systems
 integration, selective lower-level components can move later.
@@ -214,7 +212,7 @@ The near-term goal is not to become a large connector platform.
 
 The near-term goal is to prove a clean local ingress/delivery layer that:
 
-- keeps connector logic out of `Louke`
+- keeps connector logic out of agent runtimes
 - supports shared sources for multiple agents
 - activates local agents reliably
 - lets those agents reply through the same system boundary

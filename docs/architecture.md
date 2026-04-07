@@ -8,7 +8,7 @@ The goal is to lock the boundary between:
 
 - external systems
 - shared local subscription and delivery infrastructure
-- local agent runtimes such as `Louke`
+- local agent runtimes
 
 For the next-step event retention and multi-consumer design, see
 `docs/eventbus-backend.md`.
@@ -31,13 +31,11 @@ Current stack interpretation:
   - web/browser bridge layer
 - `AgentInbox`
   - shared ingress and delivery layer
-- `Louke`
-  - long-lived agent runtime
 - `holon`
   - future assembled product shell / operator environment
 
 This means `AgentInbox` is not optional glue.
-It is the system boundary that keeps connector logic out of `Louke`.
+It is the system boundary that keeps connector logic out of agent runtimes.
 
 ## Primary Architectural Goal
 
@@ -50,8 +48,8 @@ The repository should solve this problem:
 Use this boundary as the baseline:
 
 - `AgentInbox` owns source hosting, normalization, activation, and delivery
-- `Louke` owns runtime semantics, queue meaning, wake/sleep policy, task logic,
-  and reasoning
+- downstream runtimes own queue meaning, wake/sleep policy, task logic, and
+  reasoning
 
 This boundary should stay explicit in code and docs.
 
@@ -163,8 +161,8 @@ Responsibilities:
 
 Note:
 
-An `InboxItem` is not the same thing as a `Louke` queue item.
-`Louke` should read inbox items and map them into runtime-specific meaning.
+An `InboxItem` is not the same thing as a runtime queue item.
+The runtime should read inbox items and map them into runtime-specific meaning.
 
 ### `Activation`
 
@@ -263,7 +261,7 @@ When implementing a feature, ask:
 1. Is this source hosting?
 2. Is this activation?
 3. Is this outbound delivery?
-4. Is this actually runtime logic that belongs in `Louke`?
+4. Is this actually runtime logic that belongs in the runtime?
 5. Is this actually generic capability execution that should be delegated to
    `uxc`?
 
@@ -283,5 +281,5 @@ The first implementation should prefer:
 The first implementation should avoid:
 
 - over-unifying provider semantics
-- copying `Louke` runtime concepts into this repo
+- copying downstream runtime concepts into this repo
 - turning `AgentInbox` into an all-in-one integration platform

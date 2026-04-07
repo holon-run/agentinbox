@@ -15,7 +15,7 @@ Treat these boundaries as non-negotiable unless a deliberate architecture
 decision says otherwise:
 
 - `AgentInbox` owns subscription sources, delivery, and activation
-- `Louke` owns runtime semantics, queue meaning, wake/sleep, tasks, and brief
+- downstream runtimes own runtime semantics, queue meaning, wake/sleep, and tasks
 - `holon` is the future assembled product shell, not the inbox core
 
 Do not let `AgentInbox` drift into:
@@ -143,7 +143,7 @@ Avoid premature pressure to:
 
 - rewrite in Rust
 - unify every provider at the semantic level
-- copy runtime semantics from `Louke`
+- copy downstream runtime semantics into `AgentInbox`
 
 ## Quality Bar
 
@@ -151,7 +151,7 @@ Before introducing a new abstraction, ask:
 
 1. Is this solving shared source hosting?
 2. Is this solving activation or delivery?
-3. Is this actually runtime logic that belongs in `Louke` instead?
+3. Is this actually runtime logic that belongs in the runtime instead?
 4. Does this abstraction reduce connector duplication across agents?
 
 If the answer to 1, 2, and 4 is no, it probably does not belong here.
