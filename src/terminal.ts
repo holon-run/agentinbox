@@ -1,6 +1,9 @@
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { RuntimeKind, TerminalActivationTarget, TerminalBackend } from "./model";
 
 const execFileAsync = promisify(execFile);
@@ -185,10 +188,109 @@ function detectRuntimeContext(env: NodeJS.ProcessEnv): {
     };
   }
 
+  // Fallback: try to detect Claude Code from filesystem
+  const claudeCodeFromFs = detectClaudeCodeFromFileSystem(env);
+  if (claudeCodeFromFs) {
+    return claudeCodeFromFs;
+  }
+
   return {
     runtimeKind: "unknown",
     runtimeSessionId: null,
   };
+}
+
+function detectClaudeCodeFromFileSystem(env: NodeJS.ProcessEnv): {
+  runtimeKind: RuntimeKind;
+  runtimeSessionId: string | null;
+} | null {
+  try {
+    // Walk up the process tree to find a claude process
+    const claudePid = findClaudeProcessInAncestry();
+    if (!claudePid) {
+      return null;
+    }
+
+    // Read Claude Code session file
+    const sessionFile = path.join(os.homedir(), ".claude", "sessions", `${String(claudePid)}.json`);
+    if (!fs.existsSync(sessionFile)) {
+      return null;
+    }
+
+    const sessionContent = fs.readFileSync(sessionFile, "utf8");
+    const sessionData = JSON.parse(sessionContent);
+
+    // Validate session data structure
+    if (!sessionData.sessionId || typeof sessionData.sessionId !== "string") {
+      return null;
+    }
+
+    // Verify this session matches current working directory
+    // This helps avoid picking up wrong claude sessions
+    if (sessionData.cwd) {
+      const currentProject = path.basename(process.cwd());
+      const sessionProject = path.basename(sessionData.cwd);
+      if (currentProject !== sessionProject) {
+        return null;
+      }
+    }
+
+    return {
+      runtimeKind: "claude_code",
+      runtimeSessionId: sessionData.sessionId,
+    };
+  } catch {
+    // Silently fail if filesystem detection fails
+    return null;
+  }
+}
+
+function findClaudeProcessInAncestry(): number | null {
+  let currentPid = process.ppid;
+  const maxIterations = 10; // Prevent infinite loops
+  let iterations = 0;
+
+  while (currentPid && iterations < maxIterations) {
+    const processName = tryGetProcessName(currentPid);
+    if (processName?.includes("claude")) {
+      return currentPid;
+    }
+
+    // Get parent of current process
+    const parentPid = tryGetParentPid(currentPid);
+    if (!parentPid) {
+      break;
+    }
+    currentPid = parentPid;
+    iterations++;
+  }
+
+  return null;
+}
+
+function tryGetParentPid(pid: number): number | null {
+  try {
+    const output = execFileSync("ps", ["-p", String(pid), "-o", "ppid="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const ppid = parseInt(output.trim(), 10);
+    return isNaN(ppid) || ppid === 0 ? null : ppid;
+  } catch {
+    return null;
+  }
+}
+
+function tryGetProcessName(pid: number): string | null {
+  try {
+    const output = execFileSync("ps", ["-p", String(pid), "-o", "comm="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output.trim();
+  } catch {
+    return null;
+  }
 }
 
 function normalizeOptionalString(value: string | undefined | null): string | null {
