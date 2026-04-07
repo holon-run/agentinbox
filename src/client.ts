@@ -14,7 +14,7 @@ export class AgentInboxClient {
   async request<T = unknown>(
     endpoint: string,
     body?: unknown,
-    method: "GET" | "POST" = "POST",
+    method: "GET" | "POST" | "DELETE" = "POST",
   ): Promise<AgentInboxResponse<T>> {
     if (this.transport.kind === "socket") {
       return requestViaSocket<T>(this.transport.socketPath, endpoint, body, method);
@@ -22,7 +22,7 @@ export class AgentInboxClient {
     return requestViaUrl<T>(this.transport.baseUrl, endpoint, body, method);
   }
 
-  watchInbox(inboxId: string, options: WatchInboxOptions = {}): AsyncIterable<InboxWatchEvent> {
+  watchInbox(agentId: string, options: WatchInboxOptions = {}): AsyncIterable<InboxWatchEvent> {
     const query = new URLSearchParams();
     if (options.afterItemId) {
       query.set("after_item_id", options.afterItemId);
@@ -33,7 +33,7 @@ export class AgentInboxClient {
     if (options.heartbeatMs) {
       query.set("heartbeat_ms", String(options.heartbeatMs));
     }
-    const endpoint = `/inboxes/${encodeURIComponent(inboxId)}/watch${query.size > 0 ? `?${query.toString()}` : ""}`;
+    const endpoint = `/agents/${encodeURIComponent(agentId)}/inbox/watch${query.size > 0 ? `?${query.toString()}` : ""}`;
 
     if (this.transport.kind === "socket") {
       return watchViaSocket(this.transport.socketPath, endpoint);
@@ -46,7 +46,7 @@ function requestViaSocket<T>(
   socketPath: string,
   endpoint: string,
   body: unknown,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
 ): Promise<AgentInboxResponse<T>> {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
@@ -78,7 +78,7 @@ function requestViaUrl<T>(
   baseUrl: string,
   endpoint: string,
   body: unknown,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
 ): Promise<AgentInboxResponse<T>> {
   return new Promise((resolve, reject) => {
     const url = new URL(normalizeEndpoint(endpoint), baseUrl);

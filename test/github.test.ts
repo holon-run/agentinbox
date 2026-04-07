@@ -9,6 +9,7 @@ import { AdapterRegistry } from "../src/adapters";
 import { GithubDeliveryAdapter, GithubSourceRuntime, GithubUxcClient, normalizeGithubRepoEvent, type UxcLikeClient } from "../src/sources/github";
 import { AppendSourceEventInput, DeliveryAttempt, SubscriptionSource } from "../src/model";
 import { nowIso } from "../src/util";
+import { TerminalDispatcher } from "../src/terminal";
 
 class FakeUxcClient implements UxcLikeClient {
   public started: Array<Record<string, unknown>> = [];
@@ -73,7 +74,10 @@ async function makeService(): Promise<{ store: AgentInboxStore; service: AgentIn
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
   return { store, service, adapters, dir };
 }
 
@@ -138,8 +142,14 @@ test("github source runtime appends stream events and subscriptions materialize 
       updatedAt: nowIso(),
     };
     store.insertSource(source);
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-thread",
+      tmuxPaneId: "%201",
+    });
     const subscription = await service.registerSubscription({
-      agentId: "alpha",
+      agentId: agent.agent.agentId,
       sourceId: source.sourceId,
       matchRules: { mentions: ["alpha"] },
       startPolicy: "earliest",
@@ -167,7 +177,7 @@ test("github source runtime appends stream events and subscriptions materialize 
     const subscriptionResult = await service.pollSubscription(subscription.subscriptionId);
     assert.equal(sourceResult.appended, 1);
     assert.equal(subscriptionResult.inboxItemsCreated, 1);
-    assert.equal(service.listInboxItems(subscription.inboxId).length, 1);
+    assert.equal(service.listInboxItems(subscription.agentId).length, 1);
   } finally {
     await service.stop();
     store.close();

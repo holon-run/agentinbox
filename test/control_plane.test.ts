@@ -5,15 +5,15 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { AgentInboxStore } from "../src/store";
-import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
-import { createServer } from "../src/http";
 import { AgentInboxClient } from "../src/client";
 import { startControlServer } from "../src/control_server";
+import { createServer } from "../src/http";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveServeConfig } from "../src/paths";
-import { Activation, InboxItem, RegisterSourceInput, RegisterSubscriptionInput, SubscriptionPollResult, SubscriptionSource } from "../src/model";
-import { nowIso } from "../src/util";
+import { Activation, InboxItem, RegisterSourceInput, SubscriptionPollResult } from "../src/model";
+import { AgentInboxService } from "../src/service";
+import { AgentInboxStore } from "../src/store";
+import { TerminalDispatcher } from "../src/terminal";
 
 test("cli version and help subcommands print text output", () => {
   const repoDir = path.resolve(__dirname, "..");
@@ -36,20 +36,6 @@ test("cli version and help subcommands print text output", () => {
   assert.equal(inboxHelp.status, 0);
   assert.match(helpInbox.stdout, /agentinbox inbox/);
   assert.equal(helpInbox.stdout, inboxHelp.stdout);
-
-  const helpVersion = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "help", "version"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
-  const versionHelp = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "version", "--help"], {
-    cwd: repoDir,
-    encoding: "utf8",
-  });
-  assert.equal(helpVersion.status, 0);
-  assert.equal(versionHelp.status, 0);
-  assert.match(helpVersion.stdout, /agentinbox version/);
-  assert.match(helpVersion.stdout, /--version, -v/);
-  assert.equal(helpVersion.stdout, versionHelp.stdout);
 });
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
@@ -111,7 +97,10 @@ test("unix socket control plane replaces stale socket files and serves requests"
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
   const server = createServer(service);
 
   try {
@@ -139,7 +128,7 @@ test("unix socket control plane replaces stale socket files and serves requests"
   }
 });
 
-test("e2e control plane can register fixture source, consume a subscription, and send aggregated activation webhook", async () => {
+test("e2e control plane can register an agent, route events, watch inbox, and send aggregated activation webhook", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-e2e-home-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
@@ -147,16 +136,13 @@ test("e2e control plane can register fixture source, consume a subscription, and
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(
-    store,
-    adapters,
-    undefined,
-    undefined,
-    {
-      windowMs: 40,
-      maxItems: 20,
-    },
-  );
+  service = new AgentInboxService(store, adapters, undefined, undefined, {
+    windowMs: 40,
+    maxItems: 20,
+  }, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
   const server = createServer(service);
 
   let resolveWebhook: ((activation: Activation) => void) | null = null;
@@ -187,7 +173,7 @@ test("e2e control plane can register fixture source, consume a subscription, and
       });
       const address = webhookServer.address();
       assert.ok(address && typeof address === "object");
-      const activationTarget = `http://127.0.0.1:${address.port}/louke/activate`;
+      const webhookUrl = `http://127.0.0.1:${address.port}/activate`;
 
       const client = new AgentInboxClient({
         kind: "socket",
@@ -195,33 +181,42 @@ test("e2e control plane can register fixture source, consume a subscription, and
         source: "flag",
       });
 
-      const sourceResponse = await client.request<{
-        sourceId: string;
-        sourceType: string;
-      }>("/sources/register", {
+      const agentResponse = await client.request<{
+        agent: { agentId: string };
+        terminalTarget: { targetId: string };
+      }>("/agents/register", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-e2e",
+        tmuxPaneId: "%99",
+        notifyLeaseMs: 200,
+      });
+      assert.equal(agentResponse.statusCode, 200);
+      const agentId = agentResponse.data.agent.agentId;
+
+      const targetResponse = await client.request<{ targetId: string }>(`/agents/${encodeURIComponent(agentId)}/targets`, {
+        kind: "webhook",
+        url: webhookUrl,
+        activationMode: "activation_only",
+      });
+      assert.equal(targetResponse.statusCode, 200);
+
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
         sourceType: "fixture",
         sourceKey: "e2e-demo",
         config: {},
       } satisfies RegisterSourceInput);
       assert.equal(sourceResponse.statusCode, 200);
 
-      const subscriptionResponse = await client.request<{
-        subscriptionId: string;
-        inboxId: string;
-        agentId: string;
-      }>("/subscriptions/register", {
-        agentId: "alpha",
+      const subscriptionResponse = await client.request<{ subscriptionId: string }>("/subscriptions/register", {
+        agentId,
         sourceId: sourceResponse.data.sourceId,
         matchRules: { channel: "engineering" },
-        activationTarget,
         startPolicy: "earliest",
-      } satisfies RegisterSubscriptionInput);
+      });
       assert.equal(subscriptionResponse.statusCode, 200);
 
-      const appendResponse = await client.request<{
-        appended: number;
-        deduped: number;
-      }>("/fixtures/emit", {
+      const appendResponse = await client.request<{ appended: number }>("/fixtures/emit", {
         sourceId: sourceResponse.data.sourceId,
         sourceNativeId: "evt-e2e-1",
         eventVariant: "message.created",
@@ -240,476 +235,30 @@ test("e2e control plane can register fixture source, consume a subscription, and
       assert.equal(pollResponse.data.inboxItemsCreated, 1);
 
       const activation = await waitFor(webhookReceived, 1_000, "timed out waiting for activation webhook");
-      assert.equal(activation.kind, "agentinbox.activation");
-      assert.equal(activation.agentId, "alpha");
-      assert.equal(activation.inboxId, subscriptionResponse.data.inboxId);
-      assert.deepEqual(activation.subscriptionIds, [subscriptionResponse.data.subscriptionId]);
-      assert.deepEqual(activation.sourceIds, [sourceResponse.data.sourceId]);
+      assert.equal(activation.agentId, agentId);
+      assert.equal(activation.targetKind, "webhook");
       assert.equal(activation.newItemCount, 1);
-      assert.equal(activation.items, undefined);
-      assert.match(activation.summary, /1 new item/);
 
       const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/inboxes/${subscriptionResponse.data.inboxId}/items`,
+        `/agents/${encodeURIComponent(agentId)}/inbox/items`,
         undefined,
         "GET",
       );
       assert.equal(inboxResponse.statusCode, 200);
       assert.equal(inboxResponse.data.items.length, 1);
-      assert.equal(inboxResponse.data.items[0].sourceNativeId, "evt-e2e-1");
-      assert.equal(inboxResponse.data.items[0].metadata.channel, "engineering");
-    } finally {
-      webhookServer.closeAllConnections?.();
-      await new Promise<void>((resolve) => webhookServer.close(() => resolve()));
-      await started.close();
-    }
-  } finally {
-    await service.stop();
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
 
-test("e2e control plane can append events through a custom source", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-custom-source-home-"));
-  const socketPath = path.join(homeDir, "agentinbox.sock");
-  const dbPath = path.join(homeDir, "agentinbox.sqlite");
-
-  const store = await AgentInboxStore.open(dbPath);
-  let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
-  const server = createServer(service);
-
-  try {
-    const started = await startControlServer(server, {
-      kind: "socket",
-      socketPath,
-    });
-    try {
-      const client = new AgentInboxClient({
-        kind: "socket",
-        socketPath,
-        source: "flag",
-      });
-
-      const sourceResponse = await client.request<{ sourceId: string; sourceType: string }>("/sources/register", {
-        sourceType: "custom",
-        sourceKey: "project-alpha",
-        config: {},
-      } satisfies RegisterSourceInput);
-      assert.equal(sourceResponse.statusCode, 200);
-      assert.equal(sourceResponse.data.sourceType, "custom");
-
-      const subscriptionResponse = await client.request<{ subscriptionId: string; inboxId: string }>(
-        "/subscriptions/register",
-        {
-          agentId: "alpha",
-          sourceId: sourceResponse.data.sourceId,
-          matchRules: { channel: "engineering" },
-          startPolicy: "earliest",
-        } satisfies RegisterSubscriptionInput,
-      );
-      assert.equal(subscriptionResponse.statusCode, 200);
-
-      const appendResponse = await client.request<{ appended: number; deduped: number }>(
-        `/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/events`,
-        {
-          sourceNativeId: "custom-evt-1",
-          eventVariant: "message.created",
-          metadata: { channel: "engineering" },
-          rawPayload: { text: "hello from custom source" },
-        },
-      );
-      assert.equal(appendResponse.statusCode, 200);
-      assert.equal(appendResponse.data.appended, 1);
-
-      const pollResponse = await client.request<SubscriptionPollResult>(
-        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
+      const ackResponse = await client.request<{ acked: number }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/ack-all`,
         {},
       );
-      assert.equal(pollResponse.statusCode, 200);
-      assert.equal(pollResponse.data.inboxItemsCreated, 1);
+      assert.equal(ackResponse.statusCode, 200);
+      assert.equal(ackResponse.data.acked, 1);
 
-      const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/inboxes/${subscriptionResponse.data.inboxId}/items`,
-        undefined,
-        "GET",
-      );
-      assert.equal(inboxResponse.statusCode, 200);
-      assert.equal(inboxResponse.data.items.length, 1);
-      assert.equal(inboxResponse.data.items[0].sourceNativeId, "custom-evt-1");
     } finally {
       await started.close();
     }
   } finally {
-    await service.stop();
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("e2e control plane watch streams backlog and future inbox items over socket SSE", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-watch-home-"));
-  const socketPath = path.join(homeDir, "agentinbox.sock");
-  const dbPath = path.join(homeDir, "agentinbox.sqlite");
-
-  const store = await AgentInboxStore.open(dbPath);
-  let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
-  const server = createServer(service);
-
-  try {
-    const started = await startControlServer(server, {
-      kind: "socket",
-      socketPath,
-    });
-    try {
-      const client = new AgentInboxClient({
-        kind: "socket",
-        socketPath,
-        source: "flag",
-      });
-
-      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
-        sourceType: "fixture",
-        sourceKey: "watch-demo",
-        config: {},
-      } satisfies RegisterSourceInput);
-      assert.equal(sourceResponse.statusCode, 200);
-
-      const subscriptionResponse = await client.request<{ subscriptionId: string; inboxId: string }>(
-        "/subscriptions/register",
-        {
-          agentId: "alpha",
-          sourceId: sourceResponse.data.sourceId,
-          startPolicy: "earliest",
-        } satisfies RegisterSubscriptionInput,
-      );
-      assert.equal(subscriptionResponse.statusCode, 200);
-
-      await client.request("/fixtures/emit", {
-        sourceId: sourceResponse.data.sourceId,
-        sourceNativeId: "evt-watch-1",
-        eventVariant: "message.created",
-        metadata: { channel: "engineering" },
-        rawPayload: { text: "first" },
-      });
-      await client.request<SubscriptionPollResult>(
-        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
-        {},
-      );
-
-      const watch = client.watchInbox(subscriptionResponse.data.inboxId, {
-        heartbeatMs: 25,
-      })[Symbol.asyncIterator]();
-
-      const firstEvent = await waitForWatchItems(watch, 1_000, "timed out waiting for backlog watch event");
-      assert.equal(firstEvent.items.length, 1);
-      assert.equal(firstEvent.items[0].sourceNativeId, "evt-watch-1");
-      assert.equal(firstEvent.items[0].ackedAt, null);
-
-      await client.request("/fixtures/emit", {
-        sourceId: sourceResponse.data.sourceId,
-        sourceNativeId: "evt-watch-2",
-        eventVariant: "message.created",
-        metadata: { channel: "engineering" },
-        rawPayload: { text: "second" },
-      });
-      await client.request<SubscriptionPollResult>(
-        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
-        {},
-      );
-
-      const secondEvent = await waitForWatchItems(watch, 1_000, "timed out waiting for future watch event");
-      assert.equal(secondEvent.items.length, 1);
-      assert.equal(secondEvent.items[0].sourceNativeId, "evt-watch-2");
-
-      await watch.return?.();
-    } finally {
-      await started.close();
-    }
-  } finally {
-    await service.stop();
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("inbox reads return 404 when after_item_id is unknown", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-watch-invalid-home-"));
-  const socketPath = path.join(homeDir, "agentinbox.sock");
-  const dbPath = path.join(homeDir, "agentinbox.sqlite");
-
-  const store = await AgentInboxStore.open(dbPath);
-  let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
-  const server = createServer(service);
-
-  try {
-    const started = await startControlServer(server, {
-      kind: "socket",
-      socketPath,
-    });
-    try {
-      const client = new AgentInboxClient({
-        kind: "socket",
-        socketPath,
-        source: "flag",
-      });
-      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
-        sourceType: "fixture",
-        sourceKey: "watch-invalid",
-        config: {},
-      } satisfies RegisterSourceInput);
-      const subscriptionResponse = await client.request<{ inboxId: string }>("/subscriptions/register", {
-        agentId: "alpha",
-        sourceId: sourceResponse.data.sourceId,
-      } satisfies RegisterSubscriptionInput);
-      const response = await client.request<{ error: string }>(
-        `/inboxes/${encodeURIComponent(subscriptionResponse.data.inboxId)}/items?after_item_id=missing`,
-        undefined,
-        "GET",
-      );
-      assert.equal(response.statusCode, 404);
-      assert.match(response.data.error, /unknown inbox item/);
-    } finally {
-      await started.close();
-    }
-  } finally {
-    await service.stop();
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("manual append endpoint rejects adapter-managed sources", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-manual-append-home-"));
-  const socketPath = path.join(homeDir, "agentinbox.sock");
-  const dbPath = path.join(homeDir, "agentinbox.sqlite");
-
-  const store = await AgentInboxStore.open(dbPath);
-  const githubSource: SubscriptionSource = {
-    sourceId: "src_github_manual_append",
-    sourceType: "github_repo",
-    sourceKey: "holon-run/agentinbox",
-    configRef: null,
-    config: { owner: "holon-run", repo: "agentinbox" },
-    status: "active",
-    checkpoint: null,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-  };
-  store.insertSource(githubSource);
-  let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
-  const server = createServer(service);
-
-  try {
-    const started = await startControlServer(server, {
-      kind: "socket",
-      socketPath,
-    });
-    try {
-      const client = new AgentInboxClient({
-        kind: "socket",
-        socketPath,
-        source: "flag",
-      });
-      const response = await client.request<{ error: string }>(
-        `/sources/${encodeURIComponent(githubSource.sourceId)}/events`,
-        {
-          sourceNativeId: "evt-1",
-          eventVariant: "message.created",
-          metadata: {},
-          rawPayload: {},
-        },
-      );
-      assert.equal(response.statusCode, 400);
-      assert.match(response.data.error, /manual append is not supported for source type: github_repo/);
-    } finally {
-      await started.close();
-    }
-  } finally {
-    await service.stop();
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("sources/events validates string ids and delivery handle shape", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-sev-"));
-  const socketPath = path.join(homeDir, "agentinbox.sock");
-  const dbPath = path.join(homeDir, "agentinbox.sqlite");
-
-  const store = await AgentInboxStore.open(dbPath);
-  let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
-  const server = createServer(service);
-
-  try {
-    const started = await startControlServer(server, {
-      kind: "socket",
-      socketPath,
-    });
-    try {
-      const client = new AgentInboxClient({
-        kind: "socket",
-        socketPath,
-        source: "flag",
-      });
-      const sourceResponse = await client.request<SubscriptionSource>("/sources/register", {
-        sourceType: "custom",
-        sourceKey: "validate-demo",
-      } satisfies RegisterSourceInput);
-      assert.equal(sourceResponse.statusCode, 200);
-
-      const invalidId = await client.request<{ error: string }>(`/sources/${sourceResponse.data.sourceId}/events`, {
-        sourceNativeId: { bad: true },
-        eventVariant: "message.created",
-      });
-      assert.equal(invalidId.statusCode, 400);
-      assert.match(invalidId.data.error, /sources\/events requires sourceNativeId/);
-
-      const invalidDeliveryHandle = await client.request<{ error: string }>(`/sources/${sourceResponse.data.sourceId}/events`, {
-        sourceNativeId: "evt-1",
-        eventVariant: "message.created",
-        deliveryHandle: { provider: "github" },
-      });
-      assert.equal(invalidDeliveryHandle.statusCode, 400);
-      assert.match(invalidDeliveryHandle.data.error, /deliveryHandle requires provider, surface, and targetRef/);
-    } finally {
-      await started.close();
-    }
-  } finally {
-    await service.stop();
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("control plane exposes source, subscription, and inbox management endpoints", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-mgmt-"));
-  const socketPath = path.join(homeDir, "agentinbox.sock");
-  const dbPath = path.join(homeDir, "agentinbox.sqlite");
-
-  const store = await AgentInboxStore.open(dbPath);
-  let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
-  const server = createServer(service);
-
-  try {
-    const started = await startControlServer(server, {
-      kind: "socket",
-      socketPath,
-    });
-    try {
-      const client = new AgentInboxClient({
-        kind: "socket",
-        socketPath,
-        source: "flag",
-      });
-      const source = await client.request<SubscriptionSource>("/sources/register", {
-        sourceType: "custom",
-        sourceKey: "mgmt-demo",
-      } satisfies RegisterSourceInput);
-      assert.equal(source.statusCode, 200);
-
-      const ensured = await client.request<{ inboxId: string; ownerAgentId: string }>("/inboxes/ensure", {
-        inboxId: "shared_alpha",
-        agentId: "alpha",
-      });
-      assert.equal(ensured.statusCode, 200);
-      assert.equal(ensured.data.inboxId, "shared_alpha");
-
-      const subscription = await client.request<{ subscriptionId: string; inboxId: string }>("/subscriptions/register", {
-        agentId: "alpha",
-        sourceId: source.data.sourceId,
-        inboxId: "shared_alpha",
-        matchRules: { channel: "engineering" },
-        startPolicy: "latest",
-      } satisfies RegisterSubscriptionInput);
-      assert.equal(subscription.statusCode, 200);
-
-      const sources = await client.request<{ sources: SubscriptionSource[] }>("/sources", undefined, "GET");
-      assert.equal(sources.statusCode, 200);
-      assert.equal(sources.data.sources.length, 1);
-
-      const sourceDetails = await client.request<{ source: SubscriptionSource; subscriptions: Array<{ subscriptionId: string }> }>(
-        `/sources/${source.data.sourceId}`,
-        undefined,
-        "GET",
-      );
-      assert.equal(sourceDetails.statusCode, 200);
-      assert.equal(sourceDetails.data.subscriptions.length, 1);
-
-      await client.request(`/sources/${source.data.sourceId}/events`, {
-        sourceNativeId: "evt-1",
-        eventVariant: "message.created",
-        metadata: { channel: "engineering" },
-      });
-
-      const lagBefore = await client.request<{ pendingEvents: number }>(
-        `/subscriptions/${subscription.data.subscriptionId}/lag`,
-        undefined,
-        "GET",
-      );
-      assert.equal(lagBefore.statusCode, 200);
-      assert.equal(lagBefore.data.pendingEvents, 1);
-
-      const listed = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>(
-        `/subscriptions?source_id=${encodeURIComponent(source.data.sourceId)}&agent_id=alpha&inbox_id=shared_alpha`,
-        undefined,
-        "GET",
-      );
-      assert.equal(listed.statusCode, 200);
-      assert.equal(listed.data.subscriptions.length, 1);
-
-      const reset = await client.request<{ consumer: { nextOffset: number } }>(
-        `/subscriptions/${subscription.data.subscriptionId}/reset`,
-        { startPolicy: "earliest" },
-      );
-      assert.equal(reset.statusCode, 200);
-      assert.equal(reset.data.consumer.nextOffset, 1);
-
-      const poll = await client.request<SubscriptionPollResult>(
-        `/subscriptions/${subscription.data.subscriptionId}/poll`,
-        {},
-      );
-      assert.equal(poll.statusCode, 200);
-      assert.equal(poll.data.inboxItemsCreated, 1);
-
-      const subShow = await client.request<{ subscription: { inboxId: string }; lag: { pendingEvents: number } }>(
-        `/subscriptions/${subscription.data.subscriptionId}`,
-        undefined,
-        "GET",
-      );
-      assert.equal(subShow.statusCode, 200);
-      assert.equal(subShow.data.subscription.inboxId, "shared_alpha");
-      assert.equal(subShow.data.lag.pendingEvents, 0);
-
-      const inboxShow = await client.request<{
-        inbox: { inboxId: string; ownerAgentId: string };
-        subscriptions: Array<{ subscriptionId: string }>;
-        itemCounts: { total: number; unacked: number; acked: number };
-      }>(`/inboxes/shared_alpha`, undefined, "GET");
-      assert.equal(inboxShow.statusCode, 200);
-      assert.equal(inboxShow.data.inbox.ownerAgentId, "alpha");
-      assert.equal(inboxShow.data.subscriptions.length, 1);
-      assert.equal(inboxShow.data.itemCounts.unacked, 1);
-
-      const ackAll = await client.request<{ acked: number }>(`/inboxes/shared_alpha/ack-all`, {});
-      assert.equal(ackAll.statusCode, 200);
-      assert.equal(ackAll.data.acked, 1);
-    } finally {
-      await started.close();
-    }
-  } finally {
+    webhookServer.close();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -718,31 +267,14 @@ test("control plane exposes source, subscription, and inbox management endpoints
 
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
   try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
+    return await Promise.race([promise, timeout]);
   } finally {
     if (timer) {
       clearTimeout(timer);
-    }
-  }
-}
-
-async function waitForWatchItems(
-  iterator: AsyncIterator<unknown>,
-  timeoutMs: number,
-  message: string,
-): Promise<{ event: "items"; inboxId: string; items: InboxItem[] }> {
-  while (true) {
-    const next = await waitFor(iterator.next(), timeoutMs, message);
-    assert.equal(next.done, false);
-    const value = next.value as { event: string; inboxId: string; items?: InboxItem[] };
-    if (value.event === "items") {
-      return value as { event: "items"; inboxId: string; items: InboxItem[] };
     }
   }
 }

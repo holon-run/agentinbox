@@ -60,19 +60,19 @@ Run the local daemon:
 agentinbox serve
 ```
 
-Register the current terminal session and get back an assigned `agentId` plus a
-`terminalTargetId`:
+Register the current terminal session. `AgentInbox` detects the runtime and
+terminal context, assigns a stable `agentId`, and attaches a terminal
+activation target to that agent:
 
 ```bash
-agentinbox terminal register
+agentinbox agent register
 ```
 
-Create a custom source, subscribe the current agent to it, and route
-notifications back into the same terminal session:
+Create a custom source and subscribe the returned `agentId` to it:
 
 ```bash
 agentinbox source add custom local-demo
-agentinbox subscription add <agent_id> <source_id> --terminal-target <target_id>
+agentinbox subscription add <agent_id> <source_id>
 agentinbox source event <source_id> --native-id demo-1 --event custom.demo
 ```
 
@@ -167,22 +167,22 @@ Recommended layers:
   - a shared source hosted by `AgentInbox`
 - `StreamEvent`
   - one normalized source event written into the source stream
+- `Agent`
+  - the runtime identity and default activation target owner
 - `Subscription`
   - an agent-specific filter and consumer on top of a source
 - `Inbox`
-  - the delivery target for one or more subscriptions
+  - the agent's durable internal inbox
 - `InboxItem`
   - a normalized inbound item materialized into an inbox after subscription matching
 - `Activation`
   - a lightweight wake signal sent to an agent runtime
 
-Inside `AgentInbox`, the primary model should stay:
+Inside `AgentInbox`, the primary model is now:
 
 - source first
-- subscription second
-
-That allows one source to serve many agents with different filters and delivery
-rules.
+- agent second
+- subscription as the routing rule between them
 
 ## Inbound / Outbound
 
@@ -261,7 +261,7 @@ This repository now includes the first runnable `M0/M1` scaffold:
 - `agentinbox serve` local daemon
 - local HTTP control API for source registration, subscription polling, inbox access, delivery, and status
 - thin `agentinbox` CLI for shell-first agents and operators
-- SQLite-backed state for sources, streams, stream events, subscriptions, inboxes, inbox items, activations, and deliveries
+- SQLite-backed state for agents, activation targets, sources, streams, stream events, subscriptions, inbox items, activations, and deliveries
 - fixture source path for end-to-end local testing
 - GitHub source ingestion through `uxc` poll subscriptions
 - Feishu bot source ingestion through `uxc` long-connection subscriptions
@@ -269,8 +269,9 @@ This repository now includes the first runnable `M0/M1` scaffold:
 - Unix socket-first local control plane with TCP fallback for explicit debug usage
 - Feishu delivery through `uxc` OpenAPI calls
 
-The current implementation proves the source-ingress / event-log / inbox-delivery
-boundary with per-subscription consumer offsets.
+The current implementation proves the source-ingress / event-log / agent-inbox
+boundary with per-subscription consumer offsets and shared activation target
+dispatch semantics.
 
 ## Quick Start
 
@@ -297,24 +298,30 @@ All client commands accept:
 --url <http://127.0.0.1:4747>
 ```
 
+Register the current session as an agent:
+
+```bash
+agentinbox agent register
+```
+
 Create a programmable local event bus source and publish events into it:
 
 ```bash
 agentinbox source add custom project-alpha
-agentinbox subscription add alpha <source_id> --match-json '{"channel":"engineering"}'
+agentinbox subscription add <agent_id> <source_id> --match-json '{"channel":"engineering"}'
 agentinbox source event <source_id> \
   --native-id evt-1 \
   --event message.created \
   --metadata-json '{"channel":"engineering"}' \
   --payload-json '{"text":"hello from a local producer"}'
 agentinbox subscription poll <subscription_id>
-agentinbox inbox read inbox_alpha
+agentinbox inbox read <agent_id>
 ```
 
 For a long-lived local consumer, keep a watch open:
 
 ```bash
-agentinbox inbox watch inbox_alpha
+agentinbox inbox watch <agent_id>
 ```
 
 ## Source Adapters
@@ -344,7 +351,7 @@ Example:
 ```bash
 agentinbox source add github_repo holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
-agentinbox subscription add alpha <source_id> --match-json '{"mentions":["alpha"]}'
+agentinbox subscription add <agent_id> <source_id> --match-json '{"mentions":["alpha"]}'
 agentinbox source poll <source_id>
 ```
 
@@ -356,7 +363,7 @@ state transitions such as failures on a branch or workflow.
 ```bash
 agentinbox source add github_repo_ci holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30,"perPage":20}'
-agentinbox subscription add alpha <source_id> --match-json '{"conclusion":"failure","headBranch":"main"}'
+agentinbox subscription add <agent_id> <source_id> --match-json '{"conclusion":"failure","headBranch":"main"}'
 agentinbox source poll <source_id>
 ```
 
@@ -372,39 +379,29 @@ Prerequisites:
 
 ## Activations
 
-Subscriptions default to `activation_only`.
-
-For low-frequency flows, you can push the newly created inbox items directly in
-the activation webhook body:
+Activation defaults now belong to the agent, not the subscription. Add a webhook
+activation target to an agent:
 
 ```bash
-agentinbox subscription add alpha <source_id> \
-  --activation-target http://127.0.0.1:8080/webhooks/agentinbox/alpha \
+agentinbox agent target add webhook <agent_id> \
+  --url http://127.0.0.1:8080/webhooks/agentinbox/alpha \
   --activation-mode activation_with_items
 ```
 
-## Terminal Targets
+## Agent Registration And Activation Targets
 
 For local agent sessions that do not expose a notification API, `AgentInbox`
-can register the current terminal session and inject an `agent_prompt` back
-into it when new inbox items arrive.
+registers the current terminal session as an agent and injects an
+`agent_prompt` back into it when new inbox items arrive.
 
 Register the current session:
 
 ```bash
-agentinbox terminal register
+agentinbox agent register
 ```
 
-The response includes an assigned `agentId` and a `targetId`. Use the returned
-`agentId` for later subscription and inbox commands, and use the returned
-`targetId` when you want a subscription to notify this terminal session.
-
-Attach that terminal target to a subscription:
-
-```bash
-agentinbox subscription add <agent_id> <source_id> \
-  --terminal-target <target_id>
-```
+The response includes an assigned `agentId` and the current terminal activation
+target. Use the returned `agentId` for later subscription and inbox commands.
 
 `AgentInbox` detects the current terminal context automatically. `tmux` targets
 are injected with `send-keys ... Enter`. `iTerm2` targets are injected through
@@ -412,7 +409,7 @@ AppleScript using the current session identity. When available, runtime session
 identities such as `CODEX_THREAD_ID` are recorded and used to derive a stable
 assigned `agentId`.
 
-Terminal notifications are gated by inbox acknowledgement:
+All activation targets share the same gating behavior:
 
 - the first batch of new inbox items triggers one injected prompt
 - no further prompt is injected until the inbox is acknowledged
@@ -456,7 +453,7 @@ Register a Feishu bot source backed by `uxc` long-connection subscription:
 ```bash
 node dist/src/cli.js source add feishu_bot feishu-default \
   --config-json '{"uxcAuth":"feishu-default","eventTypes":["im.message.receive_v1"]}'
-node dist/src/cli.js subscription add alpha <source_id> --match-json '{"mentions":["Alpha"]}'
+node dist/src/cli.js subscription add <agent_id> <source_id> --match-json '{"mentions":["Alpha"]}'
 node dist/src/cli.js source poll <source_id>
 ```
 
@@ -465,9 +462,9 @@ Emit a fixture event for tests and local demos:
 ```bash
 node dist/src/cli.js fixture emit <source_id> --metadata-json '{"channel":"engineering"}' --payload-json '{"text":"hello"}'
 node dist/src/cli.js subscription poll <subscription_id>
-node dist/src/cli.js inbox list
-node dist/src/cli.js inbox read inbox_alpha
-node dist/src/cli.js inbox watch inbox_alpha
+node dist/src/cli.js inbox show <agent_id>
+node dist/src/cli.js inbox read <agent_id>
+node dist/src/cli.js inbox watch <agent_id>
 ```
 
 Record a delivery attempt:

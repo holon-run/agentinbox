@@ -8,6 +8,7 @@ import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
 import { AppendSourceEventInput, DeliveryAttempt, SubscriptionSource } from "../src/model";
 import { nowIso } from "../src/util";
+import { TerminalDispatcher } from "../src/terminal";
 import {
   FeishuDeliveryAdapter,
   FeishuSourceRuntime,
@@ -82,7 +83,10 @@ async function makeService(): Promise<{ store: AgentInboxStore; service: AgentIn
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input));
-  service = new AgentInboxService(store, adapters);
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
   return { store, service, dir };
 }
 
@@ -150,8 +154,14 @@ test("feishu source runtime appends stream events and subscriptions materialize 
       updatedAt: nowIso(),
     };
     store.insertSource(source);
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "feishu-thread",
+      tmuxPaneId: "%203",
+    });
     const subscription = await service.registerSubscription({
-      agentId: "alpha",
+      agentId: agent.agent.agentId,
       sourceId: source.sourceId,
       matchRules: { mentions: ["Alpha"] },
       startPolicy: "earliest",
@@ -189,8 +199,8 @@ test("feishu source runtime appends stream events and subscriptions materialize 
     const subscriptionResult = await service.pollSubscription(subscription.subscriptionId);
     assert.equal(sourceResult.appended, 1);
     assert.equal(subscriptionResult.inboxItemsCreated, 1);
-    assert.equal(service.listInboxItems(subscription.inboxId).length, 1);
-    assert.equal(service.listInboxItems(subscription.inboxId)[0]?.deliveryHandle?.surface, "message_reply");
+    assert.equal(service.listInboxItems(subscription.agentId).length, 1);
+    assert.equal(service.listInboxItems(subscription.agentId)[0]?.deliveryHandle?.surface, "message_reply");
   } finally {
     await service.stop();
     store.close();

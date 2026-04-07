@@ -5,6 +5,8 @@ export type ActivationMode = "activation_only" | "activation_with_items";
 export type TerminalBackend = "tmux" | "iterm2";
 export type TerminalMode = "agent_prompt";
 export type RuntimeKind = "codex" | "claude_code" | "unknown";
+export type ActivationTargetKind = "webhook" | "terminal";
+export type ActivationDispatchStatus = "notified" | "dirty";
 
 export interface DeliveryHandle {
   provider: string;
@@ -26,6 +28,15 @@ export interface SubscriptionSource {
   updatedAt: string;
 }
 
+export interface Agent {
+  agentId: string;
+  runtimeKind: RuntimeKind;
+  runtimeSessionId?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastSeenAt: string;
+}
+
 export interface Inbox {
   inboxId: string;
   ownerAgentId: string;
@@ -36,38 +47,47 @@ export interface Subscription {
   subscriptionId: string;
   agentId: string;
   sourceId: string;
-  inboxId: string;
   matchRules: Record<string, unknown>;
-  activationTarget?: string | null;
-  terminalTargetId?: string | null;
-  activationMode: ActivationMode;
   startPolicy: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
   createdAt: string;
 }
 
-export interface TerminalTarget {
+interface ActivationTargetBase {
   targetId: string;
   agentId: string;
-  runtimeKind: RuntimeKind;
-  runtimeSessionId?: string | null;
-  backend: TerminalBackend;
-  mode: TerminalMode;
-  tmuxPaneId?: string | null;
-  tty?: string | null;
-  termProgram?: string | null;
-  itermSessionId?: string | null;
+  kind: ActivationTargetKind;
   notifyLeaseMs: number;
   createdAt: string;
   updatedAt: string;
   lastSeenAt: string;
 }
 
-export interface TerminalDispatchState {
-  inboxId: string;
+export interface WebhookActivationTarget extends ActivationTargetBase {
+  kind: "webhook";
+  mode: ActivationMode;
+  url: string;
+}
+
+export interface TerminalActivationTarget extends ActivationTargetBase {
+  kind: "terminal";
+  mode: TerminalMode;
+  runtimeKind: RuntimeKind;
+  runtimeSessionId?: string | null;
+  backend: TerminalBackend;
+  tmuxPaneId?: string | null;
+  tty?: string | null;
+  termProgram?: string | null;
+  itermSessionId?: string | null;
+}
+
+export type ActivationTarget = WebhookActivationTarget | TerminalActivationTarget;
+
+export interface ActivationDispatchState {
+  agentId: string;
   targetId: string;
-  status: "notified" | "dirty";
+  status: ActivationDispatchStatus;
   leaseExpiresAt: string | null;
   pendingNewItemCount: number;
   pendingSummary: string | null;
@@ -106,6 +126,8 @@ export interface Activation {
   activationId: string;
   agentId: string;
   inboxId: string;
+  targetId: string;
+  targetKind: ActivationTargetKind;
   subscriptionIds: string[];
   sourceIds: string[];
   newItemCount: number;
@@ -135,29 +157,37 @@ export interface RegisterSourceInput {
   config?: Record<string, unknown>;
 }
 
-export interface RegisterSubscriptionInput {
-  agentId: string;
-  sourceId: string;
-  inboxId?: string;
-  matchRules?: Record<string, unknown>;
-  activationTarget?: string | null;
-  terminalTargetId?: string | null;
-  activationMode?: ActivationMode;
-  startPolicy?: SubscriptionStartPolicy;
-  startOffset?: number | null;
-  startTime?: string | null;
-}
-
-export interface RegisterTerminalTargetInput {
-  backend: TerminalBackend;
+export interface RegisterAgentInput {
   runtimeKind?: RuntimeKind | null;
   runtimeSessionId?: string | null;
+  backend: TerminalBackend;
   mode?: TerminalMode;
   tmuxPaneId?: string | null;
   tty?: string | null;
   termProgram?: string | null;
   itermSessionId?: string | null;
   notifyLeaseMs?: number | null;
+}
+
+export interface RegisterAgentResult {
+  agent: Agent;
+  terminalTarget: TerminalActivationTarget;
+  inbox: Inbox;
+}
+
+export interface AddWebhookActivationTargetInput {
+  url: string;
+  activationMode?: ActivationMode;
+  notifyLeaseMs?: number | null;
+}
+
+export interface RegisterSubscriptionInput {
+  agentId: string;
+  sourceId: string;
+  matchRules?: Record<string, unknown>;
+  startPolicy?: SubscriptionStartPolicy;
+  startOffset?: number | null;
+  startTime?: string | null;
 }
 
 export interface AppendSourceEventInput {
@@ -177,7 +207,7 @@ export interface AppendSourceEventResult {
 }
 
 export interface DeliveryRequest {
-  inboxId?: string;
+  agentId?: string;
   deliveryHandle?: DeliveryHandle | null;
   provider?: string;
   surface?: string;
@@ -223,13 +253,13 @@ export interface WatchInboxOptions extends ListInboxItemsOptions {
 
 export interface InboxWatchItemsEvent {
   event: "items";
-  inboxId: string;
+  agentId: string;
   items: InboxItem[];
 }
 
 export interface InboxWatchHeartbeatEvent {
   event: "heartbeat";
-  inboxId: string;
+  agentId: string;
   timestamp: string;
 }
 

@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import crypto from "node:crypto";
-import { RuntimeKind, TerminalBackend, TerminalTarget } from "./model";
+import { RuntimeKind, TerminalActivationTarget, TerminalBackend } from "./model";
 
 const execFileAsync = promisify(execFile);
 type ExecFileAsyncLike = (
@@ -95,7 +95,7 @@ export class TerminalDispatcher {
     private readonly execAsync: ExecFileAsyncLike = execFileAsync,
   ) {}
 
-  async dispatch(target: TerminalTarget, prompt: string): Promise<void> {
+  async dispatch(target: TerminalActivationTarget, prompt: string): Promise<void> {
     if (target.backend === "tmux") {
       if (!target.tmuxPaneId) {
         throw new Error(`tmux terminal target ${target.targetId} is missing tmuxPaneId`);
@@ -200,7 +200,7 @@ function normalizeOptionalString(value: string | undefined | null): string | nul
 }
 
 async function dispatchToIterm2(
-  target: TerminalTarget,
+  target: TerminalActivationTarget,
   prompt: string,
   execAsync: ExecFileAsyncLike,
 ): Promise<void> {
