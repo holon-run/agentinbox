@@ -215,7 +215,8 @@ tell application "iTerm2"
         tell aSession
           if ((targetTty is not "" and (tty as text) is equal to targetTty) or (targetSessionId is not "" and (unique ID as text) is equal to targetSessionId)) then
             select
-            write text promptText newline YES
+            write text promptText newline NO
+            tell application "System Events" to key code 36
             return "sent"
           end if
         end tell
