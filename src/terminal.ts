@@ -4,6 +4,13 @@ import crypto from "node:crypto";
 import { RuntimeKind, TerminalBackend, TerminalTarget } from "./model";
 
 const execFileAsync = promisify(execFile);
+type ExecFileAsyncLike = (
+  file: string,
+  args: readonly string[],
+  options?: {
+    env?: NodeJS.ProcessEnv;
+  },
+) => Promise<{ stdout: string; stderr: string }>;
 
 export interface DetectedTerminalContext {
   runtimeKind: RuntimeKind;
@@ -84,17 +91,21 @@ export function assignedAgentIdFromContext(input: {
 }
 
 export class TerminalDispatcher {
+  constructor(
+    private readonly execAsync: ExecFileAsyncLike = execFileAsync,
+  ) {}
+
   async dispatch(target: TerminalTarget, prompt: string): Promise<void> {
     if (target.backend === "tmux") {
       if (!target.tmuxPaneId) {
         throw new Error(`tmux terminal target ${target.targetId} is missing tmuxPaneId`);
       }
-      await execFileAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, prompt, "Enter"]);
+      await this.execAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, prompt, "Enter"]);
       return;
     }
 
     if (target.backend === "iterm2") {
-      await dispatchToIterm2(target, prompt);
+      await dispatchToIterm2(target, prompt, this.execAsync);
       return;
     }
 
@@ -188,18 +199,25 @@ function normalizeOptionalString(value: string | undefined | null): string | nul
   return trimmed.length > 0 ? trimmed : null;
 }
 
-async function dispatchToIterm2(target: TerminalTarget, prompt: string): Promise<void> {
+async function dispatchToIterm2(
+  target: TerminalTarget,
+  prompt: string,
+  execAsync: ExecFileAsyncLike,
+): Promise<void> {
   const script = `
 set targetTty to system attribute "TARGET_TTY"
 set targetSessionId to system attribute "TARGET_SESSION_ID"
 set promptText to system attribute "AGENT_PROMPT"
 tell application "iTerm2"
+  activate
   repeat with aWindow in windows
     repeat with aTab in tabs of aWindow
       repeat with aSession in sessions of aTab
         tell aSession
           if ((targetTty is not "" and (tty as text) is equal to targetTty) or (targetSessionId is not "" and (unique ID as text) is equal to targetSessionId)) then
-            write text promptText
+            select
+            write text promptText newline NO
+            tell application "System Events" to key code 36
             return "sent"
           end if
         end tell
@@ -210,7 +228,7 @@ end tell
 return "not-found"
 `;
 
-  const { stdout } = await execFileAsync("osascript", ["-e", script], {
+  const { stdout } = await execAsync("osascript", ["-e", script], {
     env: {
       ...process.env,
       TARGET_TTY: target.tty ?? "",

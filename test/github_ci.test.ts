@@ -13,9 +13,13 @@ import { GithubActionsUxcClient, GithubCiSourceRuntime, normalizeGithubWorkflowR
 class FakeGithubActionsClient {
   public calls: Array<Record<string, unknown>> = [];
   public workflowRuns: unknown[] = [];
+  public error: Error | null = null;
 
   async call(args: Record<string, unknown>) {
     this.calls.push(args);
+    if (this.error) {
+      throw this.error;
+    }
     return {
       data: {
         total_count: this.workflowRuns.length,
@@ -146,6 +150,39 @@ test("github_repo_ci source runtime appends workflow run events and subscription
     assert.equal(items.length, 1);
     assert.equal(items[0]?.metadata?.conclusion, "failure");
     assert.equal(items[0]?.eventVariant, "workflow_run.completed.failure");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("github_repo_ci runtime start does not crash when GitHub polling fails", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const fake = new FakeGithubActionsClient();
+    fake.error = new Error("runtime.invoke timeout");
+    const runtime = new GithubCiSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
+    const source: SubscriptionSource = {
+      sourceId: "src_ci_error",
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default", perPage: 10 },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    store.insertSource(source);
+
+    await runtime.start();
+
+    const updatedSource = store.getSource(source.sourceId);
+    assert.equal(updatedSource?.status, "error");
+    assert.match(String(updatedSource?.checkpoint), /runtime\.invoke timeout/);
+
+    await runtime.stop();
   } finally {
     await service.stop();
     store.close();

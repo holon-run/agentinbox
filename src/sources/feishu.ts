@@ -192,7 +192,11 @@ export class FeishuSourceRuntime {
     this.interval = setInterval(() => {
       void this.syncAll();
     }, 2_000);
-    await this.syncAll();
+    try {
+      await this.syncAll();
+    } catch (error) {
+      console.warn("feishu_bot initial sync failed:", error);
+    }
   }
 
   async stop(): Promise<void> {
@@ -215,7 +219,11 @@ export class FeishuSourceRuntime {
   private async syncAll(): Promise<void> {
     const sources = this.store.listSources().filter((source) => source.sourceType === "feishu_bot" && source.status === "active");
     for (const source of sources) {
-      await this.syncSource(source.sourceId);
+      try {
+        await this.syncSource(source.sourceId);
+      } catch (error) {
+        console.warn(`feishu_bot sync failed for ${source.sourceId}:`, error);
+      }
     }
   }
 

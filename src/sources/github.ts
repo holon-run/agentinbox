@@ -185,7 +185,11 @@ export class GithubSourceRuntime {
     this.interval = setInterval(() => {
       void this.syncAll();
     }, 2_000);
-    await this.syncAll();
+    try {
+      await this.syncAll();
+    } catch (error) {
+      console.warn("github_repo initial sync failed:", error);
+    }
   }
 
   async stop(): Promise<void> {
@@ -208,7 +212,11 @@ export class GithubSourceRuntime {
   private async syncAll(): Promise<void> {
     const sources = this.store.listSources().filter((source) => source.sourceType === "github_repo" && source.status === "active");
     for (const source of sources) {
-      await this.syncSource(source.sourceId);
+      try {
+        await this.syncSource(source.sourceId);
+      } catch (error) {
+        console.warn(`github_repo sync failed for ${source.sourceId}:`, error);
+      }
     }
   }
 
