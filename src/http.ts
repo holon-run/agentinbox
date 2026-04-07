@@ -241,7 +241,7 @@ export function createServer(service: AgentInboxService): http.Server {
             ? url.searchParams.get("include_acked") === "true"
             : undefined,
           heartbeatMs: url.searchParams.has("heartbeat_ms")
-            ? Number(url.searchParams.get("heartbeat_ms"))
+            ? parsePositiveInteger(url.searchParams.get("heartbeat_ms"))
             : undefined,
         };
 
@@ -270,10 +270,12 @@ export function createServer(service: AgentInboxService): http.Server {
           });
         }, heartbeatMs);
 
-        req.on("close", () => {
+        const cleanup = () => {
           clearInterval(heartbeat);
           session.close();
-        });
+        };
+        req.on("close", cleanup);
+        req.on("error", cleanup);
         return;
       }
 
@@ -298,9 +300,20 @@ export function createServer(service: AgentInboxService): http.Server {
 
       send(res, 404, { error: "not found" });
     } catch (error) {
-      send(res, 400, {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (error instanceof SyntaxError) {
+        send(res, 400, { error: error.message });
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("unknown ")) {
+        send(res, 404, { error: message });
+        return;
+      }
+      if (isBadRequestError(message)) {
+        send(res, 400, { error: message });
+        return;
+      }
+      send(res, 500, { error: message });
     }
   });
 }
@@ -330,6 +343,37 @@ function parseOptionalInteger(value: unknown): number | undefined {
     throw new Error(`expected integer, received ${String(value)}`);
   }
   return parsed;
+}
+
+function parsePositiveInteger(value: unknown): number {
+  const parsed = parseOptionalInteger(value);
+  if (parsed == null || parsed <= 0) {
+    throw new Error(`expected positive integer, received ${String(value)}`);
+  }
+  return parsed;
+}
+
+function isBadRequestError(message: string): boolean {
+  return (
+    message.startsWith("manual append is not supported") ||
+    message.startsWith("fixtures/emit requires") ||
+    message.startsWith("sources/events requires") ||
+    message.startsWith("deliveryHandle requires") ||
+    message.startsWith("subscriptions/reset requires") ||
+    message.startsWith("agents/register requires") ||
+    message.startsWith("agents/targets requires") ||
+    message.startsWith("unsupported activation target kind") ||
+    message.startsWith("unsupported start policy") ||
+    message.startsWith("unsupported terminal") ||
+    message.startsWith("expected integer") ||
+    message.startsWith("expected positive integer") ||
+    message.startsWith("notifyLeaseMs must be a positive integer") ||
+    message.startsWith("invalid webhook activation target") ||
+    message.includes("requires tmuxPaneId") ||
+    message.includes("requires iTerm2 session identity") ||
+    message.includes("requires a supported terminal context") ||
+    message.includes("belongs to agent")
+  );
 }
 
 function parseOptionalDeliveryHandle(value: unknown): DeliveryHandle | null {

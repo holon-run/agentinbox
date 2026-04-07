@@ -73,11 +73,18 @@ export class AgentInboxStore {
 
   private migrate(): void {
     const userVersion = this.userVersion();
-    if (userVersion !== SCHEMA_VERSION) {
+    if (userVersion === 0) {
       this.dropKnownTables();
       this.createCurrentSchema();
       this.setUserVersion(SCHEMA_VERSION);
+      return;
     }
+    if (userVersion !== SCHEMA_VERSION) {
+      throw new Error(
+        `unsupported database schema version ${userVersion}; delete ${this.dbPath} to recreate`,
+      );
+    }
+    this.createCurrentSchema();
   }
 
   private dropKnownTables(): void {
@@ -1189,12 +1196,16 @@ export class AgentInboxStore {
 
   private mapActivationTarget(row: Record<string, unknown>): ActivationTarget {
     if (String(row.kind) === "webhook") {
+      const url = typeof row.url === "string" && row.url.trim().length > 0 ? row.url.trim() : null;
+      if (!url) {
+        throw new Error(`invalid webhook activation target: ${String(row.target_id)}`);
+      }
       return {
         targetId: String(row.target_id),
         agentId: String(row.agent_id),
         kind: "webhook",
         mode: row.mode as WebhookActivationTarget["mode"],
-        url: String(row.url),
+        url,
         notifyLeaseMs: Number(row.notify_lease_ms),
         createdAt: String(row.created_at),
         updatedAt: String(row.updated_at),
