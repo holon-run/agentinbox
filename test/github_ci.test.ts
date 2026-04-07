@@ -72,10 +72,35 @@ test("normalizeGithubWorkflowRunEvent extracts workflow run metadata", () => {
 
   assert.ok(normalized);
   assert.equal(normalized?.sourceNativeId, "workflow_run:987");
-  assert.equal(normalized?.eventVariant, "workflow_run.completed.failure");
+  assert.equal(normalized?.eventVariant, "workflow_run.ci.completed.failure");
   assert.equal(normalized?.metadata?.headBranch, "main");
   assert.equal(normalized?.metadata?.conclusion, "failure");
   assert.equal(normalized?.deliveryHandle, null);
+});
+
+test("normalizeGithubWorkflowRunEvent falls back to observed status and display title", () => {
+  const source: SubscriptionSource = {
+    sourceId: "src_ci_observed",
+    sourceType: "github_repo_ci",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+
+  const normalized = normalizeGithubWorkflowRunEvent(source, { owner: "holon-run", repo: "agentinbox" }, {
+    id: 654,
+    display_title: "Nightly Checks",
+    conclusion: null,
+  });
+
+  assert.ok(normalized);
+  assert.equal(normalized?.eventVariant, "workflow_run.nightly_checks.observed");
+  assert.equal(normalized?.metadata?.name, "Nightly Checks");
+  assert.equal(normalized?.metadata?.status, "observed");
 });
 
 test("github_repo_ci source runtime appends workflow run events and subscriptions materialize inbox items", async () => {
@@ -149,7 +174,7 @@ test("github_repo_ci source runtime appends workflow run events and subscription
     assert.equal(subscriptionResult.inboxItemsCreated, 1);
     assert.equal(items.length, 1);
     assert.equal(items[0]?.metadata?.conclusion, "failure");
-    assert.equal(items[0]?.eventVariant, "workflow_run.completed.failure");
+    assert.equal(items[0]?.eventVariant, "workflow_run.ci.completed.failure");
   } finally {
     await service.stop();
     store.close();

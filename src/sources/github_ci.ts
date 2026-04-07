@@ -246,11 +246,10 @@ export function normalizeGithubWorkflowRunEvent(
   if (!runId) {
     return null;
   }
-  const status = asString(run.status) ?? "unknown";
+  const workflowName = asString(run.name) ?? asString(run.display_title);
   const conclusion = asString(run.conclusion);
-  const variant = conclusion && status === "completed"
-    ? `workflow_run.${status}.${conclusion}`
-    : `workflow_run.${status}`;
+  const status = inferWorkflowRunStatus(run, conclusion);
+  const variant = buildWorkflowRunVariant(workflowName, status, conclusion);
   const actor = asRecord(run.actor);
   const headCommit = asRecord(run.head_commit);
 
@@ -266,7 +265,7 @@ export function normalizeGithubWorkflowRunEvent(
       repoFullName: `${config.owner}/${config.repo}`,
       workflowRunId: runId,
       workflowId: asNumber(run.workflow_id),
-      name: asString(run.name),
+      name: workflowName,
       displayTitle: asString(run.display_title),
       status,
       conclusion,
@@ -284,7 +283,7 @@ export function normalizeGithubWorkflowRunEvent(
     rawPayload: {
       id: runId,
       workflow_id: asNumber(run.workflow_id),
-      name: asString(run.name),
+      name: workflowName,
       display_title: asString(run.display_title),
       status,
       conclusion,
@@ -360,4 +359,39 @@ function asString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function inferWorkflowRunStatus(run: Record<string, unknown>, conclusion: string | null): string {
+  return asString(run.status)
+    ?? (conclusion ? "completed" : null)
+    ?? "observed";
+}
+
+function buildWorkflowRunVariant(
+  workflowName: string | null,
+  status: string,
+  conclusion: string | null,
+): string {
+  const parts = ["workflow_run"];
+  const workflowSlug = slugifyWorkflowName(workflowName);
+  if (workflowSlug) {
+    parts.push(workflowSlug);
+  }
+  parts.push(status);
+  if (conclusion) {
+    parts.push(conclusion);
+  }
+  return parts.join(".");
+}
+
+function slugifyWorkflowName(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug.length > 0 ? slug : null;
 }

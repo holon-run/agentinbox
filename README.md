@@ -9,6 +9,13 @@ reply through one boundary.
 `AgentInbox` is not an agent runtime. It sits between outside systems and local
 agent runtimes.
 
+In practice, that means `AgentInbox` can:
+
+- share one GitHub or Feishu source across multiple local agents
+- materialize those events into durable inboxes
+- wake or drive agent sessions running in `tmux` or `iTerm2`, even when the
+  agent runtime does not expose a notification API
+
 ## Status
 
 `AgentInbox` is still early-stage infrastructure software.
@@ -44,6 +51,36 @@ npm install
 npm run build
 node dist/src/cli.js --help
 ```
+
+## Quick Start
+
+Run the local daemon:
+
+```bash
+agentinbox serve
+```
+
+Register the current terminal session and get back an assigned `agentId` plus a
+`terminalTargetId`:
+
+```bash
+agentinbox terminal register
+```
+
+Create a custom source, subscribe the current agent to it, and route
+notifications back into the same terminal session:
+
+```bash
+agentinbox source add custom local-demo
+agentinbox subscription add <agent_id> <source_id> --terminal-target <target_id>
+agentinbox source event <source_id> --native-id demo-1 --event custom.demo
+```
+
+This is the shortest end-to-end flow:
+
+- a source event is appended
+- `AgentInbox` materializes it into an inbox item
+- the current terminal session receives an injected `agent_prompt`
 
 ## Runtime Paths
 

@@ -863,7 +863,7 @@ export class AgentInboxService {
     buffer.pending.push({
       subscriptionId: input.subscriptionId,
       sourceId: input.sourceId,
-      summary: `${input.sourceType}:${input.sourceKey}:${input.eventVariant}`,
+      summary: summarizeSourceEvent(input.sourceType, input.sourceKey, input.eventVariant),
     });
 
     if (!buffer.timer && !buffer.inFlight) {
@@ -911,7 +911,7 @@ export class AgentInboxService {
     buffer.pending.push({
       subscriptionId: input.subscriptionId,
       sourceId: input.sourceId,
-      summary: `${input.sourceType}:${input.sourceKey}:${input.eventVariant}`,
+      summary: summarizeSourceEvent(input.sourceType, input.sourceKey, input.eventVariant),
       item: input.activationMode === "activation_with_items" ? input.item : undefined,
     });
 
@@ -1281,4 +1281,27 @@ function uniqueSorted(values: string[]): string[] {
 
 function terminalBufferKey(inboxId: string, terminalTargetId: string): string {
   return `${inboxId}::${terminalTargetId}`;
+}
+
+function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {
+  if (sourceType === "github_repo_ci") {
+    const parts = eventVariant.split(".");
+    const [, second, third, fourth] = parts;
+    const knownStatuses = new Set(["completed", "in_progress", "queued", "requested", "waiting", "pending", "observed"]);
+    const workflowName = second && !knownStatuses.has(second) ? second : null;
+    const status = workflowName ? third : second;
+    const conclusion = workflowName ? fourth : third;
+    const summaryParts = [`${sourceType}:${sourceKey}`];
+    if (workflowName) {
+      summaryParts.push(workflowName);
+    }
+    if (status) {
+      summaryParts.push(status);
+    }
+    if (conclusion) {
+      summaryParts.push(conclusion);
+    }
+    return summaryParts.join(":");
+  }
+  return `${sourceType}:${sourceKey}:${eventVariant}`;
 }
