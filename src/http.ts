@@ -110,7 +110,7 @@ export function createServer(service: AgentInboxService): http.Server {
         const backend = parseRequiredString(body.backend, "agents/register requires backend");
         send(res, 200, service.registerAgent({
           agentId: parseOptionalString(body.agentId) ?? null,
-          forceRebind: Boolean(body.forceRebind),
+          forceRebind: parseOptionalBoolean(body.forceRebind) ?? false,
           backend: backend as never,
           runtimeKind: parseOptionalString(body.runtimeKind) as never,
           runtimeSessionId: parseOptionalString(body.runtimeSessionId),
@@ -390,6 +390,16 @@ function parseOptionalInteger(value: unknown): number | undefined {
   return parsed;
 }
 
+function parseOptionalBoolean(value: unknown): boolean | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`expected boolean, received ${String(value)}`);
+  }
+  return value;
+}
+
 function parsePositiveInteger(value: unknown): number {
   const parsed = parseOptionalInteger(value);
   if (parsed == null || parsed <= 0) {
@@ -412,6 +422,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unsupported lifecycle mode") ||
     message.startsWith("unsupported start policy") ||
     message.startsWith("unsupported terminal") ||
+    message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
     message.startsWith("notifyLeaseMs must be a positive integer") ||

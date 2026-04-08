@@ -607,6 +607,17 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
       assert.equal(conflict.statusCode, 400);
       assert.match(conflict.data.error, /agent register conflict/);
 
+      const invalidForceRebind = await client.request<{ error: string }>("/agents/register", {
+        agentId: "agent-http-alpha",
+        forceRebind: "false",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-alpha-rebound",
+        tmuxPaneId: "%602",
+      });
+      assert.equal(invalidForceRebind.statusCode, 400);
+      assert.match(invalidForceRebind.data.error, /expected boolean/);
+
       const rebound = await client.request<{ terminalTarget: { tmuxPaneId: string | null } }>("/agents/register", {
         agentId: "agent-http-alpha",
         forceRebind: true,
