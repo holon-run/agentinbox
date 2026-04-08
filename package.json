@@ -29,8 +29,11 @@
     "build": "tsc -p tsconfig.json",
     "dev": "node --watch --loader ts-node/esm src/cli.ts",
     "docs:dev": "mdorigin dev --root docs/site",
+    "docs:search": "mdorigin build search --root docs/site",
     "docs:index": "mdorigin build index --root docs/site",
-    "docs:build:cloudflare": "npm run docs:index && mdorigin build cloudflare --root docs/site",
+    "docs:build": "npm run docs:search && mdorigin build cloudflare --root docs/site --search dist/search",
+    "docs:build:cloudflare": "npm run docs:build",
+    "docs:deploy": "npm run docs:index && npm run docs:build && npx wrangler@4 deploy --config wrangler.jsonc",
     "prepack": "npm run build",
     "test": "node --require ts-node/register --test test/*.test.ts"
   },
