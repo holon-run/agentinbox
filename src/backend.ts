@@ -120,6 +120,7 @@ export interface EventBusBackend {
   append(input: AppendEventsInput): Promise<AppendEventsResult>;
   ensureConsumer(input: EnsureConsumerInput): Promise<ConsumerRecord>;
   getConsumer(input: GetConsumerInput): Promise<ConsumerRecord | null>;
+  deleteConsumer(input: GetConsumerInput): Promise<{ removed: boolean }>;
   read(input: ReadEventsInput): Promise<ReadEventsResult>;
   commit(input: CommitOffsetInput): Promise<CommitOffsetResult>;
   reset(input: ResetConsumerInput): Promise<ConsumerRecord>;
@@ -194,6 +195,15 @@ export class SqliteEventBusBackend implements EventBusBackend {
       return this.store.getConsumerBySubscriptionId(input.subscriptionId);
     }
     throw new Error("getConsumer requires consumerId or subscriptionId");
+  }
+
+  async deleteConsumer(input: GetConsumerInput): Promise<{ removed: boolean }> {
+    const consumer = await this.getConsumer(input);
+    if (!consumer) {
+      return { removed: false };
+    }
+    this.store.deleteConsumer(consumer.consumerId);
+    return { removed: true };
   }
 
   async read(input: ReadEventsInput): Promise<ReadEventsResult> {

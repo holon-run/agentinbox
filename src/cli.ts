@@ -219,6 +219,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "subscription" && normalized[1] === "remove") {
+    const subscriptionId = normalized[2];
+    if (!subscriptionId) {
+      throw new Error("usage: agentinbox subscription remove <subscriptionId>");
+    }
+    await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}`, undefined, "DELETE");
+    return;
+  }
+
   if (command === "subscription" && normalized[1] === "poll") {
     const subscriptionId = normalized[2];
     if (!subscriptionId) {
@@ -595,6 +604,7 @@ Usage:
   agentinbox subscription add <agentId> <sourceId> [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID]
   agentinbox subscription show <subscriptionId>
+  agentinbox subscription remove <subscriptionId>
   agentinbox subscription poll <subscriptionId>
   agentinbox subscription lag <subscriptionId>
   agentinbox subscription reset <subscriptionId> --start-policy latest|earliest|at_offset|at_time [--start-offset N] [--start-time ISO8601]

@@ -9,6 +9,7 @@ import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, Ter
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
+import { nowIso } from "../src/util";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
   public readonly calls: Array<{ targetUrl: string; activation: Activation }> = [];
@@ -184,6 +185,126 @@ test("custom source can act as a programmable event bus source", async () => {
     assert.equal(pollResult.inboxItemsCreated, 1);
     assert.equal(items.length, 1);
     assert.equal(items[0].sourceNativeId, "custom-evt-1");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription remove deletes the subscription, its consumer, and transient runtime state", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remove-sub",
+      tmuxPaneId: "%333",
+      notifyLeaseMs: 100,
+    });
+    service.addWebhookActivationTarget(registered.agent.agentId, {
+      url: "http://127.0.0.1:9999/webhook",
+      activationMode: "activation_with_items",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "remove-sub-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      lifecycleMode: "temporary",
+      startPolicy: "earliest",
+    });
+
+    assert.equal(subscription.lifecycleMode, "temporary");
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId)?.subscriptionId, subscription.subscriptionId);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-remove-sub-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length > 0, true);
+    const removed = await service.removeSubscription(subscription.subscriptionId);
+    assert.equal(removed.removed, true);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+
+    await assert.rejects(
+      service.pollSubscription(subscription.subscriptionId),
+      /unknown subscription/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription remove preserves unrelated activation dispatch state", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remove-sub-state",
+      tmuxPaneId: "%334",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "remove-sub-state-demo",
+      config: {},
+    });
+    const first = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      lifecycleMode: "standing",
+      startPolicy: "earliest",
+    });
+    const second = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      lifecycleMode: "temporary",
+      startPolicy: "earliest",
+    });
+
+    store.upsertActivationDispatchState({
+      agentId: registered.agent.agentId,
+      targetId: registered.terminalTarget.targetId,
+      status: "notified",
+      leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      pendingNewItemCount: 1,
+      pendingSummary: "standing-subscription",
+      pendingSubscriptionIds: [first.subscriptionId],
+      pendingSourceIds: [source.sourceId],
+      updatedAt: nowIso(),
+    });
+
+    const removed = await service.removeSubscription(second.subscriptionId);
+    assert.equal(removed.removed, true);
+
+    const state = store.getActivationDispatchState(
+      registered.agent.agentId,
+      registered.terminalTarget.targetId,
+    );
+    assert.ok(state);
+    assert.deepEqual(state.pendingSubscriptionIds, [first.subscriptionId]);
   } finally {
     await service.stop();
     store.close();

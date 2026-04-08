@@ -50,6 +50,7 @@ const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
+const SUBSCRIPTION_LIFECYCLE_MODES = new Set<Subscription["lifecycleMode"]>(["standing", "temporary"]);
 
 interface ActivationPolicy {
   windowMs?: number;
@@ -355,11 +356,17 @@ export class AgentInboxService {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
     await validateSubscriptionFilter(input.filter ?? {});
+    const lifecycleMode = input.lifecycleMode ?? "standing";
+    if (!SUBSCRIPTION_LIFECYCLE_MODES.has(lifecycleMode)) {
+      throw new Error(`unsupported lifecycle mode: ${lifecycleMode}`);
+    }
     const subscription: Subscription = {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
       filter: input.filter ?? {},
+      lifecycleMode,
+      expiresAt: input.expiresAt ?? null,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
@@ -378,6 +385,14 @@ export class AgentInboxService {
       startTime: subscription.startTime ?? null,
     });
     return subscription;
+  }
+
+  async removeSubscription(subscriptionId: string): Promise<{ removed: boolean; subscriptionId: string }> {
+    const subscription = this.getSubscription(subscriptionId);
+    await this.backend.deleteConsumer({ subscriptionId });
+    this.store.deleteSubscription(subscriptionId);
+    this.clearSubscriptionRuntimeState(subscription);
+    return { removed: true, subscriptionId };
   }
 
   listSubscriptions(filters?: {
@@ -952,6 +967,37 @@ export class AgentInboxService {
         buffer.timer = null;
       }
       void this.flushNotificationBuffer(key);
+    }
+  }
+
+  private clearSubscriptionRuntimeState(subscription: Subscription): void {
+    for (const [key, buffer] of this.notificationBuffers.entries()) {
+      const retained = buffer.pending.filter((entry) => entry.subscriptionId !== subscription.subscriptionId);
+      if (retained.length === buffer.pending.length) {
+        continue;
+      }
+      buffer.pending = retained;
+      if (buffer.pending.length === 0) {
+        if (buffer.timer) {
+          clearTimeout(buffer.timer);
+          buffer.timer = null;
+        }
+        this.notificationBuffers.delete(key);
+      }
+    }
+
+    const remainingSubscriptions = this.store.listSubscriptionsForAgent(subscription.agentId);
+    const states = this.store.listActivationDispatchStatesForAgent(subscription.agentId);
+    for (const state of states) {
+      const directlyReferencesRemovedSubscription = state.pendingSubscriptionIds.includes(subscription.subscriptionId);
+      if (!directlyReferencesRemovedSubscription && remainingSubscriptions.length > 0) {
+        continue;
+      }
+      // Dispatch state is stored per target rather than per subscription.
+      // Drop states that still directly reference the removed subscription.
+      // If the agent has no subscriptions left, also clear any residual lease
+      // state so future subscriptions do not inherit a stale notified window.
+      this.store.deleteActivationDispatchState(state.agentId, state.targetId);
     }
   }
 

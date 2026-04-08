@@ -29,7 +29,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -157,6 +157,8 @@ export class AgentInboxStore {
         agent_id text not null,
         source_id text not null,
         filter_json text not null,
+        lifecycle_mode text not null,
+        expires_at text,
         start_policy text not null,
         start_offset integer,
         start_time text,
@@ -524,14 +526,16 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into subscriptions (
-        subscription_id, agent_id, source_id, filter_json, start_policy, start_offset, start_time, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        subscription_id, agent_id, source_id, filter_json, lifecycle_mode, expires_at, start_policy, start_offset, start_time, created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         subscription.subscriptionId,
         subscription.agentId,
         subscription.sourceId,
         JSON.stringify(subscription.filter),
+        subscription.lifecycleMode,
+        subscription.expiresAt ?? null,
         subscription.startPolicy,
         subscription.startOffset ?? null,
         subscription.startTime ?? null,
@@ -560,6 +564,16 @@ export class AgentInboxStore {
       [agentId],
     );
     return rows.map((row) => this.mapSubscription(row));
+  }
+
+  deleteSubscription(subscriptionId: string): Subscription | null {
+    const subscription = this.getSubscription(subscriptionId);
+    if (!subscription) {
+      return null;
+    }
+    this.db.run("delete from subscriptions where subscription_id = ?", [subscriptionId]);
+    this.persist();
+    return subscription;
   }
 
   getActivationTarget(targetId: string): ActivationTarget | null {
@@ -1221,6 +1235,14 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapConsumer(row));
   }
 
+  deleteConsumer(consumerId: string): void {
+    this.inTransaction(() => {
+      this.db.run("delete from consumer_commits where consumer_id = ?", [consumerId]);
+      this.db.run("delete from consumers where consumer_id = ?", [consumerId]);
+    });
+    this.persist();
+  }
+
   updateConsumerOffset(consumerId: string, nextOffset: number, committedOffset: number): ConsumerRecord {
     const consumer = this.getConsumer(consumerId);
     if (!consumer) {
@@ -1375,6 +1397,8 @@ export class AgentInboxStore {
       agentId: String(row.agent_id),
       sourceId: String(row.source_id),
       filter: parseJson<SubscriptionFilter>(row.filter_json as string),
+      lifecycleMode: row.lifecycle_mode as Subscription["lifecycleMode"],
+      expiresAt: row.expires_at ? String(row.expires_at) : null,
       startPolicy: row.start_policy as SubscriptionStartPolicy,
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
       startTime: row.start_time ? String(row.start_time) : null,

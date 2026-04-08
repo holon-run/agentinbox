@@ -77,6 +77,12 @@ agentinbox source event <source_id> --native-id demo-1 --event custom.demo
 agentinbox inbox read <agent_id>
 ```
 
+Remove a task-specific subscription without deleting the whole agent:
+
+```bash
+agentinbox subscription remove <subscription_id>
+```
+
 ## Docs
 
 Public docs now live under [`docs/site`](./docs/site) and are structured for
