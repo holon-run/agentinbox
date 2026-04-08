@@ -354,6 +354,22 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(historyAfterAck.statusCode, 200);
       assert.equal(historyAfterAck.data.items.length, 1);
 
+      const removeSubscriptionResponse = await client.request<{ removed: boolean; subscriptionId: string }>(
+        `/subscriptions/${encodeURIComponent(subscriptionResponse.data.subscriptionId)}`,
+        undefined,
+        "DELETE",
+      );
+      assert.equal(removeSubscriptionResponse.statusCode, 200);
+      assert.equal(removeSubscriptionResponse.data.removed, true);
+
+      const subscriptionsAfterDelete = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>(
+        `/subscriptions?agent_id=${encodeURIComponent(agentId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(subscriptionsAfterDelete.statusCode, 200);
+      assert.equal(subscriptionsAfterDelete.data.subscriptions.length, 0);
+
     } finally {
       await started.close();
     }

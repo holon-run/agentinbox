@@ -182,6 +182,8 @@ export function createServer(service: AgentInboxService): http.Server {
           agentId: parseRequiredString(body.agentId, "subscriptions/register requires agentId"),
           sourceId: parseRequiredString(body.sourceId, "subscriptions/register requires sourceId"),
           filter: asObject(body.filter),
+          lifecycleMode: parseOptionalString(body.lifecycleMode) as never,
+          expiresAt: parseOptionalString(body.expiresAt) ?? null,
           startPolicy: parseOptionalString(body.startPolicy) as never,
           startOffset: parseOptionalInteger(body.startOffset),
           startTime: parseOptionalString(body.startTime) ?? undefined,
@@ -192,6 +194,10 @@ export function createServer(service: AgentInboxService): http.Server {
       const subscriptionMatch = url.pathname.match(/^\/subscriptions\/([^/]+)$/);
       if (req.method === "GET" && subscriptionMatch) {
         send(res, 200, await service.getSubscriptionDetails(decodeURIComponent(subscriptionMatch[1])));
+        return;
+      }
+      if (req.method === "DELETE" && subscriptionMatch) {
+        send(res, 200, await service.removeSubscription(decodeURIComponent(subscriptionMatch[1])));
         return;
       }
 

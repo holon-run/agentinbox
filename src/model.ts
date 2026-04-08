@@ -1,6 +1,7 @@
 export type SourceType = "fixture" | "custom" | "github_repo" | "github_repo_ci" | "feishu_bot";
 
 export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
+export type SubscriptionLifecycleMode = "standing" | "temporary";
 export type ActivationMode = "activation_only" | "activation_with_items";
 export type TerminalBackend = "tmux" | "iterm2";
 export type TerminalMode = "agent_prompt";
@@ -58,6 +59,8 @@ export interface Subscription {
   agentId: string;
   sourceId: string;
   filter: SubscriptionFilter;
+  lifecycleMode: SubscriptionLifecycleMode;
+  expiresAt?: string | null;
   startPolicy: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
@@ -200,6 +203,8 @@ export interface RegisterSubscriptionInput {
   agentId: string;
   sourceId: string;
   filter?: SubscriptionFilter;
+  lifecycleMode?: SubscriptionLifecycleMode;
+  expiresAt?: string | null;
   startPolicy?: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;

@@ -191,6 +191,70 @@ test("custom source can act as a programmable event bus source", async () => {
   }
 });
 
+test("subscription remove deletes the subscription, its consumer, and transient runtime state", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remove-sub",
+      tmuxPaneId: "%333",
+      notifyLeaseMs: 100,
+    });
+    service.addWebhookActivationTarget(registered.agent.agentId, {
+      url: "http://127.0.0.1:9999/webhook",
+      activationMode: "activation_with_items",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "remove-sub-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      lifecycleMode: "temporary",
+      startPolicy: "earliest",
+    });
+
+    assert.equal(subscription.lifecycleMode, "temporary");
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId)?.subscriptionId, subscription.subscriptionId);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-remove-sub-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length > 0, true);
+    const removed = await service.removeSubscription(subscription.subscriptionId);
+    assert.equal(removed.removed, true);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+
+    await assert.rejects(
+      service.pollSubscription(subscription.subscriptionId),
+      /unknown subscription/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("subscription filter expr can match nested payload fields and exclude self-authored events", async () => {
   const { store, service, dir } = await makeService();
   try {
