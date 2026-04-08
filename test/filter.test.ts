@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchSubscriptionFilter } from "../src/filter";
+import { matchSubscriptionFilter, validateSubscriptionFilter } from "../src/filter";
 
 const baseContext = {
   metadata: {
@@ -55,6 +55,22 @@ test("filter shortcuts support dotted payload access", async () => {
   assert.equal(result.matched, true);
 });
 
+test("filter shortcuts preserve array subset semantics for metadata membership", async () => {
+  const result = await matchSubscriptionFilter({
+    metadata: {
+      mentions: ["alpha"],
+    },
+  }, {
+    ...baseContext,
+    metadata: {
+      ...baseContext.metadata,
+      mentions: ["alpha", "beta"],
+    },
+  });
+
+  assert.equal(result.matched, true);
+});
+
 test("filter expr supports helper functions and boolean composition", async () => {
   const result = await matchSubscriptionFilter({
     expr: [
@@ -91,4 +107,25 @@ test("filter expr returns mismatch when expression is invalid", async () => {
 
   assert.equal(result.matched, false);
   assert.match(result.reason, /expr evaluation failed/);
+});
+
+test("validateSubscriptionFilter rejects malformed expressions", async () => {
+  await assert.rejects(
+    validateSubscriptionFilter({ expr: "payload.sender.login ==" }),
+  );
+});
+
+test("matches helper rejects unsafe regex patterns", async () => {
+  const result = await matchSubscriptionFilter({
+    expr: "matches(payload.head_commit.message, '(a+)+$')",
+  }, {
+    ...baseContext,
+    payload: {
+      ...baseContext.payload,
+      head_commit: { message: "a".repeat(512) },
+    },
+  });
+
+  assert.equal(result.matched, false);
+  assert.match(result.reason, /expr returned false/);
 });

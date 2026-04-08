@@ -12,7 +12,10 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
   },
   custom: {
     sourceType: "custom",
-    metadataFields: [],
+    metadataFields: [
+      { name: "channel", type: "string", description: "Producer-defined routing channel for local custom events." },
+      { name: "subject", type: "string", description: "Producer-defined short summary or subject field." },
+    ],
     payloadExamples: [
       { text: "hello from custom source" },
     ],

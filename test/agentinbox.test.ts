@@ -242,6 +242,33 @@ test("subscription filter expr can match nested payload fields and exclude self-
   }
 });
 
+test("registerSubscription rejects invalid filter expressions before persistence", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "invalid-expr");
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "invalid-expr-demo",
+      config: {},
+    });
+
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: alpha.agentId,
+        sourceId: source.sourceId,
+        filter: { expr: "payload.sender.login ==" },
+      }),
+      /token|expression|binary/i,
+    );
+
+    assert.equal(service.listSubscriptions({ agentId: alpha.agentId }).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("watchInbox receives inserted items without auto-acking them", async () => {
   const { store, service, dir } = await makeService();
   try {

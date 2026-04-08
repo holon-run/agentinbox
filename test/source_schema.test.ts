@@ -13,6 +13,8 @@ test("getSourceSchema exposes github repo ci metadata and examples", () => {
 });
 
 test("getSourceSchema exposes lightweight schemas for custom and fixture sources", () => {
-  assert.equal(getSourceSchema("custom").sourceType, "custom");
+  const custom = getSourceSchema("custom");
+  assert.equal(custom.sourceType, "custom");
+  assert.ok(custom.metadataFields.some((field) => field.name === "channel"));
   assert.equal(getSourceSchema("fixture").sourceType, "fixture");
 });

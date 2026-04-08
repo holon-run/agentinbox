@@ -16,6 +16,8 @@ export interface FilterContext {
 }
 
 const jexl = new Jexl();
+const MAX_REGEX_PATTERN_LENGTH = 256;
+const MAX_REGEX_VALUE_LENGTH = 4_096;
 
 jexl.addFunction("contains", (search: unknown, item: unknown) => {
   if (typeof search === "string") {
@@ -50,8 +52,12 @@ jexl.addFunction("matches", (value: unknown, pattern: unknown) => {
   if (typeof value !== "string" || typeof pattern !== "string") {
     return false;
   }
+  if (value.length > MAX_REGEX_VALUE_LENGTH) {
+    return false;
+  }
   try {
-    return new RegExp(pattern).test(value);
+    const regex = compileSafeRegex(pattern);
+    return regex ? regex.test(value) : false;
   } catch {
     return false;
   }
@@ -88,6 +94,19 @@ export async function matchSubscriptionFilter(
   return { matched: true, reason: filter.expr ? "filter shortcuts and expr matched" : "filter shortcuts matched" };
 }
 
+export async function validateSubscriptionFilter(filter: SubscriptionFilter): Promise<void> {
+  if (!filter.expr) {
+    return;
+  }
+  await jexl.eval(filter.expr, {
+    metadata: {},
+    payload: {},
+    eventVariant: "",
+    sourceType: "",
+    sourceKey: "",
+  });
+}
+
 function matchesShortcutFilter(expected: Record<string, unknown>, actual: Record<string, unknown>): boolean {
   return Object.entries(expected).every(([key, value]) => matchesExpectedValue(readPath(actual, key), value));
 }
@@ -98,6 +117,15 @@ function matchesExpectedValue(actual: unknown, expected: unknown): boolean {
       return false;
     }
     return Object.entries(expected).every(([key, value]) => matchesExpectedValue(readPath(actual, key), value));
+  }
+  if (Array.isArray(expected)) {
+    if (Array.isArray(actual)) {
+      return expected.every((expectedValue) => actual.some((actualValue) => matchesExpectedValue(actualValue, expectedValue)));
+    }
+    return expected.some((expectedValue) => matchesExpectedValue(actual, expectedValue));
+  }
+  if (Array.isArray(actual)) {
+    return actual.some((actualValue) => matchesExpectedValue(actualValue, expected));
   }
   return deepEqual(actual, expected);
 }
@@ -137,6 +165,23 @@ function deepEqual(left: unknown, right: unknown): boolean {
 function globMatch(value: string, pattern: string): boolean {
   const regex = new RegExp(`^${globToRegex(pattern)}$`);
   return regex.test(value);
+}
+
+function compileSafeRegex(pattern: string): RegExp | null {
+  if (pattern.length === 0 || pattern.length > MAX_REGEX_PATTERN_LENGTH) {
+    return null;
+  }
+  if (pattern.includes("(?") || /\\[1-9]/.test(pattern)) {
+    return null;
+  }
+  if (hasNestedQuantifier(pattern)) {
+    return null;
+  }
+  return new RegExp(pattern);
+}
+
+function hasNestedQuantifier(pattern: string): boolean {
+  return /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*{]/.test(pattern);
 }
 
 function globToRegex(pattern: string): string {

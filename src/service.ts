@@ -37,7 +37,7 @@ import {
 } from "./backend";
 import { generateId, nowIso } from "./util";
 import { getSourceSchema } from "./source_schema";
-import { matchSubscriptionFilter } from "./filter";
+import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
@@ -354,6 +354,7 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
+    await validateSubscriptionFilter(input.filter ?? {});
     const subscription: Subscription = {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
