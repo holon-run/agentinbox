@@ -8,8 +8,9 @@ import { spawnSync } from "node:child_process";
 import { AdapterRegistry } from "../src/adapters";
 import { AgentInboxClient } from "../src/client";
 import { startControlServer } from "../src/control_server";
+import { daemonStatus } from "../src/daemon";
 import { createServer } from "../src/http";
-import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveServeConfig } from "../src/paths";
+import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveDaemonPaths, resolveServeConfig } from "../src/paths";
 import { Activation, InboxItem, RegisterSourceInput, SubscriptionPollResult } from "../src/model";
 import { AgentInboxService } from "../src/service";
 import { AgentInboxStore } from "../src/store";
@@ -55,6 +56,18 @@ test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_H
   });
 });
 
+test("resolveDaemonPaths derives pid and log files from AGENTINBOX_HOME", () => {
+  const homeDir = path.join(os.tmpdir(), `agentinbox-daemon-home-${Date.now()}`);
+  const paths = resolveDaemonPaths({
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+  });
+  assert.deepEqual(paths, {
+    pidPath: path.join(homeDir, "agentinbox.pid"),
+    logPath: path.join(homeDir, "agentinbox.log"),
+  });
+});
+
 test("resolveClientTransport prefers the default socket and otherwise falls back to localhost tcp", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-client-home-"));
   try {
@@ -83,6 +96,68 @@ test("resolveClientTransport prefers the default socket and otherwise falls back
       socketPath,
       source: "default",
     });
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("daemonStatus removes stale pid files", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-daemon-status-home-"));
+  const pidPath = path.join(homeDir, "agentinbox.pid");
+  fs.writeFileSync(pidPath, "999999\n", "utf8");
+  try {
+    const status = await daemonStatus({
+      env: {
+        ...process.env,
+        AGENTINBOX_HOME: homeDir,
+      },
+    });
+    assert.equal(status.running, false);
+    assert.equal(status.pid, null);
+    assert.equal(fs.existsSync(pidPath), false);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli auto-starts the daemon for normal commands and daemon stop shuts it down", () => {
+  const repoDir = path.resolve(__dirname, "..");
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-autostart-home-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+  };
+  try {
+    const status = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "status"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(status.status, 0, status.stderr);
+    const parsedStatus = JSON.parse(status.stdout) as { counts?: { agents?: number } };
+    assert.equal(typeof parsedStatus.counts?.agents, "number");
+
+    const daemonState = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "status"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(daemonState.status, 0, daemonState.stderr);
+    const parsedDaemon = JSON.parse(daemonState.stdout) as { running: boolean; pid: number | null };
+    assert.equal(parsedDaemon.running, true);
+    assert.ok(parsedDaemon.pid && parsedDaemon.pid > 0);
+
+    const stopped = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "stop"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+    const parsedStopped = JSON.parse(stopped.stdout) as { running: boolean };
+    assert.equal(parsedStopped.running, false);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }

@@ -4,8 +4,9 @@ import path from "node:path";
 import { AdapterRegistry } from "./adapters";
 import { AgentInboxClient } from "./client";
 import { startControlServer } from "./control_server";
+import { daemonStatus, ensureDaemonForClient, removePidFile, startDaemon, stopDaemon, writePidFile } from "./daemon";
 import { createServer } from "./http";
-import { resolveClientTransport, resolveServeConfig } from "./paths";
+import { resolveDaemonPaths, resolveServeConfig } from "./paths";
 import { AgentInboxService } from "./service";
 import { AgentInboxStore } from "./store";
 import { detectTerminalContext } from "./terminal";
@@ -39,7 +40,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = createClient(normalized);
+  if (command === "daemon") {
+    if (hasHelpFlag(normalized.slice(1))) {
+      printHelp(["daemon"]);
+      return;
+    }
+    await runDaemon(normalized.slice(1));
+    return;
+  }
+
+  const client = await createClient(normalized);
 
   if (command === "source" && normalized[1] === "add") {
     const [type, sourceKey] = normalized.slice(2, 4);
@@ -351,6 +361,8 @@ async function runServe(args: string[]): Promise<void> {
   await adapters.start();
   await service.start();
   const controlServer = await startControlServer(server, serveConfig.transport);
+  const daemonPaths = resolveDaemonPaths(process.env, takeFlagValue(args, "--home"));
+  writePidFile(daemonPaths.pidPath, process.pid);
   console.log(jsonResponse({
     ok: true,
     homeDir: serveConfig.homeDir,
@@ -363,6 +375,7 @@ async function runServe(args: string[]): Promise<void> {
       void adapters.stop();
       void service.stop();
       store.close();
+      removePidFile(daemonPaths.pidPath);
       process.exit(0);
     });
   };
@@ -370,13 +383,43 @@ async function runServe(args: string[]): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-function createClient(args: string[]): AgentInboxClient {
-  return new AgentInboxClient(resolveClientTransport({
+async function runDaemon(args: string[]): Promise<void> {
+  const action = args[0];
+  const options = {
     env: process.env,
     homeDirOverride: takeFlagValue(args, "--home"),
     socketPathOverride: takeFlagValue(args, "--socket"),
     baseUrlOverride: takeFlagValue(args, "--url"),
-  }));
+  };
+
+  if (action === "start") {
+    const result = await startDaemon(options);
+    console.log(jsonResponse(result));
+    return;
+  }
+  if (action === "stop") {
+    const result = await stopDaemon(options);
+    console.log(jsonResponse(result));
+    return;
+  }
+  if (action === "status") {
+    const result = await daemonStatus(options);
+    console.log(jsonResponse(result));
+    return;
+  }
+
+  throw new Error("usage: agentinbox daemon <start|stop|status>");
+}
+
+async function createClient(args: string[]): Promise<AgentInboxClient> {
+  const transport = await ensureDaemonForClient({
+    env: process.env,
+    homeDirOverride: takeFlagValue(args, "--home"),
+    socketPathOverride: takeFlagValue(args, "--socket"),
+    baseUrlOverride: takeFlagValue(args, "--url"),
+    noAutoStart: hasFlag(args, "--no-auto-start"),
+  });
+  return new AgentInboxClient(transport);
 }
 
 async function printRemote(
@@ -453,6 +496,7 @@ Usage:
 
 Commands:
   serve
+  daemon
   source
   agent
   subscription
@@ -467,6 +511,13 @@ Commands:
 Usage:
   agentinbox serve [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
   agentinbox serve --port 4747 [--state ~/.agentinbox/agentinbox.sqlite]
+`,
+    daemon: `agentinbox daemon
+
+Usage:
+  agentinbox daemon start [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+  agentinbox daemon stop [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+  agentinbox daemon status [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
 `,
     source: `agentinbox source
 

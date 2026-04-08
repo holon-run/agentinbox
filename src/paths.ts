@@ -34,6 +34,11 @@ export interface ResolvedServeConfig {
   warnings: string[];
 }
 
+export interface DaemonPaths {
+  pidPath: string;
+  logPath: string;
+}
+
 export function resolveAgentInboxHome(
   env: NodeJS.ProcessEnv = process.env,
   override?: string,
@@ -94,6 +99,17 @@ export function resolveServeConfig(input: ResolveServeConfigInput = {}): Resolve
       socketPath: resolveSocketPath(env, homeDir, input.socketPathOverride),
     },
     warnings: [],
+  };
+}
+
+export function resolveDaemonPaths(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDirOverride?: string,
+): DaemonPaths {
+  const homeDir = resolveAgentInboxHome(env, homeDirOverride);
+  return {
+    pidPath: path.join(homeDir, "agentinbox.pid"),
+    logPath: path.join(homeDir, "agentinbox.log"),
   };
 }
 
