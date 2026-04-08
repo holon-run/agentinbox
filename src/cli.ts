@@ -362,7 +362,9 @@ async function runServe(args: string[]): Promise<void> {
   await service.start();
   const controlServer = await startControlServer(server, serveConfig.transport);
   const daemonPaths = resolveDaemonPaths(process.env, takeFlagValue(args, "--home"));
-  writePidFile(daemonPaths.pidPath, process.pid);
+  if (serveConfig.transport.kind === "socket") {
+    writePidFile(daemonPaths.pidPath, process.pid);
+  }
   console.log(jsonResponse({
     ok: true,
     homeDir: serveConfig.homeDir,
@@ -375,7 +377,9 @@ async function runServe(args: string[]): Promise<void> {
       void adapters.stop();
       void service.stop();
       store.close();
-      removePidFile(daemonPaths.pidPath);
+      if (serveConfig.transport.kind === "socket") {
+        removePidFile(daemonPaths.pidPath);
+      }
       process.exit(0);
     });
   };

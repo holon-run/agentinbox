@@ -55,6 +55,8 @@ test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", as
       stdout: "sent\n",
       stderr: "",
     };
+  }, {
+    iterm2ApiPath: "/tmp/fake-it2api",
   });
 
   const target: TerminalActivationTarget = {

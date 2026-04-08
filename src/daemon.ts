@@ -47,10 +47,7 @@ export async function ensureDaemonForClient(options: DaemonCliOptions = {}): Pro
 
 export async function startDaemon(options: DaemonCliOptions = {}): Promise<DaemonStartResult> {
   const env = options.env ?? process.env;
-  const transport = resolveDaemonClientTransport(options);
-  if (transport.kind !== "socket") {
-    throw new Error("daemon start requires a local socket transport");
-  }
+  const transport = requireSocketTransport(resolveDaemonClientTransport(options), "daemon start");
 
   const homeDir = resolveAgentInboxHome(env, options.homeDirOverride);
   const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
@@ -68,17 +65,23 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
     };
   }
 
-  const child = spawn(process.execPath, daemonChildArgs(), {
-    cwd: process.cwd(),
-    env: {
-      ...env,
-      AGENTINBOX_HOME: homeDir,
-      AGENTINBOX_SOCKET: transport.socketPath,
-      AGENTINBOX_URL: "",
-    },
-    detached: true,
-    stdio: ["ignore", openLogFile(logPath), openLogFile(logPath)],
-  });
+  const logFd = openLogFile(logPath);
+  let child;
+  try {
+    child = spawn(process.execPath, daemonChildArgs(), {
+      cwd: process.cwd(),
+      env: {
+        ...env,
+        AGENTINBOX_HOME: homeDir,
+        AGENTINBOX_SOCKET: transport.socketPath,
+        AGENTINBOX_URL: "",
+      },
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+    });
+  } finally {
+    fs.closeSync(logFd);
+  }
   child.unref();
   await waitForHealthz(transport, START_TIMEOUT_MS);
   return {
@@ -92,7 +95,7 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
 
 export async function stopDaemon(options: DaemonCliOptions = {}): Promise<DaemonStatusResult> {
   const env = options.env ?? process.env;
-  const transport = resolveDaemonClientTransport(options);
+  const transport = requireSocketTransport(resolveDaemonClientTransport(options), "daemon stop");
   const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
 
   const pid = readPidFile(pidPath);
@@ -102,23 +105,19 @@ export async function stopDaemon(options: DaemonCliOptions = {}): Promise<Daemon
   }
 
   cleanupStalePidFile(pidPath, true);
-  if (transport.kind === "socket") {
-    cleanupFile(transport.socketPath);
-  }
+  cleanupFile(transport.socketPath);
 
   return daemonStatus(options);
 }
 
 export async function daemonStatus(options: DaemonCliOptions = {}): Promise<DaemonStatusResult> {
   const env = options.env ?? process.env;
-  const transport = resolveDaemonClientTransport(options);
+  const transport = requireSocketTransport(resolveDaemonClientTransport(options), "daemon status");
   const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
   const pid = readPidFile(pidPath);
   if (pid != null && !isProcessAlive(pid)) {
     cleanupStalePidFile(pidPath, true);
-    if (transport.kind === "socket") {
-      cleanupFile(transport.socketPath);
-    }
+    cleanupFile(transport.socketPath);
     return {
       running: false,
       pid: null,
@@ -149,6 +148,16 @@ export function removePidFile(pidPath: string): void {
 function daemonChildArgs(): string[] {
   const execArgv = [...process.execArgv];
   return [...execArgv, process.argv[1], "serve"];
+}
+
+function requireSocketTransport(
+  transport: ClientTransport,
+  commandName: string,
+): Extract<ClientTransport, { kind: "socket" }> {
+  if (transport.kind !== "socket") {
+    throw new Error(`${commandName} requires a local socket transport`);
+  }
+  return transport;
 }
 
 function resolveDaemonClientTransport(options: DaemonCliOptions): ClientTransport {
@@ -228,6 +237,7 @@ async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void>
     }
     await sleep(100);
   }
+  throw new Error(`timed out waiting for process ${pid} to exit`);
 }
 
 function cleanupStalePidFile(pidPath: string, force = false): void {
