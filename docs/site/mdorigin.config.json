@@ -1,8 +1,36 @@
 {
   "siteTitle": "AgentInbox Docs",
   "siteDescription": "Documentation for AgentInbox, the local event subscription and delivery service for agents.",
+  "siteUrl": "https://agentinbox.holon.run",
   "showHomeIndex": false,
   "showSummary": true,
+  "topNav": [
+    {
+      "label": "Getting Started",
+      "href": "/guides/getting-started/"
+    },
+    {
+      "label": "Guides",
+      "href": "/guides/"
+    },
+    {
+      "label": "Reference",
+      "href": "/reference/"
+    },
+    {
+      "label": "Concepts",
+      "href": "/concepts/"
+    },
+    {
+      "label": "RFCs",
+      "href": "/rfcs/"
+    },
+    {
+      "label": "GitHub",
+      "href": "https://github.com/holon-run/agentinbox"
+    }
+  ],
+  "footerText": "AgentInbox documentation site.",
   "socialLinks": [
     {
       "icon": "github",
@@ -13,6 +41,11 @@
       "icon": "npm",
       "label": "npm",
       "href": "https://www.npmjs.com/package/@holon-run/agentinbox"
+    },
+    {
+      "icon": "home",
+      "label": "Docs",
+      "href": "https://agentinbox.holon.run"
     }
   ],
   "editLink": {

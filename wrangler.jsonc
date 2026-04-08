@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agentinbox",
+  "main": "dist/cloudflare/worker.mjs",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "dist/cloudflare/assets"
+  },
+  "compatibility_date": "2026-04-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true
+}

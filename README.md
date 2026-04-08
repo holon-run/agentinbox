@@ -86,9 +86,9 @@ agentinbox subscription remove <subscription_id>
 
 ## Docs
 
-Public docs now live under [`docs/site`](./docs/site) and are structured for
-`mdorigin`.
+Public docs live in the mdorigin site under [`docs/site`](./docs/site).
 
+- docs site: `https://agentinbox.holon.run`
 - docs home: [`docs/site/README.md`](./docs/site/README.md)
 - getting started: [`docs/site/guides/getting-started.md`](./docs/site/guides/getting-started.md)
 - CLI reference: [`docs/site/reference/cli.md`](./docs/site/reference/cli.md)
@@ -101,6 +101,13 @@ Preview the docs site locally:
 
 ```bash
 npm run docs:dev
+```
+
+Build the Cloudflare deploy bundle:
+
+```bash
+npm run docs:index
+npm run docs:build
 ```
 
 ## Development
