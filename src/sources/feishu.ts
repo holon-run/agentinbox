@@ -13,6 +13,8 @@ const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
 const FEISHU_IM_SCHEMA_URL =
   "https://raw.githubusercontent.com/holon-run/uxc/main/skills/feishu-openapi-skill/references/feishu-im.openapi.json";
 const DEFAULT_EVENT_TYPES = ["im.message.receive_v1"];
+const DEFAULT_SYNC_INTERVAL_SECS = 2;
+const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
 export interface FeishuBotSourceConfig {
   endpoint?: string;
@@ -160,6 +162,8 @@ export class FeishuSourceRuntime {
   private readonly client: FeishuUxcClient;
   private interval: NodeJS.Timeout | null = null;
   private readonly inFlight = new Set<string>();
+  private readonly errorCounts = new Map<string, number>();
+  private readonly nextRetryAt = new Map<string, number>();
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -213,11 +217,14 @@ export class FeishuSourceRuntime {
   status(): Record<string, unknown> {
     return {
       activeSourceIds: Array.from(this.inFlight.values()).sort(),
+      erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
     };
   }
 
   private async syncAll(): Promise<void> {
-    const sources = this.store.listSources().filter((source) => source.sourceType === "feishu_bot" && source.status === "active");
+    const sources = this.store
+      .listSources()
+      .filter((source) => source.sourceType === "feishu_bot" && source.status !== "paused");
     for (const source of sources) {
       try {
         await this.syncSource(source.sourceId);
@@ -245,6 +252,19 @@ export class FeishuSourceRuntime {
         throw new Error(`unknown source: ${sourceId}`);
       }
       const config = parseFeishuSourceConfig(source);
+      if (source.status === "error") {
+        const retryAt = this.nextRetryAt.get(sourceId) ?? 0;
+        if (Date.now() < retryAt) {
+          return {
+            sourceId,
+            sourceType: "feishu_bot",
+            appended: 0,
+            deduped: 0,
+            eventsRead: 0,
+            note: "error backoff not elapsed",
+          };
+        }
+      }
       let checkpoint = parseFeishuCheckpoint(source.checkpoint);
       const subscription = await this.client.ensureLongConnectionSubscription(config, checkpoint);
       if (subscription.job_id !== checkpoint.uxcJobId) {
@@ -277,6 +297,8 @@ export class FeishuSourceRuntime {
           lastError: null,
         }),
       });
+      this.errorCounts.delete(sourceId);
+      this.nextRetryAt.delete(sourceId);
 
       return {
         sourceId,
@@ -290,6 +312,12 @@ export class FeishuSourceRuntime {
       const source = this.store.getSource(sourceId);
       if (source) {
         const checkpoint = parseFeishuCheckpoint(source.checkpoint);
+        const nextErrorCount = (this.errorCounts.get(sourceId) ?? 0) + 1;
+        this.errorCounts.set(sourceId, nextErrorCount);
+        this.nextRetryAt.set(
+          sourceId,
+          Date.now() + computeErrorBackoffMs(DEFAULT_SYNC_INTERVAL_SECS, nextErrorCount),
+        );
         this.store.updateSourceRuntime(sourceId, {
           status: "error",
           checkpoint: JSON.stringify({
@@ -303,6 +331,12 @@ export class FeishuSourceRuntime {
       this.inFlight.delete(sourceId);
     }
   }
+}
+
+function computeErrorBackoffMs(syncIntervalSecs: number, errorCount: number): number {
+  const baseMs = Math.max(1, syncIntervalSecs) * 1000;
+  const multiplier = Math.min(2 ** Math.max(0, errorCount - 1), MAX_ERROR_BACKOFF_MULTIPLIER);
+  return baseMs * multiplier;
 }
 
 export class FeishuDeliveryAdapter {
