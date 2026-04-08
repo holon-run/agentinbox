@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.1.0-beta.1"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Publish npm Package and GitHub Release
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          if [ -z "$TAG" ] || [ "$TAG" = "$VERSION" ]; then
+            echo "Release tag must start with v, received: $TAG" >&2
+            exit 1
+          fi
+          case "$VERSION" in
+            *-*)
+              PRERELEASE=true
+              NPM_TAG=beta
+              ;;
+            *)
+              PRERELEASE=false
+              NPM_TAG=latest
+              ;;
+          esac
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "prerelease=$PRERELEASE"
+            echo "npm_tag=$NPM_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Verify tag points to main history
+        run: |
+          git fetch origin main --depth=1
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/main"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify package version matches tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "${{ steps.meta.outputs.version }}" ]; then
+            echo "package.json version $PKG_VERSION does not match tag ${{ steps.meta.outputs.tag }}" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Pack tarball
+        run: npm pack --json > pack.json
+
+      - name: Smoke install packaged CLI
+        run: |
+          PACK_FILE=$(node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('pack.json','utf8')); process.stdout.write(data[0].filename)")
+          echo "PACK_FILE=$PACK_FILE" >> "$GITHUB_ENV"
+          mkdir -p /tmp/agentinbox-release-smoke
+          cd /tmp/agentinbox-release-smoke
+          npm init -y
+          npm install "$GITHUB_WORKSPACE/$PACK_FILE"
+          npx agentinbox --version
+          npx agentinbox --help
+
+      - name: Extract release notes from changelog
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          version = "${{ steps.meta.outputs.version }}"
+          changelog = pathlib.Path("CHANGELOG.md").read_text()
+          pattern = re.compile(r"^## \[" + re.escape(version) + r"\].*$", re.MULTILINE)
+          match = pattern.search(changelog)
+          if not match:
+              pathlib.Path("release-notes.md").write_text(
+                  f"Release {version}\n\nSee CHANGELOG.md for release details.\n"
+              )
+              sys.exit(0)
+
+          start = match.start()
+          tail = changelog[start:]
+          next_match = re.search(r"^## \[", tail[1:], re.MULTILINE)
+          section = tail if not next_match else tail[: next_match.start() + 1]
+          pathlib.Path("release-notes.md").write_text(section.strip() + "\n")
+          PY
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public --tag "${{ steps.meta.outputs.npm_tag }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: AgentInbox ${{ steps.meta.outputs.tag }}
+          body_path: release-notes.md
+          files: ${{ env.PACK_FILE }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
