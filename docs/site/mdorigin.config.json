@@ -1,0 +1,21 @@
+{
+  "siteTitle": "AgentInbox Docs",
+  "siteDescription": "Documentation for AgentInbox, the local event subscription and delivery service for agents.",
+  "showHomeIndex": false,
+  "showSummary": true,
+  "socialLinks": [
+    {
+      "icon": "github",
+      "label": "GitHub",
+      "href": "https://github.com/holon-run/agentinbox"
+    },
+    {
+      "icon": "npm",
+      "label": "npm",
+      "href": "https://www.npmjs.com/package/@holon-run/agentinbox"
+    }
+  ],
+  "editLink": {
+    "baseUrl": "https://github.com/holon-run/agentinbox/edit/main/docs/site/"
+  }
+}
