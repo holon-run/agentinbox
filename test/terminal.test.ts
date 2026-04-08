@@ -43,7 +43,7 @@ test("assignedAgentIdFromContext prefers runtime session ids", () => {
   assert.equal(agentId, "agent_codex_019d57fd65247e20a850a89e81957100");
 });
 
-test("TerminalDispatcher uses osascript for iTerm2 targets", async () => {
+test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", async () => {
   const calls: Array<{ file: string; args: string[]; env?: NodeJS.ProcessEnv | undefined }> = [];
   const dispatcher = new TerminalDispatcher(async (file, args, options) => {
     calls.push({
@@ -77,11 +77,17 @@ test("TerminalDispatcher uses osascript for iTerm2 targets", async () => {
 
   await dispatcher.dispatch(target, "AgentInbox: hello");
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].file, "osascript");
-  assert.deepEqual(calls[0].args.slice(0, 1), ["-e"]);
-  assert.equal(calls[0].env?.TARGET_SESSION_ID, "4B4CB6B2-A73B-4420-94A7-BD2CA216A285");
-  assert.equal(calls[0].env?.AGENT_PROMPT, "AgentInbox: hello");
-  assert.doesNotMatch(calls[0].args[1] ?? "", /System Events/);
-  assert.match(calls[0].args[1] ?? "", /write text promptText newline YES/);
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].file, /it2api$/);
+  assert.deepEqual(calls[0].args, [
+    "send-text",
+    "4B4CB6B2-A73B-4420-94A7-BD2CA216A285",
+    "AgentInbox: hello",
+  ]);
+  assert.match(calls[1].file, /it2api$/);
+  assert.deepEqual(calls[1].args, [
+    "send-text",
+    "4B4CB6B2-A73B-4420-94A7-BD2CA216A285",
+    "\r",
+  ]);
 });

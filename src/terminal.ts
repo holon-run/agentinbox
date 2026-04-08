@@ -306,37 +306,29 @@ async function dispatchToIterm2(
   prompt: string,
   execAsync: ExecFileAsyncLike,
 ): Promise<void> {
-  const script = `
-set targetTty to system attribute "TARGET_TTY"
-set targetSessionId to system attribute "TARGET_SESSION_ID"
-set promptText to system attribute "AGENT_PROMPT"
-tell application "iTerm2"
-  repeat with aWindow in windows
-    repeat with aTab in tabs of aWindow
-      repeat with aSession in sessions of aTab
-        tell aSession
-          if ((targetTty is not "" and (tty as text) is equal to targetTty) or (targetSessionId is not "" and (unique ID as text) is equal to targetSessionId)) then
-            write text promptText newline YES
-            return "sent"
-          end if
-        end tell
-      end repeat
-    end repeat
-  end repeat
-end tell
-return "not-found"
-`;
-
-  const { stdout } = await execAsync("osascript", ["-e", script], {
-    env: {
-      ...process.env,
-      TARGET_TTY: target.tty ?? "",
-      TARGET_SESSION_ID: target.itermSessionId ?? "",
-      AGENT_PROMPT: prompt,
-    },
-  });
-
-  if (!stdout.includes("sent")) {
-    throw new Error(`unable to find iTerm2 session for terminal target ${target.targetId}`);
+  const sessionId = normalizeOptionalString(target.itermSessionId);
+  if (!sessionId) {
+    throw new Error(`iTerm2 terminal target ${target.targetId} is missing itermSessionId`);
   }
+
+  const it2api = resolveIterm2ApiPath();
+  await execAsync(it2api, ["send-text", sessionId, prompt]);
+  // Background Codex/Claude sessions only submit reliably when Return is sent
+  // in a second call rather than concatenated to the original prompt payload.
+  await execAsync(it2api, ["send-text", sessionId, "\r"]);
+}
+
+function resolveIterm2ApiPath(): string {
+  const candidates = [
+    "/Applications/iTerm.app/Contents/Resources/it2api",
+    "/Applications/iTerm.app/Contents/Resources/utilities/it2api",
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error("unable to locate iTerm2 it2api helper");
 }
