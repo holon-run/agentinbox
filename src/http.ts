@@ -51,7 +51,7 @@ export function createServer(service: AgentInboxService): http.Server {
       }
 
       if (req.method === "POST" && url.pathname === "/gc") {
-        send(res, 200, service.gcAckedInboxItems());
+        send(res, 200, service.gc());
         return;
       }
 
@@ -119,6 +119,10 @@ export function createServer(service: AgentInboxService): http.Server {
       const agentMatch = url.pathname.match(/^\/agents\/([^/]+)$/);
       if (req.method === "GET" && agentMatch) {
         send(res, 200, service.getAgentDetails(decodeURIComponent(agentMatch[1])));
+        return;
+      }
+      if (req.method === "DELETE" && agentMatch) {
+        send(res, 200, service.removeAgent(decodeURIComponent(agentMatch[1])));
         return;
       }
 
@@ -317,7 +321,6 @@ export function createServer(service: AgentInboxService): http.Server {
         send(res, 200, await service.sendDelivery(await readJson(req) as never));
         return;
       }
-
       send(res, 404, { error: "not found" });
     } catch (error) {
       if (error instanceof SyntaxError) {

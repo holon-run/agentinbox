@@ -117,6 +117,30 @@ export class TerminalDispatcher {
 
     throw new Error(`unsupported terminal backend: ${String(target.backend)}`);
   }
+
+  async probe(target: TerminalActivationTarget): Promise<boolean> {
+    try {
+      if (target.backend === "tmux") {
+        if (!target.tmuxPaneId) {
+          return false;
+        }
+        const result = await this.execAsync("tmux", ["display-message", "-p", "-t", target.tmuxPaneId, "#{pane_id}"]);
+        return result.stdout.trim() === target.tmuxPaneId;
+      }
+      if (target.backend === "iterm2") {
+        const sessionId = normalizeOptionalString(target.itermSessionId);
+        if (!sessionId) {
+          return false;
+        }
+        const it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
+        const result = await this.execAsync(it2api, ["list-sessions"]);
+        return result.stdout.includes(sessionId);
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  }
 }
 
 function detectTty(env: NodeJS.ProcessEnv): string | null {

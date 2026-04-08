@@ -71,6 +71,10 @@ export class AgentInboxStore {
     this.db.close();
   }
 
+  save(): void {
+    this.persist();
+  }
+
   private migrate(): void {
     const userVersion = this.userVersion();
     if (userVersion === 0) {
@@ -132,6 +136,8 @@ export class AgentInboxStore {
 
       create table if not exists agents (
         agent_id text primary key,
+        status text not null,
+        offline_since text,
         runtime_kind text not null,
         runtime_session_id text,
         created_at text not null,
@@ -160,6 +166,11 @@ export class AgentInboxStore {
         target_id text primary key,
         agent_id text not null,
         kind text not null,
+        status text not null,
+        offline_since text,
+        consecutive_failures integer not null,
+        last_delivered_at text,
+        last_error text,
         mode text not null,
         notify_lease_ms integer not null,
         url text,
@@ -296,6 +307,12 @@ export class AgentInboxStore {
       create index if not exists idx_inbox_items_inbox_acked_at
         on inbox_items(inbox_id, acked_at);
 
+      create index if not exists idx_agents_status_offline
+        on agents(status, offline_since);
+
+      create index if not exists idx_activation_targets_agent_status
+        on activation_targets(agent_id, status);
+
       create index if not exists idx_stream_events_stream_offset
         on stream_events(stream_id, offset);
 
@@ -420,11 +437,13 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into agents (
-        agent_id, runtime_kind, runtime_session_id, created_at, updated_at, last_seen_at
-      ) values (?, ?, ?, ?, ?, ?)
+        agent_id, status, offline_since, runtime_kind, runtime_session_id, created_at, updated_at, last_seen_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         agent.agentId,
+        agent.status,
+        agent.offlineSince ?? null,
         agent.runtimeKind,
         agent.runtimeSessionId ?? null,
         agent.createdAt,
@@ -436,18 +455,26 @@ export class AgentInboxStore {
   }
 
   updateAgent(agentId: string, input: {
+    status?: Agent["status"];
+    offlineSince?: string | null;
     runtimeKind: Agent["runtimeKind"];
     runtimeSessionId?: string | null;
     updatedAt: string;
     lastSeenAt: string;
   }): Agent {
+    const current = this.getAgent(agentId);
+    if (!current) {
+      throw new Error(`unknown agent: ${agentId}`);
+    }
     this.db.run(
       `
       update agents
-      set runtime_kind = ?, runtime_session_id = ?, updated_at = ?, last_seen_at = ?
+      set status = ?, offline_since = ?, runtime_kind = ?, runtime_session_id = ?, updated_at = ?, last_seen_at = ?
       where agent_id = ?
     `,
       [
+        input.status ?? current.status,
+        input.offlineSince !== undefined ? input.offlineSince : current.offlineSince ?? null,
         input.runtimeKind,
         input.runtimeSessionId ?? null,
         input.updatedAt,
@@ -580,13 +607,19 @@ export class AgentInboxStore {
       this.db.run(
         `
         insert into activation_targets (
-          target_id, agent_id, kind, mode, notify_lease_ms, url, created_at, updated_at, last_seen_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error,
+          mode, notify_lease_ms, url, created_at, updated_at, last_seen_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           target.targetId,
           target.agentId,
           target.kind,
+          target.status,
+          target.offlineSince ?? null,
+          target.consecutiveFailures,
+          target.lastDeliveredAt ?? null,
+          target.lastError ?? null,
           target.mode,
           target.notifyLeaseMs,
           target.url,
@@ -599,15 +632,20 @@ export class AgentInboxStore {
       this.db.run(
         `
         insert into activation_targets (
-          target_id, agent_id, kind, mode, notify_lease_ms,
+          target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error, mode, notify_lease_ms,
           runtime_kind, runtime_session_id, backend, tmux_pane_id, tty, term_program, iterm_session_id,
           created_at, updated_at, last_seen_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           target.targetId,
           target.agentId,
           target.kind,
+          target.status,
+          target.offlineSince ?? null,
+          target.consecutiveFailures,
+          target.lastDeliveredAt ?? null,
+          target.lastError ?? null,
           target.mode,
           target.notifyLeaseMs,
           target.runtimeKind,
@@ -642,7 +680,8 @@ export class AgentInboxStore {
     this.db.run(
       `
       update activation_targets
-      set runtime_kind = ?, runtime_session_id = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
+      set status = 'active', offline_since = null, last_error = null, consecutive_failures = 0,
+          runtime_kind = ?, runtime_session_id = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
       where target_id = ? and kind = 'terminal'
     `,
       [
@@ -665,6 +704,43 @@ export class AgentInboxStore {
     return target;
   }
 
+  updateActivationTargetRuntime(
+    targetId: string,
+    input: {
+      status?: ActivationTarget["status"];
+      offlineSince?: string | null;
+      consecutiveFailures?: number;
+      lastDeliveredAt?: string | null;
+      lastError?: string | null;
+      updatedAt: string;
+      lastSeenAt?: string;
+    },
+  ): ActivationTarget {
+    const current = this.getActivationTarget(targetId);
+    if (!current) {
+      throw new Error(`unknown activation target: ${targetId}`);
+    }
+    this.db.run(
+      `
+      update activation_targets
+      set status = ?, offline_since = ?, consecutive_failures = ?, last_delivered_at = ?, last_error = ?, updated_at = ?, last_seen_at = ?
+      where target_id = ?
+    `,
+      [
+        input.status ?? current.status,
+        input.offlineSince !== undefined ? input.offlineSince : current.offlineSince ?? null,
+        input.consecutiveFailures ?? current.consecutiveFailures,
+        input.lastDeliveredAt !== undefined ? input.lastDeliveredAt : current.lastDeliveredAt ?? null,
+        input.lastError !== undefined ? input.lastError : current.lastError ?? null,
+        input.updatedAt,
+        input.lastSeenAt ?? current.lastSeenAt,
+        targetId,
+      ],
+    );
+    this.persist();
+    return this.getActivationTarget(targetId)!;
+  }
+
   listActivationTargets(): ActivationTarget[] {
     const rows = this.getAll("select * from activation_targets order by created_at asc");
     return rows.map((row) => this.mapActivationTarget(row));
@@ -684,6 +760,49 @@ export class AgentInboxStore {
       this.db.run("delete from activation_targets where agent_id = ? and target_id = ?", [agentId, targetId]);
     });
     this.persist();
+  }
+
+  deleteAgent(agentId: string, options?: { persist?: boolean }): void {
+    const inbox = this.getInboxByAgentId(agentId);
+    const subscriptions = this.listSubscriptionsForAgent(agentId);
+    this.inTransaction(() => {
+      for (const subscription of subscriptions) {
+        this.db.run("delete from consumer_commits where consumer_id in (select consumer_id from consumers where subscription_id = ?)", [
+          subscription.subscriptionId,
+        ]);
+        this.db.run("delete from consumers where subscription_id = ?", [subscription.subscriptionId]);
+      }
+      this.db.run("delete from subscriptions where agent_id = ?", [agentId]);
+      this.db.run("delete from activation_dispatch_states where agent_id = ?", [agentId]);
+      this.db.run("delete from activation_targets where agent_id = ?", [agentId]);
+      if (inbox) {
+        this.db.run("delete from inbox_items where inbox_id = ?", [inbox.inboxId]);
+        this.db.run("delete from activations where agent_id = ? or inbox_id = ?", [agentId, inbox.inboxId]);
+        this.db.run("delete from inboxes where inbox_id = ?", [inbox.inboxId]);
+      } else {
+        this.db.run("delete from activations where agent_id = ?", [agentId]);
+      }
+      this.db.run("delete from agents where agent_id = ?", [agentId]);
+    });
+    if (options?.persist !== false) {
+      this.persist();
+    }
+  }
+
+  countActiveActivationTargetsForAgent(agentId: string): number {
+    const row = this.getOne(
+      "select count(*) as count from activation_targets where agent_id = ? and status = 'active'",
+      [agentId],
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  listOfflineAgentsOlderThan(cutoffIso: string): Agent[] {
+    const rows = this.getAll(
+      "select * from agents where status = 'offline' and offline_since is not null and offline_since <= ? order by offline_since asc",
+      [cutoffIso],
+    );
+    return rows.map((row) => this.mapAgent(row));
   }
 
   getActivationDispatchState(agentId: string, targetId: string): ActivationDispatchState | null {
@@ -1157,9 +1276,11 @@ export class AgentInboxStore {
     return {
       sources: this.count("sources"),
       agents: this.count("agents"),
+      offlineAgents: this.count("agents where status = 'offline'"),
       subscriptions: this.count("subscriptions"),
       inboxes: this.count("inboxes"),
       activationTargets: this.count("activation_targets"),
+      offlineActivationTargets: this.count("activation_targets where status = 'offline'"),
       activationDispatchStates: this.count("activation_dispatch_states"),
       streamEvents: this.count("stream_events"),
       consumers: this.count("consumers"),
@@ -1229,6 +1350,8 @@ export class AgentInboxStore {
   private mapAgent(row: Record<string, unknown>): Agent {
     return {
       agentId: String(row.agent_id),
+      status: row.status as Agent["status"],
+      offlineSince: row.offline_since ? String(row.offline_since) : null,
       runtimeKind: row.runtime_kind as Agent["runtimeKind"],
       runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
       createdAt: String(row.created_at),
@@ -1268,6 +1391,11 @@ export class AgentInboxStore {
         targetId: String(row.target_id),
         agentId: String(row.agent_id),
         kind: "webhook",
+        status: row.status as WebhookActivationTarget["status"],
+        offlineSince: row.offline_since ? String(row.offline_since) : null,
+        consecutiveFailures: Number(row.consecutive_failures ?? 0),
+        lastDeliveredAt: row.last_delivered_at ? String(row.last_delivered_at) : null,
+        lastError: row.last_error ? String(row.last_error) : null,
         mode: row.mode as WebhookActivationTarget["mode"],
         url,
         notifyLeaseMs: Number(row.notify_lease_ms),
@@ -1280,6 +1408,11 @@ export class AgentInboxStore {
       targetId: String(row.target_id),
       agentId: String(row.agent_id),
       kind: "terminal",
+      status: row.status as TerminalActivationTarget["status"],
+      offlineSince: row.offline_since ? String(row.offline_since) : null,
+      consecutiveFailures: Number(row.consecutive_failures ?? 0),
+      lastDeliveredAt: row.last_delivered_at ? String(row.last_delivered_at) : null,
+      lastError: row.last_error ? String(row.last_error) : null,
       mode: row.mode as TerminalActivationTarget["mode"],
       notifyLeaseMs: Number(row.notify_lease_ms),
       runtimeKind: (row.runtime_kind ? String(row.runtime_kind) : "unknown") as TerminalActivationTarget["runtimeKind"],
