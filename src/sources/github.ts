@@ -16,6 +16,7 @@ const DEFAULT_EVENT_TYPES = [
   "PullRequestEvent",
   "PullRequestReviewCommentEvent",
 ];
+const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
 export interface GithubSourceConfig {
   owner: string;
@@ -153,6 +154,8 @@ export class GithubSourceRuntime {
   private readonly client: GithubUxcClient;
   private interval: NodeJS.Timeout | null = null;
   private readonly inFlight = new Set<string>();
+  private readonly errorCounts = new Map<string, number>();
+  private readonly nextRetryAt = new Map<string, number>();
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -206,6 +209,7 @@ export class GithubSourceRuntime {
   status(): Record<string, unknown> {
     return {
       activeSourceIds: Array.from(this.inFlight.values()).sort(),
+      erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
     };
   }
 
@@ -238,6 +242,19 @@ export class GithubSourceRuntime {
         throw new Error(`unknown source: ${sourceId}`);
       }
       const config = parseGithubSourceConfig(source);
+      if (source.status === "error") {
+        const retryAt = this.nextRetryAt.get(sourceId) ?? 0;
+        if (Date.now() < retryAt) {
+          return {
+            sourceId,
+            sourceType: "github_repo",
+            appended: 0,
+            deduped: 0,
+            eventsRead: 0,
+            note: "error backoff not elapsed",
+          };
+        }
+      }
       let checkpoint = parseGithubCheckpoint(source.checkpoint);
       const subscription = await this.client.ensureRepoEventsSubscription(config, checkpoint);
       if (subscription.job_id !== checkpoint.uxcJobId) {
@@ -270,6 +287,8 @@ export class GithubSourceRuntime {
           lastError: null,
         }),
       });
+      this.errorCounts.delete(sourceId);
+      this.nextRetryAt.delete(sourceId);
 
       return {
         sourceId,
@@ -283,6 +302,13 @@ export class GithubSourceRuntime {
       const source = this.store.getSource(sourceId);
       if (source) {
         const checkpoint = parseGithubCheckpoint(source.checkpoint);
+        const config = parseGithubSourceConfig(source);
+        const nextErrorCount = (this.errorCounts.get(sourceId) ?? 0) + 1;
+        this.errorCounts.set(sourceId, nextErrorCount);
+        this.nextRetryAt.set(
+          sourceId,
+          Date.now() + computeErrorBackoffMs(config.pollIntervalSecs ?? 30, nextErrorCount),
+        );
         this.store.updateSourceRuntime(sourceId, {
           status: "error",
           checkpoint: JSON.stringify({
@@ -296,6 +322,12 @@ export class GithubSourceRuntime {
       this.inFlight.delete(sourceId);
     }
   }
+}
+
+function computeErrorBackoffMs(pollIntervalSecs: number, errorCount: number): number {
+  const baseMs = Math.max(1, pollIntervalSecs) * 1000;
+  const multiplier = Math.min(2 ** Math.max(0, errorCount - 1), MAX_ERROR_BACKOFF_MULTIPLIER);
+  return baseMs * multiplier;
 }
 
 export class GithubDeliveryAdapter {

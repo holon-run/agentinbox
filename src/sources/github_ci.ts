@@ -6,6 +6,7 @@ const GITHUB_ENDPOINT = "https://api.github.com";
 const DEFAULT_POLL_INTERVAL_SECS = 30;
 const DEFAULT_PER_PAGE = 20;
 const MAX_SEEN_KEYS = 512;
+const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
 export interface GithubCiSourceConfig {
   owner: string;
@@ -74,6 +75,8 @@ export class GithubCiSourceRuntime {
   private interval: NodeJS.Timeout | null = null;
   private readonly inFlight = new Set<string>();
   private readonly lastPollAt = new Map<string, number>();
+  private readonly errorCounts = new Map<string, number>();
+  private readonly nextRetryAt = new Map<string, number>();
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -122,6 +125,7 @@ export class GithubCiSourceRuntime {
   status(): Record<string, unknown> {
     return {
       activeSourceIds: Array.from(this.inFlight.values()).sort(),
+      erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
     };
   }
 
@@ -155,6 +159,17 @@ export class GithubCiSourceRuntime {
       }
       const config = parseGithubCiSourceConfig(source);
       if (!force) {
+        const retryAt = this.nextRetryAt.get(sourceId) ?? 0;
+        if (Date.now() < retryAt) {
+          return {
+            sourceId,
+            sourceType: "github_repo_ci",
+            appended: 0,
+            deduped: 0,
+            eventsRead: 0,
+            note: "error backoff not elapsed",
+          };
+        }
         const lastPollAt = this.lastPollAt.get(sourceId) ?? 0;
         const pollIntervalMs = (config.pollIntervalSecs ?? DEFAULT_POLL_INTERVAL_SECS) * 1000;
         if (Date.now() - lastPollAt < pollIntervalMs) {
@@ -208,6 +223,8 @@ export class GithubCiSourceRuntime {
           lastError: undefined,
         } satisfies GithubCiSourceCheckpoint),
       });
+      this.errorCounts.delete(sourceId);
+      this.nextRetryAt.delete(sourceId);
 
       return {
         sourceId,
@@ -221,6 +238,13 @@ export class GithubCiSourceRuntime {
       const source = this.store.getSource(sourceId);
       if (source) {
         const checkpoint = parseGithubCiCheckpoint(source.checkpoint);
+        const config = parseGithubCiSourceConfig(source);
+        const nextErrorCount = (this.errorCounts.get(sourceId) ?? 0) + 1;
+        this.errorCounts.set(sourceId, nextErrorCount);
+        this.nextRetryAt.set(
+          sourceId,
+          Date.now() + computeErrorBackoffMs(config.pollIntervalSecs ?? DEFAULT_POLL_INTERVAL_SECS, nextErrorCount),
+        );
         this.store.updateSourceRuntime(sourceId, {
           status: "error",
           checkpoint: JSON.stringify({
@@ -234,6 +258,12 @@ export class GithubCiSourceRuntime {
       this.inFlight.delete(sourceId);
     }
   }
+}
+
+function computeErrorBackoffMs(pollIntervalSecs: number, errorCount: number): number {
+  const baseMs = Math.max(1, pollIntervalSecs) * 1000;
+  const multiplier = Math.min(2 ** Math.max(0, errorCount - 1), MAX_ERROR_BACKOFF_MULTIPLIER);
+  return baseMs * multiplier;
 }
 
 export function normalizeGithubWorkflowRunEvent(
