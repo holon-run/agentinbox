@@ -44,6 +44,7 @@ const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
 const DEFAULT_NOTIFY_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_NOTIFY_RETRY_MS = 5_000;
 const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
@@ -70,6 +71,8 @@ interface InboxWatcher {
   onItems(items: InboxItem[]): void;
 }
 
+type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline";
+
 export interface InboxWatchSession {
   initialItems: InboxItem[];
   start(): void;
@@ -86,7 +89,8 @@ export class AgentInboxService {
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private syncInterval: NodeJS.Timeout | null = null;
   private stopping = false;
-  private lastGcAt = 0;
+  private lastAckedInboxGcAt = 0;
+  private lastOfflineAgentGcAt = 0;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -116,10 +120,12 @@ export class AgentInboxService {
       void this.syncAllSubscriptions();
       void this.syncActivationDispatchStates();
       void this.runAckedInboxGcIfDue();
+      void this.syncLifecycleGc();
     }, 2_000);
     await this.syncAllSubscriptions();
     await this.syncActivationDispatchStates();
     await this.runAckedInboxGcIfDue(true);
+    await this.syncLifecycleGc();
   }
 
   async stop(): Promise<void> {
@@ -198,6 +204,8 @@ export class AgentInboxService {
     const existingAgent = this.store.getAgent(agentId);
     const agent = existingAgent
       ? this.store.updateAgent(agentId, {
+          status: "active",
+          offlineSince: null,
           runtimeKind,
           runtimeSessionId: input.runtimeSessionId ?? null,
           updatedAt: now,
@@ -206,6 +214,8 @@ export class AgentInboxService {
       : (() => {
           const created: Agent = {
             agentId,
+            status: "active",
+            offlineSince: null,
             runtimeKind,
             runtimeSessionId: input.runtimeSessionId ?? null,
             createdAt: now,
@@ -264,6 +274,21 @@ export class AgentInboxService {
     };
   }
 
+  removeAgent(agentId: string): { removed: boolean } {
+    this.getAgent(agentId);
+    this.store.deleteAgent(agentId);
+    this.notificationBuffers.forEach((buffer, key) => {
+      if (key.startsWith(`${agentId}:`)) {
+        if (buffer.timer) {
+          clearTimeout(buffer.timer);
+        }
+        this.notificationBuffers.delete(key);
+      }
+    });
+    this.inboxWatchers.delete(agentId);
+    return { removed: true };
+  }
+
   addWebhookActivationTarget(agentId: string, input: AddWebhookActivationTargetInput): WebhookActivationTarget {
     this.getAgent(agentId);
     validateNotifyLeaseMs(input.notifyLeaseMs);
@@ -273,6 +298,11 @@ export class AgentInboxService {
       targetId: generateId("tgt"),
       agentId,
       kind: "webhook",
+      status: "active",
+      offlineSince: null,
+      consecutiveFailures: 0,
+      lastDeliveredAt: null,
+      lastError: null,
       mode,
       url: input.url,
       notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
@@ -281,6 +311,7 @@ export class AgentInboxService {
       lastSeenAt: now,
     };
     this.store.insertActivationTarget(target);
+    this.markAgentActive(agentId);
     return target;
   }
 
@@ -306,6 +337,7 @@ export class AgentInboxService {
       throw new Error(`activation target ${targetId} does not belong to agent ${agentId}`);
     }
     this.store.deleteActivationTarget(agentId, targetId);
+    this.reconcileAgentStatus(agentId);
     return { removed: true };
   }
 
@@ -579,6 +611,16 @@ export class AgentInboxService {
     };
   }
 
+  gc(): { deleted: number; retentionMs: number; removedAgents: number } {
+    const acked = this.gcAckedInboxItems();
+    const lifecycle = this.gcOfflineAgents();
+    return {
+      deleted: acked.deleted,
+      retentionMs: acked.retentionMs,
+      removedAgents: lifecycle.removedAgents,
+    };
+  }
+
   async pollSource(sourceId: string): Promise<SourcePollResult> {
     return this.adapters.pollSource(this.getSource(sourceId));
   }
@@ -617,7 +659,7 @@ export class AgentInboxService {
       });
 
       const inbox = this.ensureInboxForAgent(subscription.agentId);
-      const targets = this.store.listActivationTargetsForAgent(subscription.agentId);
+      const targets = this.store.listActivationTargetsForAgent(subscription.agentId).filter((target) => target.status === "active");
       let matched = 0;
       let inboxItemsCreated = 0;
       let lastProcessedOffset: number | null = null;
@@ -733,6 +775,7 @@ export class AgentInboxService {
       retention: {
         ackedInboxItemsMs: this.ackedRetentionMs,
         gcIntervalMs: DEFAULT_GC_INTERVAL_MS,
+        lastAckedInboxGcAt: this.lastAckedInboxGcAt > 0 ? new Date(this.lastAckedInboxGcAt).toISOString() : null,
       },
       counts: this.store.getCounts(),
       agents: this.store.listAgents(),
@@ -746,6 +789,11 @@ export class AgentInboxService {
       adapters: this.adapters.status(),
       recentActivations: this.store.listActivations().slice(0, 10),
       recentDeliveries: this.store.listDeliveries().slice(0, 10),
+      lifecycle: {
+        offlineAgentTtlMs: DEFAULT_OFFLINE_AGENT_TTL_MS,
+        gcIntervalMs: DEFAULT_GC_INTERVAL_MS,
+        lastOfflineAgentGcAt: this.lastOfflineAgentGcAt > 0 ? new Date(this.lastOfflineAgentGcAt).toISOString() : null,
+      },
     };
   }
 
@@ -776,10 +824,10 @@ export class AgentInboxService {
 
   private async runAckedInboxGcIfDue(force = false): Promise<void> {
     const now = Date.now();
-    if (!force && now - this.lastGcAt < DEFAULT_GC_INTERVAL_MS) {
+    if (!force && now - this.lastAckedInboxGcAt < DEFAULT_GC_INTERVAL_MS) {
       return;
     }
-    this.lastGcAt = now;
+    this.lastAckedInboxGcAt = now;
     this.gcAckedInboxItems();
   }
 
@@ -817,6 +865,7 @@ export class AgentInboxService {
       if (target.agentId !== agentId) {
         throw new Error(`terminal target ${target.targetId} is already bound to agent ${target.agentId}`);
       }
+      this.markAgentActive(agentId);
       return target;
     }
 
@@ -824,6 +873,11 @@ export class AgentInboxService {
       targetId: generateId("tgt"),
       agentId,
       kind: "terminal",
+      status: "active",
+      offlineSince: null,
+      consecutiveFailures: 0,
+      lastDeliveredAt: null,
+      lastError: null,
       mode: "agent_prompt",
       notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
       runtimeKind: input.runtimeKind ?? "unknown",
@@ -838,6 +892,7 @@ export class AgentInboxService {
       lastSeenAt: now,
     };
     this.store.insertActivationTarget(target);
+    this.markAgentActive(agentId);
     return target;
   }
 
@@ -917,7 +972,7 @@ export class AgentInboxService {
           sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
           items: entries.map((entry) => entry.item),
         });
-        if (!dispatched) {
+        if (dispatched === "retryable_failure") {
           this.upsertDirtyDispatchState(buffer.agentId, buffer.targetId, entries);
         }
       } else {
@@ -1003,7 +1058,11 @@ export class AgentInboxService {
       })),
     });
 
-    if (!dispatched) {
+    if (dispatched === "offline") {
+      this.store.deleteActivationDispatchState(agentId, targetId);
+      return;
+    }
+    if (dispatched === "retryable_failure") {
       this.store.upsertActivationDispatchState({
         ...state,
         status: "dirty",
@@ -1021,8 +1080,11 @@ export class AgentInboxService {
     subscriptionIds: string[];
     sourceIds: string[];
     items: ActivationItem[];
-  }): Promise<boolean> {
+  }): Promise<ActivationDispatchOutcome> {
     const target = this.getActivationTarget(input.targetId);
+    if (target.status === "offline") {
+      return "offline";
+    }
     const inbox = this.ensureInboxForAgent(input.agentId);
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
     try {
@@ -1053,6 +1115,9 @@ export class AgentInboxService {
         this.store.insertActivation(activation);
       }
 
+      this.markActivationTargetDelivered(target.targetId);
+      this.markAgentActive(input.agentId);
+
       this.store.upsertActivationDispatchState({
         agentId: input.agentId,
         targetId: input.targetId,
@@ -1064,10 +1129,20 @@ export class AgentInboxService {
         pendingSourceIds: [],
         updatedAt: nowIso(),
       });
-      return true;
+      return "dispatched";
     } catch (error) {
       console.warn(`activation target dispatch failed for ${target.targetId}:`, error);
-      return false;
+      const message = error instanceof Error ? error.message : String(error);
+      if (target.kind === "terminal") {
+        const exists = await this.terminalDispatcher.probe(target);
+        if (!exists) {
+          this.markActivationTargetOffline(target.targetId, message);
+          this.reconcileAgentStatus(target.agentId);
+          return "offline";
+        }
+      }
+      this.markActivationTargetDispatchFailure(target.targetId, message);
+      return "retryable_failure";
     }
   }
 
@@ -1087,6 +1162,93 @@ export class AgentInboxService {
       pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
       updatedAt: nowIso(),
     });
+  }
+
+  private markActivationTargetDelivered(targetId: string): void {
+    const now = nowIso();
+    this.store.updateActivationTargetRuntime(targetId, {
+      status: "active",
+      offlineSince: null,
+      consecutiveFailures: 0,
+      lastDeliveredAt: now,
+      lastError: null,
+      updatedAt: now,
+      lastSeenAt: now,
+    });
+  }
+
+  private markActivationTargetDispatchFailure(targetId: string, message: string): void {
+    const target = this.getActivationTarget(targetId);
+    this.store.updateActivationTargetRuntime(targetId, {
+      status: "active",
+      offlineSince: null,
+      consecutiveFailures: target.consecutiveFailures + 1,
+      lastError: message,
+      updatedAt: nowIso(),
+    });
+  }
+
+  private markActivationTargetOffline(targetId: string, message: string): void {
+    const now = nowIso();
+    const target = this.getActivationTarget(targetId);
+    this.store.updateActivationTargetRuntime(targetId, {
+      status: "offline",
+      offlineSince: target.offlineSince ?? now,
+      consecutiveFailures: target.consecutiveFailures + 1,
+      lastError: message,
+      updatedAt: now,
+    });
+  }
+
+  private markAgentActive(agentId: string): void {
+    const agent = this.getAgent(agentId);
+    if (agent.status === "active" && !agent.offlineSince) {
+      return;
+    }
+    const now = nowIso();
+    this.store.updateAgent(agentId, {
+      status: "active",
+      offlineSince: null,
+      runtimeKind: agent.runtimeKind,
+      runtimeSessionId: agent.runtimeSessionId ?? null,
+      updatedAt: now,
+      lastSeenAt: now,
+    });
+  }
+
+  private reconcileAgentStatus(agentId: string): void {
+    const agent = this.getAgent(agentId);
+    if (this.store.countActiveActivationTargetsForAgent(agentId) > 0) {
+      this.markAgentActive(agentId);
+      return;
+    }
+    const now = nowIso();
+    this.store.updateAgent(agentId, {
+      status: "offline",
+      offlineSince: agent.offlineSince ?? now,
+      runtimeKind: agent.runtimeKind,
+      runtimeSessionId: agent.runtimeSessionId ?? null,
+      updatedAt: now,
+      lastSeenAt: agent.lastSeenAt,
+    });
+  }
+
+  private gcOfflineAgents(now = Date.now()): { removedAgents: number } {
+    const cutoffIso = new Date(now - DEFAULT_OFFLINE_AGENT_TTL_MS).toISOString();
+    const agents = this.store.listOfflineAgentsOlderThan(cutoffIso);
+    for (const agent of agents) {
+      this.store.deleteAgent(agent.agentId);
+      this.notificationBuffers.forEach((buffer, key) => {
+        if (key.startsWith(`${agent.agentId}:`)) {
+          if (buffer.timer) {
+            clearTimeout(buffer.timer);
+          }
+          this.notificationBuffers.delete(key);
+        }
+      });
+      this.inboxWatchers.delete(agent.agentId);
+    }
+    return { removedAgents: agents.length };
   }
 
   private async syncAllSubscriptions(): Promise<void> {
@@ -1116,6 +1278,19 @@ export class AgentInboxService {
       } catch (error) {
         console.warn(`activation target lease sync failed for ${state.targetId}/${state.agentId}:`, error);
       }
+    }
+  }
+
+  private async syncLifecycleGc(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastOfflineAgentGcAt < DEFAULT_GC_INTERVAL_MS) {
+      return;
+    }
+    this.lastOfflineAgentGcAt = now;
+    try {
+      this.gcOfflineAgents(now);
+    } catch (error) {
+      console.warn("offline agent gc failed:", error);
     }
   }
 }

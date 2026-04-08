@@ -134,6 +134,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "agent" && normalized[1] === "remove") {
+    const agentId = normalized[2];
+    if (!agentId) {
+      throw new Error("usage: agentinbox agent remove <agentId>");
+    }
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}`, undefined, "DELETE");
+    return;
+  }
+
   if (command === "agent" && normalized[1] === "target" && normalized[2] === "add" && normalized[3] === "webhook") {
     const agentId = normalized[4];
     const url = takeFlagValue(normalized, "--url");
@@ -355,6 +364,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "gc") {
+    await printRemote(client, "/gc", {});
+    return;
+  }
+
   if (hasHelpFlag(normalized.slice(1))) {
     printHelp([command]);
     return;
@@ -529,6 +543,7 @@ Commands:
   fixture
   deliver
   status
+  gc
   version
 `,
     serve: `agentinbox serve
@@ -559,6 +574,7 @@ Usage:
   agentinbox agent register [--notify-lease-ms N]
   agentinbox agent list
   agentinbox agent show <agentId>
+  agentinbox agent remove <agentId>
   agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N]
   agentinbox agent target list <agentId>
   agentinbox agent target remove <agentId> <targetId>

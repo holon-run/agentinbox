@@ -349,6 +349,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       await started.close();
     }
   } finally {
+    await adapters.stop();
     webhookServer.close();
     await service.stop();
     store.close();
@@ -369,7 +370,6 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
     stderr: "",
   })));
   const server = createServer(service);
-
   try {
     const started = await startControlServer(server, {
       kind: "socket",
@@ -381,7 +381,6 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
         socketPath,
         source: "flag",
       });
-
       const agentResponse = await client.request<{
         agent: { agentId: string };
       }>("/agents/register", {
@@ -459,6 +458,79 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
       await started.close();
     }
   } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane can remove agents and gc stale offline agents", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-gc-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+  await adapters.start();
+  await service.start();
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const agentResponse = await client.request<{
+        agent: { agentId: string };
+      }>("/agents/register", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-remove-http",
+        tmuxPaneId: "%199",
+        notifyLeaseMs: 200,
+      });
+      const agentId = agentResponse.data.agent.agentId;
+
+      const removeResponse = await client.request<{ removed: boolean }>(
+        `/agents/${encodeURIComponent(agentId)}`,
+        undefined,
+        "DELETE",
+      );
+      assert.equal(removeResponse.statusCode, 200);
+      assert.equal(removeResponse.data.removed, true);
+
+      const stale = service.registerAgent({
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-stale-http",
+        tmuxPaneId: "%200",
+        notifyLeaseMs: 200,
+      });
+      const old = new Date(Date.now() - (8 * 24 * 60 * 60 * 1000)).toISOString();
+      store.updateAgent(stale.agent.agentId, {
+        status: "offline",
+        offlineSince: old,
+        runtimeKind: stale.agent.runtimeKind,
+        runtimeSessionId: stale.agent.runtimeSessionId,
+        updatedAt: old,
+        lastSeenAt: old,
+      });
+
+      const gcResponse = await client.request<{ removedAgents: number } & { deleted?: number }>("/gc", {});
+      assert.equal(gcResponse.statusCode, 200);
+      assert.equal(gcResponse.data.removedAgents, 1);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });

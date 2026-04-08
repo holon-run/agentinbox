@@ -7,6 +7,8 @@ export type TerminalMode = "agent_prompt";
 export type RuntimeKind = "codex" | "claude_code" | "unknown";
 export type ActivationTargetKind = "webhook" | "terminal";
 export type ActivationDispatchStatus = "notified" | "dirty";
+export type AgentStatus = "active" | "offline";
+export type ActivationTargetStatus = "active" | "offline";
 
 export interface DeliveryHandle {
   provider: string;
@@ -30,6 +32,8 @@ export interface SubscriptionSource {
 
 export interface Agent {
   agentId: string;
+  status: AgentStatus;
+  offlineSince?: string | null;
   runtimeKind: RuntimeKind;
   runtimeSessionId?: string | null;
   createdAt: string;
@@ -58,6 +62,11 @@ interface ActivationTargetBase {
   targetId: string;
   agentId: string;
   kind: ActivationTargetKind;
+  status: ActivationTargetStatus;
+  offlineSince?: string | null;
+  consecutiveFailures: number;
+  lastDeliveredAt?: string | null;
+  lastError?: string | null;
   notifyLeaseMs: number;
   createdAt: string;
   updatedAt: string;

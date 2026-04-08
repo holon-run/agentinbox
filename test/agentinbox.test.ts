@@ -20,9 +20,20 @@ class RecordingActivationDispatcher extends ActivationDispatcher {
 
 class RecordingTerminalDispatcher extends TerminalDispatcher {
   public readonly calls: Array<{ target: TerminalActivationTarget; prompt: string }> = [];
+  public probeResult = true;
 
   override async dispatch(target: TerminalActivationTarget, prompt: string): Promise<void> {
     this.calls.push({ target, prompt });
+  }
+
+  override async probe(_target: TerminalActivationTarget): Promise<boolean> {
+    return this.probeResult;
+  }
+}
+
+class FailingTerminalDispatcher extends RecordingTerminalDispatcher {
+  override async dispatch(_target: TerminalActivationTarget, _prompt: string): Promise<void> {
+    throw new Error("terminal unavailable");
   }
 }
 
@@ -409,6 +420,143 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
     assert.equal(dispatcher.calls.length, 2);
     assert.equal(terminalDispatcher.calls.length, 2);
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 2);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal target goes offline when dispatch fails and probe confirms disappearance", async () => {
+  const terminalDispatcher = new FailingTerminalDispatcher();
+  terminalDispatcher.probeResult = false;
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-offline",
+      tmuxPaneId: "%84",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "offline-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-offline-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    const agent = service.getAgent(registered.agent.agentId);
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    assert.equal(agent.status, "offline");
+    assert.equal(target.status, "offline");
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent remove cascades local runtime state but keeps shared sources", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remove",
+      tmuxPaneId: "%85",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "remove-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-remove-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+
+    assert.equal(service.removeAgent(registered.agent.agentId).removed, true);
+    assert.equal(store.getAgent(registered.agent.agentId), null);
+    assert.equal(store.getInboxByAgentId(registered.agent.agentId), null);
+    assert.equal(store.listSubscriptionsForAgent(registered.agent.agentId).length, 0);
+    assert.equal(store.listActivationTargetsForAgent(registered.agent.agentId).length, 0);
+    assert.equal(store.listSources().length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gc removes offline agents after ttl even with unacked inbox items", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-gc",
+      tmuxPaneId: "%86",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "gc-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-gc-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+
+    const old = new Date(Date.now() - (8 * 24 * 60 * 60 * 1000)).toISOString();
+    store.updateAgent(registered.agent.agentId, {
+      status: "offline",
+      offlineSince: old,
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-gc",
+      updatedAt: old,
+      lastSeenAt: old,
+    });
+
+    const result = service.gc();
+    assert.equal(result.removedAgents, 1);
+    assert.equal(store.getAgent(registered.agent.agentId), null);
+    assert.equal(store.listSources().length, 1);
   } finally {
     await service.stop();
     store.close();
