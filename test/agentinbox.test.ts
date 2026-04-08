@@ -564,6 +564,57 @@ test("gc removes offline agents after ttl even with unacked inbox items", async 
   }
 });
 
+test("registerAgent clears offline and error runtime fields for the current terminal target", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-clear",
+      tmuxPaneId: "%87",
+      notifyLeaseMs: 100,
+    });
+    const targetId = registered.terminalTarget.targetId;
+    store.updateActivationTargetRuntime(targetId, {
+      status: "offline",
+      offlineSince: "2026-04-01T00:00:00.000Z",
+      consecutiveFailures: 3,
+      lastDeliveredAt: "2026-04-01T00:00:00.000Z",
+      lastError: "stale error",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+    });
+    store.updateAgent(registered.agent.agentId, {
+      status: "offline",
+      offlineSince: "2026-04-01T00:00:00.000Z",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-clear",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      lastSeenAt: "2026-04-01T00:00:00.000Z",
+    });
+
+    service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-clear",
+      tmuxPaneId: "%87",
+      notifyLeaseMs: 100,
+    });
+
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    const agent = service.getAgent(registered.agent.agentId);
+    assert.equal(target.status, "active");
+    assert.equal(target.offlineSince, null);
+    assert.equal(target.lastError, null);
+    assert.equal(target.consecutiveFailures, 0);
+    assert.equal(agent.status, "active");
+    assert.equal(agent.offlineSince, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

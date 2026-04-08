@@ -1237,7 +1237,7 @@ export class AgentInboxService {
     const cutoffIso = new Date(now - DEFAULT_OFFLINE_AGENT_TTL_MS).toISOString();
     const agents = this.store.listOfflineAgentsOlderThan(cutoffIso);
     for (const agent of agents) {
-      this.store.deleteAgent(agent.agentId);
+      this.store.deleteAgent(agent.agentId, { persist: false });
       this.notificationBuffers.forEach((buffer, key) => {
         if (key.startsWith(`${agent.agentId}:`)) {
           if (buffer.timer) {
@@ -1247,6 +1247,9 @@ export class AgentInboxService {
         }
       });
       this.inboxWatchers.delete(agent.agentId);
+    }
+    if (agents.length > 0) {
+      this.store.save();
     }
     return { removedAgents: agents.length };
   }

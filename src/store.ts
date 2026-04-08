@@ -71,6 +71,10 @@ export class AgentInboxStore {
     this.db.close();
   }
 
+  save(): void {
+    this.persist();
+  }
+
   private migrate(): void {
     const userVersion = this.userVersion();
     if (userVersion === 0) {
@@ -470,7 +474,7 @@ export class AgentInboxStore {
     `,
       [
         input.status ?? current.status,
-        input.offlineSince ?? current.offlineSince ?? null,
+        input.offlineSince !== undefined ? input.offlineSince : current.offlineSince ?? null,
         input.runtimeKind,
         input.runtimeSessionId ?? null,
         input.updatedAt,
@@ -724,10 +728,10 @@ export class AgentInboxStore {
     `,
       [
         input.status ?? current.status,
-        input.offlineSince ?? current.offlineSince ?? null,
+        input.offlineSince !== undefined ? input.offlineSince : current.offlineSince ?? null,
         input.consecutiveFailures ?? current.consecutiveFailures,
-        input.lastDeliveredAt ?? current.lastDeliveredAt ?? null,
-        input.lastError ?? current.lastError ?? null,
+        input.lastDeliveredAt !== undefined ? input.lastDeliveredAt : current.lastDeliveredAt ?? null,
+        input.lastError !== undefined ? input.lastError : current.lastError ?? null,
         input.updatedAt,
         input.lastSeenAt ?? current.lastSeenAt,
         targetId,
@@ -758,7 +762,7 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  deleteAgent(agentId: string): void {
+  deleteAgent(agentId: string, options?: { persist?: boolean }): void {
     const inbox = this.getInboxByAgentId(agentId);
     const subscriptions = this.listSubscriptionsForAgent(agentId);
     this.inTransaction(() => {
@@ -780,7 +784,9 @@ export class AgentInboxStore {
       }
       this.db.run("delete from agents where agent_id = ?", [agentId]);
     });
-    this.persist();
+    if (options?.persist !== false) {
+      this.persist();
+    }
   }
 
   countActiveActivationTargetsForAgent(agentId: string): number {
