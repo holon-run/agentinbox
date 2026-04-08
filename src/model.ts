@@ -30,6 +30,12 @@ export interface SubscriptionSource {
   updatedAt: string;
 }
 
+export interface SubscriptionFilter {
+  metadata?: Record<string, unknown>;
+  payload?: Record<string, unknown>;
+  expr?: string;
+}
+
 export interface Agent {
   agentId: string;
   status: AgentStatus;
@@ -51,7 +57,7 @@ export interface Subscription {
   subscriptionId: string;
   agentId: string;
   sourceId: string;
-  matchRules: Record<string, unknown>;
+  filter: SubscriptionFilter;
   startPolicy: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
@@ -193,10 +199,25 @@ export interface AddWebhookActivationTargetInput {
 export interface RegisterSubscriptionInput {
   agentId: string;
   sourceId: string;
-  matchRules?: Record<string, unknown>;
+  filter?: SubscriptionFilter;
   startPolicy?: SubscriptionStartPolicy;
   startOffset?: number | null;
   startTime?: string | null;
+}
+
+export interface SourceSchemaField {
+  name: string;
+  type: string;
+  description: string;
+  required?: boolean;
+}
+
+export interface SourceSchema {
+  sourceType: SourceType;
+  metadataFields: SourceSchemaField[];
+  payloadExamples: Record<string, unknown>[];
+  eventVariantExamples: string[];
+  configFields: SourceSchemaField[];
 }
 
 export interface AppendSourceEventInput {

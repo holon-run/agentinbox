@@ -125,12 +125,12 @@ test("shared source can route one stream event to multiple agent inboxes", async
     const subscriptionA = await service.registerSubscription({
       agentId: alpha.agentId,
       sourceId: source.sourceId,
-      matchRules: { channel: "engineering" },
+      filter: { metadata: { channel: "engineering" } },
     });
     const subscriptionB = await service.registerSubscription({
       agentId: beta.agentId,
       sourceId: source.sourceId,
-      matchRules: { channel: "engineering" },
+      filter: { metadata: { channel: "engineering" } },
     });
 
     await service.appendSourceEvent({
@@ -167,7 +167,7 @@ test("custom source can act as a programmable event bus source", async () => {
     const subscription = await service.registerSubscription({
       agentId: alpha.agentId,
       sourceId: source.sourceId,
-      matchRules: { channel: "engineering" },
+      filter: { metadata: { channel: "engineering" } },
       startPolicy: "earliest",
     });
 
@@ -184,6 +184,57 @@ test("custom source can act as a programmable event bus source", async () => {
     assert.equal(pollResult.inboxItemsCreated, 1);
     assert.equal(items.length, 1);
     assert.equal(items[0].sourceNativeId, "custom-evt-1");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription filter expr can match nested payload fields and exclude self-authored events", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "expr");
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "expr-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: alpha.agentId,
+      sourceId: source.sourceId,
+      filter: {
+        metadata: { channel: "engineering" },
+        payload: { "sender.login": "teammate" },
+        expr: "payload.sender.login != 'jolestar' && contains(payload.head_commit.message, '[notify-agent]')",
+      },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "expr-evt-1",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering" },
+      rawPayload: {
+        sender: { login: "jolestar" },
+        head_commit: { message: "ignore this" },
+      },
+    });
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "expr-evt-2",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering" },
+      rawPayload: {
+        sender: { login: "teammate" },
+        head_commit: { message: "ship [notify-agent]" },
+      },
+    });
+
+    const pollResult = await service.pollSubscription(subscription.subscriptionId);
+    const items = service.listInboxItems(alpha.agentId);
+    assert.equal(pollResult.inboxItemsCreated, 1);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].sourceNativeId, "expr-evt-2");
   } finally {
     await service.stop();
     store.close();

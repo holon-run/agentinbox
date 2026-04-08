@@ -16,6 +16,7 @@ import {
   RegisterAgentResult,
   RegisterSourceInput,
   RegisterSubscriptionInput,
+  SourceSchema,
   SourcePollResult,
   Subscription,
   SubscriptionPollResult,
@@ -35,7 +36,8 @@ import {
   toAppendResult,
 } from "./backend";
 import { generateId, nowIso } from "./util";
-import { matchSubscription } from "./matcher";
+import { getSourceSchema } from "./source_schema";
+import { matchSubscriptionFilter } from "./filter";
 import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
@@ -182,9 +184,14 @@ export class AgentInboxService {
     const source = this.getSource(sourceId);
     return {
       source,
+      schema: getSourceSchema(source.sourceType),
       stream: this.store.getStreamBySourceId(sourceId),
       subscriptions: this.store.listSubscriptionsForSource(sourceId),
     };
+  }
+
+  getSourceSchema(sourceType: SubscriptionSource["sourceType"]): SourceSchema {
+    return getSourceSchema(sourceType);
   }
 
   registerAgent(input: RegisterAgentInput): RegisterAgentResult {
@@ -351,7 +358,7 @@ export class AgentInboxService {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
-      matchRules: input.matchRules ?? {},
+      filter: input.filter ?? {},
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
@@ -667,7 +674,13 @@ export class AgentInboxService {
       try {
         for (const event of batch.events) {
           lastProcessedOffset = event.offset;
-          const match = matchSubscription(subscription, event.metadata, event.rawPayload);
+          const match = await matchSubscriptionFilter(subscription.filter, {
+            metadata: event.metadata,
+            payload: event.rawPayload,
+            eventVariant: event.eventVariant,
+            sourceType: source.sourceType,
+            sourceKey: source.sourceKey,
+          });
           if (!match.matched) {
             continue;
           }

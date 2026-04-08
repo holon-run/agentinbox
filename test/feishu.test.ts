@@ -163,7 +163,7 @@ test("feishu source runtime appends stream events and subscriptions materialize 
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
-      matchRules: { mentions: ["Alpha"] },
+      filter: { metadata: { mentions: ["Alpha"] } },
       startPolicy: "earliest",
     });
 

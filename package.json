@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@holon-run/uxc-daemon-client": "^0.13.1",
+    "jexl": "^2.3.0",
     "sql.js": "^1.13.0"
   },
   "devDependencies": {

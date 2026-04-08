@@ -143,7 +143,7 @@ test("github_repo_ci source runtime appends workflow run events and subscription
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
-      matchRules: { conclusion: "failure", headBranch: "main" },
+      filter: { metadata: { conclusion: "failure", headBranch: "main" } },
       startPolicy: "earliest",
     });
 

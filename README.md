@@ -308,7 +308,7 @@ Create a programmable local event bus source and publish events into it:
 
 ```bash
 agentinbox source add custom project-alpha
-agentinbox subscription add <agent_id> <source_id> --match-json '{"channel":"engineering"}'
+agentinbox subscription add <agent_id> <source_id> --filter-json '{"metadata":{"channel":"engineering"}}'
 agentinbox source event <source_id> \
   --native-id evt-1 \
   --event message.created \
@@ -322,6 +322,12 @@ For a long-lived local consumer, keep a watch open:
 
 ```bash
 agentinbox inbox watch <agent_id>
+```
+
+Inspect the documented metadata contract and example payloads for a source type:
+
+```bash
+agentinbox source schema github_repo_ci
 ```
 
 ## Source Adapters
@@ -351,7 +357,7 @@ Example:
 ```bash
 agentinbox source add github_repo holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
-agentinbox subscription add <agent_id> <source_id> --match-json '{"mentions":["alpha"]}'
+agentinbox subscription add <agent_id> <source_id> --filter-json '{"metadata":{"mentions":["alpha"]}}'
 agentinbox source poll <source_id>
 ```
 
@@ -363,7 +369,7 @@ state transitions such as failures on a branch or workflow.
 ```bash
 agentinbox source add github_repo_ci holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30,"perPage":20}'
-agentinbox subscription add <agent_id> <source_id> --match-json '{"conclusion":"failure","headBranch":"main"}'
+agentinbox subscription add <agent_id> <source_id> --filter-json '{"metadata":{"conclusion":"failure","headBranch":"main"}}'
 agentinbox source poll <source_id>
 ```
 
@@ -453,7 +459,7 @@ Register a Feishu bot source backed by `uxc` long-connection subscription:
 ```bash
 node dist/src/cli.js source add feishu_bot feishu-default \
   --config-json '{"uxcAuth":"feishu-default","eventTypes":["im.message.receive_v1"]}'
-node dist/src/cli.js subscription add <agent_id> <source_id> --match-json '{"mentions":["Alpha"]}'
+node dist/src/cli.js subscription add <agent_id> <source_id> --filter-json '{"metadata":{"mentions":["Alpha"]}}'
 node dist/src/cli.js source poll <source_id>
 ```
 

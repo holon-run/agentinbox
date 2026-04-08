@@ -79,6 +79,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && normalized[1] === "schema") {
+    const sourceType = normalized[2];
+    if (!sourceType) {
+      throw new Error("usage: agentinbox source schema <sourceType>");
+    }
+    await printRemote(client, `/source-types/${encodeURIComponent(sourceType)}/schema`, undefined, "GET");
+    return;
+  }
+
   if (command === "source" && normalized[1] === "poll") {
     const sourceId = normalized[2];
     if (!sourceId) {
@@ -179,12 +188,12 @@ async function main(): Promise<void> {
   if (command === "subscription" && normalized[1] === "add") {
     const [agentId, sourceId] = normalized.slice(2, 4);
     if (!agentId || !sourceId) {
-      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--match-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
     await printRemote(client, "/subscriptions/register", {
       agentId,
       sourceId,
-      matchRules: parseJsonArg(takeFlagValue(normalized, "--match-json")),
+      filter: parseJsonArg(takeFlagValue(normalized, "--filter-json")),
       startPolicy: takeFlagValue(normalized, "--start-policy") ?? undefined,
       startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
       startTime: takeFlagValue(normalized, "--start-time") ?? undefined,
@@ -565,6 +574,7 @@ Usage:
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source list
   agentinbox source show <sourceId>
+  agentinbox source schema <sourceType>
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
 `,
@@ -582,7 +592,7 @@ Usage:
     subscription: `agentinbox subscription
 
 Usage:
-  agentinbox subscription add <agentId> <sourceId> [--match-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <agentId> <sourceId> [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription poll <subscriptionId>

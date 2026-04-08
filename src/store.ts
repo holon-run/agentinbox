@@ -28,7 +28,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -155,7 +155,7 @@ export class AgentInboxStore {
         subscription_id text primary key,
         agent_id text not null,
         source_id text not null,
-        match_rules_json text not null,
+        filter_json text not null,
         start_policy text not null,
         start_offset integer,
         start_time text,
@@ -523,14 +523,14 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into subscriptions (
-        subscription_id, agent_id, source_id, match_rules_json, start_policy, start_offset, start_time, created_at
+        subscription_id, agent_id, source_id, filter_json, start_policy, start_offset, start_time, created_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         subscription.subscriptionId,
         subscription.agentId,
         subscription.sourceId,
-        JSON.stringify(subscription.matchRules),
+        JSON.stringify(subscription.filter),
         subscription.startPolicy,
         subscription.startOffset ?? null,
         subscription.startTime ?? null,
@@ -1373,7 +1373,7 @@ export class AgentInboxStore {
       subscriptionId: String(row.subscription_id),
       agentId: String(row.agent_id),
       sourceId: String(row.source_id),
-      matchRules: parseJson<Record<string, unknown>>(row.match_rules_json as string),
+      filter: parseJson<Record<string, unknown>>(row.filter_json as string),
       startPolicy: row.start_policy as SubscriptionStartPolicy,
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
       startTime: row.start_time ? String(row.start_time) : null,
