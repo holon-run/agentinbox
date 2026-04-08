@@ -3,12 +3,25 @@
 `AgentInbox` currently supports a mix of local and provider-specific source
 adapters.
 
-## `custom`
+## `local_event`
 
-`custom` is the local event ingress source.
+`local_event` is the local event ingress source.
 
 Use it when a local producer wants to append events directly into `AgentInbox`
 without building a provider-specific adapter first.
+
+## `remote_source`
+
+`remote_source` is a reserved product-facing name for future declarative
+external sources.
+
+It exists to distinguish future external source definitions from:
+
+- local event ingress
+- built-in provider-specific sources
+
+The name is intentional: it describes source semantics without exposing
+implementation details such as `uxc`.
 
 ## `github_repo`
 

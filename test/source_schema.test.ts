@@ -12,9 +12,10 @@ test("getSourceSchema exposes github repo ci metadata and examples", () => {
   assert.ok(schema.configFields.some((field) => field.name === "branch"));
 });
 
-test("getSourceSchema exposes lightweight schemas for custom and fixture sources", () => {
-  const custom = getSourceSchema("custom");
-  assert.equal(custom.sourceType, "custom");
-  assert.ok(custom.metadataFields.some((field) => field.name === "channel"));
+test("getSourceSchema exposes lightweight schemas for local and reserved sources", () => {
+  const localEvent = getSourceSchema("local_event");
+  assert.equal(localEvent.sourceType, "local_event");
+  assert.ok(localEvent.metadataFields.some((field) => field.name === "channel"));
+  assert.equal(getSourceSchema("remote_source").sourceType, "remote_source");
   assert.equal(getSourceSchema("fixture").sourceType, "fixture");
 });

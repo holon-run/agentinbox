@@ -147,6 +147,9 @@ export class AgentInboxService {
   }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
+    if (input.sourceType === "remote_source") {
+      throw new Error("source type is reserved and not yet supported: remote_source");
+    }
     const existing = this.store.getSourceByKey(input.sourceType, input.sourceKey);
     if (existing) {
       return existing;
@@ -482,7 +485,7 @@ export class AgentInboxService {
 
   async appendSourceEventByCaller(sourceId: string, input: Omit<AppendSourceEventInput, "sourceId">): Promise<AppendSourceEventResult> {
     const source = this.getSource(sourceId);
-    if (source.sourceType !== "custom") {
+    if (source.sourceType !== "local_event") {
       throw new Error(`manual append is not supported for source type: ${source.sourceType}`);
     }
     return this.appendSourceEvent({ ...input, sourceId });

@@ -639,6 +639,48 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
   }
 });
 
+test("control plane rejects reserved remote_source registration", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-src-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const response = await client.request<{ error: string }>("/sources/register", {
+        sourceType: "remote_source",
+        sourceKey: "reserved-demo",
+        config: {},
+      });
+      assert.equal(response.statusCode, 400);
+      assert.match(response.data.error, /reserved and not yet supported/);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<never>((_, reject) => {

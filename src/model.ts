@@ -1,4 +1,4 @@
-export type SourceType = "fixture" | "custom" | "github_repo" | "github_repo_ci" | "feishu_bot";
+export type SourceType = "fixture" | "local_event" | "remote_source" | "github_repo" | "github_repo_ci" | "feishu_bot";
 
 export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
 export type SubscriptionLifecycleMode = "standing" | "temporary";

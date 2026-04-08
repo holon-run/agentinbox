@@ -246,12 +246,12 @@ test("shared source can route one stream event to multiple agent inboxes", async
   }
 });
 
-test("custom source can act as a programmable event bus source", async () => {
+test("local_event source can act as a programmable event bus source", async () => {
   const { store, service, dir } = await makeService();
   try {
     const alpha = await registerTmuxAgent(service, "3");
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "project-alpha",
       config: {},
     });
@@ -263,10 +263,10 @@ test("custom source can act as a programmable event bus source", async () => {
     });
 
     const appendResult = await service.appendSourceEventByCaller(source.sourceId, {
-      sourceNativeId: "custom-evt-1",
+      sourceNativeId: "local-evt-1",
       eventVariant: "message.created",
       metadata: { channel: "engineering" },
-      rawPayload: { text: "hello from custom source" },
+      rawPayload: { text: "hello from local event source" },
     });
     assert.equal(appendResult.appended, 1);
 
@@ -274,7 +274,76 @@ test("custom source can act as a programmable event bus source", async () => {
     const items = service.listInboxItems(alpha.agentId);
     assert.equal(pollResult.inboxItemsCreated, 1);
     assert.equal(items.length, 1);
-    assert.equal(items[0].sourceNativeId, "custom-evt-1");
+    assert.equal(items[0].sourceNativeId, "local-evt-1");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy custom sources are surfaced as local_event and still accept manual append", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "legacy-custom");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "legacy-custom-demo",
+      config: {},
+    });
+
+    ((store as unknown) as { db: { run(sql: string, params?: unknown[]): void } }).db.run(
+      "update sources set source_type = 'custom' where source_id = ?",
+      [source.sourceId],
+    );
+
+    const aliased = service.getSource(source.sourceId);
+    assert.equal(aliased.sourceType, "local_event");
+    const details = service.getSourceDetails(source.sourceId) as { source: { sourceType: string }; schema: { sourceType: string } };
+    assert.equal(details.source.sourceType, "local_event");
+    assert.equal(details.schema.sourceType, "local_event");
+
+    const same = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "legacy-custom-demo",
+      config: {},
+    });
+    assert.equal(same.sourceId, source.sourceId);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "legacy-custom-evt-1",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering" },
+      rawPayload: { text: "hello from legacy custom source" },
+    });
+
+    const subscription = await service.registerSubscription({
+      agentId: alpha.agentId,
+      sourceId: source.sourceId,
+      filter: { metadata: { channel: "engineering" } },
+      startPolicy: "earliest",
+    });
+    const pollResult = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(pollResult.inboxItemsCreated, 1);
+    assert.equal(service.listInboxItems(alpha.agentId)[0]?.sourceNativeId, "legacy-custom-evt-1");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("remote_source registration is rejected until the runtime exists", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    await assert.rejects(
+      service.registerSource({
+        sourceType: "remote_source",
+        sourceKey: "reserved-demo",
+        config: {},
+      }),
+      /reserved and not yet supported/,
+    );
   } finally {
     await service.stop();
     store.close();
@@ -305,7 +374,7 @@ test("subscription remove deletes the subscription, its consumer, and transient 
       notifyLeaseMs: 100,
     });
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "remove-sub-demo",
       config: {},
     });
@@ -357,7 +426,7 @@ test("subscription remove preserves unrelated activation dispatch state", async 
       notifyLeaseMs: 100,
     });
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "remove-sub-state-demo",
       config: {},
     });
@@ -407,7 +476,7 @@ test("subscription filter expr can match nested payload fields and exclude self-
   try {
     const alpha = await registerTmuxAgent(service, "expr");
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "expr-demo",
       config: {},
     });
@@ -458,7 +527,7 @@ test("registerSubscription rejects invalid filter expressions before persistence
   try {
     const alpha = await registerTmuxAgent(service, "invalid-expr");
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "invalid-expr-demo",
       config: {},
     });
@@ -529,7 +598,7 @@ test("inbox read defaults to unacked items and ack through clears a processed ba
   try {
     const alpha = await registerTmuxAgent(service, "5");
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "ack-through-demo",
       config: {},
     });
@@ -660,8 +729,8 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
       notifyLeaseMs: 100,
     });
     const source = await service.registerSource({
-      sourceType: "custom",
-      sourceKey: "custom-gated",
+      sourceType: "local_event",
+      sourceKey: "local-event-gated",
       config: {},
     });
     const subscription = await service.registerSubscription({
@@ -732,7 +801,7 @@ test("terminal target goes offline when dispatch fails and probe confirms disapp
       notifyLeaseMs: 100,
     });
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "offline-demo",
       config: {},
     });
@@ -774,7 +843,7 @@ test("agent remove cascades local runtime state but keeps shared sources", async
       notifyLeaseMs: 100,
     });
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "remove-demo",
       config: {},
     });
@@ -815,7 +884,7 @@ test("gc removes offline agents after ttl even with unacked inbox items", async 
       notifyLeaseMs: 100,
     });
     const source = await service.registerSource({
-      sourceType: "custom",
+      sourceType: "local_event",
       sourceKey: "gc-demo",
       config: {},
     });

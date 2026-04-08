@@ -10,17 +10,26 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
     eventVariantExamples: ["message.created"],
     configFields: [],
   },
-  custom: {
-    sourceType: "custom",
+  local_event: {
+    sourceType: "local_event",
     metadataFields: [
-      { name: "channel", type: "string", description: "Producer-defined routing channel for local custom events." },
+      { name: "channel", type: "string", description: "Producer-defined routing channel for local event ingress." },
       { name: "subject", type: "string", description: "Producer-defined short summary or subject field." },
     ],
     payloadExamples: [
-      { text: "hello from custom source" },
+      { text: "hello from local event source" },
     ],
     eventVariantExamples: ["message.created"],
     configFields: [],
+  },
+  remote_source: {
+    sourceType: "remote_source",
+    metadataFields: [],
+    payloadExamples: [],
+    eventVariantExamples: [],
+    configFields: [
+      { name: "definition", type: "object", required: false, description: "Reserved for future declarative external source definitions." },
+    ],
   },
   github_repo: {
     sourceType: "github_repo",

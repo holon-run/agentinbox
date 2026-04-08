@@ -72,9 +72,9 @@ agentinbox agent register --agent-id agent-alpha
 Create a local source and publish an event:
 
 ```bash
-agentinbox source add custom local-demo
+agentinbox source add local_event local-demo
 agentinbox subscription add <agent_id> <source_id>
-agentinbox source event <source_id> --native-id demo-1 --event custom.demo
+agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read <agent_id>
 ```
 
