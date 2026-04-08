@@ -28,6 +28,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "node --watch --loader ts-node/esm src/cli.ts",
+    "docs:dev": "mdorigin dev --root docs/site",
+    "docs:index": "mdorigin build index --root docs/site",
+    "docs:build:cloudflare": "npm run docs:index && mdorigin build cloudflare --root docs/site",
     "prepack": "npm run build",
     "test": "node --require ts-node/register --test test/*.test.ts"
   },
@@ -38,6 +41,7 @@
   "devDependencies": {
     "@types/node": "^24.5.2",
     "@types/sql.js": "^1.4.9",
+    "mdorigin": "^0.5.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   }
