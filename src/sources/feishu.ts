@@ -217,7 +217,7 @@ export class FeishuSourceRuntime {
   }
 
   private async syncAll(): Promise<void> {
-    const sources = this.store.listSources().filter((source) => source.sourceType === "feishu_bot" && source.status === "active");
+    const sources = this.store.listSources().filter((source) => source.sourceType === "feishu_bot");
     for (const source of sources) {
       try {
         await this.syncSource(source.sourceId);

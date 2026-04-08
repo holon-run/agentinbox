@@ -15,9 +15,19 @@ class FakeGithubActionsClient {
   public calls: Array<Record<string, unknown>> = [];
   public workflowRuns: unknown[] = [];
   public error: Error | null = null;
+  public listWorkflowRunsImpl: ((args: Record<string, unknown>) => Promise<unknown[]>) | null = null;
 
   async call(args: Record<string, unknown>) {
     this.calls.push(args);
+    if (this.listWorkflowRunsImpl) {
+      const workflowRuns = await this.listWorkflowRunsImpl(args);
+      return {
+        data: {
+          total_count: workflowRuns.length,
+          workflow_runs: workflowRuns,
+        },
+      };
+    }
     if (this.error) {
       throw this.error;
     }
@@ -219,6 +229,68 @@ test("github_repo_ci runtime start does not crash when GitHub polling fails", as
 
     await runtime.stop();
   } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("github_repo_ci runtime retries errored sources and recovers after a transient failure", async () => {
+  const { store, service, dir } = await makeService();
+  let runtime: GithubCiSourceRuntime | null = null;
+  try {
+    const fake = new FakeGithubActionsClient();
+    let callCount = 0;
+    fake.listWorkflowRunsImpl = async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("temporary github timeout");
+      }
+      return [
+        {
+          id: 1003,
+          workflow_id: 10,
+          name: "ci",
+          display_title: "ci / retry",
+          status: "completed",
+          conclusion: "success",
+          event: "push",
+          head_sha: "sha-retry",
+          head_branch: "main",
+          run_number: 3,
+          run_attempt: 1,
+          html_url: "https://github.com/holon-run/agentinbox/actions/runs/1003",
+          created_at: "2026-04-06T10:02:00Z",
+          updated_at: "2026-04-06T10:02:20Z",
+          actor: { login: "jolestar" },
+        },
+      ];
+    };
+    runtime = new GithubCiSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
+    const source: SubscriptionSource = {
+      sourceId: "src_ci_retry",
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default", perPage: 10 },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    store.insertSource(source);
+
+    await runtime.start();
+    const errored = store.getSource(source.sourceId);
+    assert.equal(errored?.status, "error");
+    assert.match(String(errored?.checkpoint), /temporary github timeout/);
+
+    await runtime.pollSource(source.sourceId);
+    const recovered = store.getSource(source.sourceId);
+    assert.equal(recovered?.status, "active");
+    assert.ok(!String(recovered?.checkpoint).includes("temporary github timeout"));
+  } finally {
+    await runtime?.stop();
     await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
