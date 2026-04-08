@@ -69,15 +69,15 @@ agentinbox source show <sourceId>
 Common source creation patterns:
 
 ```bash
-agentinbox source add custom <sourceKey>
+agentinbox source add local_event <sourceKey>
 agentinbox source add github_repo <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
 agentinbox source add github_repo_ci <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","perPage":10}'
 ```
 
-For `custom` sources, append events explicitly:
+For `local_event` sources, append events explicitly:
 
 ```bash
-agentinbox source event <sourceId> --native-id evt_123 --event custom.demo --payload-json '{"message":"hello"}'
+agentinbox source event <sourceId> --native-id evt_123 --event local.demo --payload-json '{"message":"hello"}'
 ```
 
 ### 3. Subscribe the agent
@@ -192,7 +192,7 @@ Practical rule:
 
 When another local tool wants durable events:
 
-1. create a `custom` source
+1. create a `local_event` source
 2. append events with `source event`
 3. subscribe one or more agents
 4. let agents `watch` or receive activations

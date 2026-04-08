@@ -282,6 +282,75 @@ test("local_event source can act as a programmable event bus source", async () =
   }
 });
 
+test("legacy custom sources are surfaced as local_event and still accept manual append", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "legacy-custom");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "legacy-custom-demo",
+      config: {},
+    });
+
+    ((store as unknown) as { db: { run(sql: string, params?: unknown[]): void } }).db.run(
+      "update sources set source_type = 'custom' where source_id = ?",
+      [source.sourceId],
+    );
+
+    const aliased = service.getSource(source.sourceId);
+    assert.equal(aliased.sourceType, "local_event");
+    const details = service.getSourceDetails(source.sourceId) as { source: { sourceType: string }; schema: { sourceType: string } };
+    assert.equal(details.source.sourceType, "local_event");
+    assert.equal(details.schema.sourceType, "local_event");
+
+    const same = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "legacy-custom-demo",
+      config: {},
+    });
+    assert.equal(same.sourceId, source.sourceId);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "legacy-custom-evt-1",
+      eventVariant: "message.created",
+      metadata: { channel: "engineering" },
+      rawPayload: { text: "hello from legacy custom source" },
+    });
+
+    const subscription = await service.registerSubscription({
+      agentId: alpha.agentId,
+      sourceId: source.sourceId,
+      filter: { metadata: { channel: "engineering" } },
+      startPolicy: "earliest",
+    });
+    const pollResult = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(pollResult.inboxItemsCreated, 1);
+    assert.equal(service.listInboxItems(alpha.agentId)[0]?.sourceNativeId, "legacy-custom-evt-1");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("remote_source registration is rejected until the runtime exists", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    await assert.rejects(
+      service.registerSource({
+        sourceType: "remote_source",
+        sourceKey: "reserved-demo",
+        config: {},
+      }),
+      /reserved and not yet supported/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("subscription remove deletes the subscription, its consumer, and transient runtime state", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const terminalDispatcher = new RecordingTerminalDispatcher();

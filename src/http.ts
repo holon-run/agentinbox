@@ -422,6 +422,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unsupported lifecycle mode") ||
     message.startsWith("unsupported start policy") ||
     message.startsWith("unsupported terminal") ||
+    message.startsWith("source type is reserved and not yet supported") ||
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
