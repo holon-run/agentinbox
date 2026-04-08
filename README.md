@@ -123,6 +123,21 @@ Build docs directory indexes:
 npm run docs:index
 ```
 
+## Release
+
+`AgentInbox` releases are tag-driven.
+
+- update [package.json](./package.json) and [CHANGELOG.md](./CHANGELOG.md) in a PR before release
+- merge to `main`
+- run the manual terminal smoke matrix in [testcases/manual/manual-terminal-qa.md](./testcases/manual/manual-terminal-qa.md)
+- push a tag in the form `v<package.json version>`
+
+Public beta tags such as `v0.1.0-beta.1` publish to npm with the `beta`
+dist-tag. Stable tags such as `v0.1.0` publish with the `latest` dist-tag.
+
+The operational checklist lives in
+[testcases/manual/release-checklist.md](./testcases/manual/release-checklist.md).
+
 ## License
 
 Apache-2.0
