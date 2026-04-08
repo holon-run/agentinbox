@@ -1,6 +1,6 @@
 # AgentInbox
 
-`AgentInbox` is the local event subscription and delivery service for agents.
+`AgentInbox` is the local event inbox and activation service for agents.
 
 It connects external and local event sources, stores them as durable streams,
 routes them by subscription, and lets agents read, watch, acknowledge, and
@@ -24,15 +24,15 @@ In practice, that means `AgentInbox` can:
   are implemented
 - GitHub repo, GitHub repo CI, Feishu bot, and local event ingress source
   adapters are implemented
-- CLI and source model are still evolving, especially around onboarding,
-  filtering, and source naming
+- filtering and source model are still evolving
+- first-run onboarding is currently skill-first rather than wizard-first
 
 ## Install
 
 Requires:
 
 - Node.js 20 or newer
-- a local `uxc` daemon if you want to use GitHub or Feishu adapters
+- `uxc` 0.13.3 or newer if you want to use GitHub or Feishu adapters
 
 Install globally:
 
@@ -53,6 +53,21 @@ npm install
 npm run build
 node dist/src/cli.js --help
 ```
+
+## Recommended Onboarding
+
+If you are using Codex or Claude Code, start with the bundled AgentInbox skill:
+
+- repo copy: [`skills/agentinbox/SKILL.md`](./skills/agentinbox/SKILL.md)
+- docs site copy: `https://agentinbox.holon.run/skills/agentinbox/SKILL`
+
+That skill is the recommended onboarding path. It can guide the agent through:
+
+- checking or installing `agentinbox`
+- checking or installing `uxc`
+- importing GitHub auth from the local `gh` CLI via `uxc auth credential import github --from gh`
+- registering the current terminal session as an agent
+- adding GitHub sources and standing subscriptions using the docs-site examples
 
 ## Quick Start
 
@@ -90,7 +105,10 @@ Public docs live in the mdorigin site under [`docs/site`](./docs/site).
 
 - docs site: `https://agentinbox.holon.run`
 - docs home: [`docs/site/README.md`](./docs/site/README.md)
+- onboarding with the agent skill: [`docs/site/guides/onboarding-with-agent-skill.md`](./docs/site/guides/onboarding-with-agent-skill.md)
 - getting started: [`docs/site/guides/getting-started.md`](./docs/site/guides/getting-started.md)
+- review workflows: [`docs/site/guides/review-workflows.md`](./docs/site/guides/review-workflows.md)
+- skill docs: [`docs/site/skills/README.md`](./docs/site/skills/README.md)
 - CLI reference: [`docs/site/reference/cli.md`](./docs/site/reference/cli.md)
 - source types: [`docs/site/reference/source-types.md`](./docs/site/reference/source-types.md)
 - architecture: [`docs/site/concepts/architecture.md`](./docs/site/concepts/architecture.md)

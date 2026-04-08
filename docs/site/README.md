@@ -9,7 +9,10 @@ webhook targets.
 
 ## Start Here
 
+- [Onboarding With The AgentInbox Skill](./guides/onboarding-with-agent-skill.md)
 - [Getting Started](./guides/getting-started.md)
+- [Review Workflows](./guides/review-workflows.md)
+- [Skills](./skills/)
 - [CLI Reference](./reference/cli.md)
 - [Source Types](./reference/source-types.md)
 
@@ -30,8 +33,8 @@ webhook targets.
   targets are implemented
 - GitHub repo, GitHub repo CI, Feishu bot, and local event ingress source
   adapters are implemented
-- CLI and source model are still evolving, especially around filtering,
-  onboarding, and naming
+- CLI and source model are still evolving, especially around filtering and naming
+- onboarding is currently best handled through the bundled AgentInbox skill
 
 ## Recommended Runtime Modes
 
@@ -53,6 +56,9 @@ webhook targets.
   <!-- mdorigin:index kind=directory -->
 
 - [RFCs](./rfcs/)
+  <!-- mdorigin:index kind=directory -->
+
+- [Skills](./skills/)
   <!-- mdorigin:index kind=directory -->
 
 <!-- INDEX:END -->

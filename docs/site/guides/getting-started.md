@@ -3,10 +3,14 @@
 This guide shows the shortest path from install to a working local agent
 session.
 
+If you are using Codex or Claude Code, start with
+[Onboarding With The AgentInbox Skill](./onboarding-with-agent-skill.md). That
+is the preferred first-run path.
+
 ## Prerequisites
 
 - Node.js 20 or newer
-- `uxc` if you want to use GitHub or Feishu source adapters
+- `uxc` 0.13.3 or newer if you want to use GitHub or Feishu source adapters
 
 Install `AgentInbox` globally:
 
@@ -56,6 +60,13 @@ agentinbox agent register --agent-id agent-alpha
 
 This detects the current runtime and terminal context, assigns or restores an
 `agentId`, creates the agent inbox, and attaches a terminal activation target.
+
+If you already use `gh` for GitHub authentication, import it into `uxc` before
+adding GitHub-backed sources:
+
+```bash
+uxc auth credential import github --from gh
+```
 
 ## Local Event Flow
 

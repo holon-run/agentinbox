@@ -17,6 +17,36 @@ Use this skill when work should flow through the local `agentinbox` daemon inste
 - per-agent inbox read/watch/ack
 - activation targets such as terminal injection and webhooks
 
+## First-Run Onboarding
+
+If the user wants to start using `AgentInbox`, this skill should handle the
+onboarding flow directly instead of sending the user through a separate wizard.
+
+Recommended first-run sequence:
+
+1. verify `agentinbox` is installed
+2. verify the local daemon is running, or start it
+3. verify `uxc` is installed when GitHub or Feishu adapters are needed
+4. if GitHub access is needed and `gh auth status` is already authenticated, run:
+
+```bash
+uxc auth credential import github --from gh
+```
+
+5. register the current terminal session:
+
+```bash
+agentinbox agent register
+```
+
+6. use the docs examples to add the required standing subscriptions
+
+The preferred references are:
+
+- `https://agentinbox.holon.run/guides/onboarding-with-agent-skill`
+- `https://agentinbox.holon.run/guides/getting-started`
+- `https://agentinbox.holon.run/guides/review-workflows`
+
 ## Prerequisites
 
 - `agentinbox` is available in `PATH`
@@ -31,8 +61,18 @@ agentinbox status
 If `agentinbox status` fails, start the daemon first:
 
 ```bash
-agentinbox serve
+agentinbox daemon start
 ```
+
+If GitHub-backed adapters are needed, prefer:
+
+```bash
+uxc --version
+gh auth status
+uxc auth credential import github --from gh
+```
+
+This `gh` import path requires `uxc` 0.13.3 or newer.
 
 ## Core Workflow
 

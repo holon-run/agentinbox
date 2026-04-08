@@ -7,11 +7,15 @@
   "topNav": [
     {
       "label": "Getting Started",
-      "href": "/guides/getting-started/"
+      "href": "/guides/getting-started"
     },
     {
       "label": "Guides",
       "href": "/guides/"
+    },
+    {
+      "label": "Skills",
+      "href": "/skills/"
     },
     {
       "label": "Reference",
