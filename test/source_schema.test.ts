@@ -17,5 +17,4 @@ test("getSourceSchema exposes lightweight schemas for local and reserved sources
   assert.equal(localEvent.sourceType, "local_event");
   assert.ok(localEvent.metadataFields.some((field) => field.name === "channel"));
   assert.equal(getSourceSchema("remote_source").sourceType, "remote_source");
-  assert.equal(getSourceSchema("fixture").sourceType, "fixture");
 });

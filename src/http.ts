@@ -60,7 +60,7 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/sources/register") {
+      if (req.method === "POST" && url.pathname === "/sources") {
         send(res, 200, await service.registerSource(await readJson(req) as never));
         return;
       }
@@ -105,9 +105,9 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/agents/register") {
+      if (req.method === "POST" && url.pathname === "/agents") {
         const body = await readJson(req);
-        const backend = parseRequiredString(body.backend, "agents/register requires backend");
+        const backend = parseRequiredString(body.backend, "agents requires backend");
         send(res, 200, service.registerAgent({
           agentId: parseOptionalString(body.agentId) ?? null,
           forceRebind: parseOptionalBoolean(body.forceRebind) ?? false,
@@ -178,11 +178,11 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/subscriptions/register") {
+      if (req.method === "POST" && url.pathname === "/subscriptions") {
         const body = await readJson(req);
         send(res, 200, await service.registerSubscription({
-          agentId: parseRequiredString(body.agentId, "subscriptions/register requires agentId"),
-          sourceId: parseRequiredString(body.sourceId, "subscriptions/register requires sourceId"),
+          agentId: parseRequiredString(body.agentId, "subscriptions requires agentId"),
+          sourceId: parseRequiredString(body.sourceId, "subscriptions requires sourceId"),
           filter: asObject(body.filter),
           lifecycleMode: parseOptionalString(body.lifecycleMode) as never,
           expiresAt: parseOptionalString(body.expiresAt) ?? null,
@@ -224,22 +224,6 @@ export function createServer(service: AgentInboxService): http.Server {
           startPolicy: startPolicy as never,
           startOffset: parseOptionalInteger(body.startOffset),
           startTime: parseOptionalString(body.startTime) ?? null,
-        }));
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/fixtures/emit") {
-        const body = await readJson(req);
-        const sourceId = parseRequiredString(body.sourceId, "fixtures/emit requires sourceId");
-        const sourceNativeId = parseRequiredString(body.sourceNativeId, "fixtures/emit requires sourceNativeId");
-        const eventVariant = parseRequiredString(body.eventVariant, "fixtures/emit requires eventVariant");
-        send(res, 200, await service.appendFixtureEvent(sourceId, {
-          sourceNativeId,
-          eventVariant,
-          occurredAt: parseOptionalString(body.occurredAt),
-          metadata: asObject(body.metadata),
-          rawPayload: asObject(body.rawPayload),
-          deliveryHandle: parseOptionalDeliveryHandle(body.deliveryHandle),
         }));
         return;
       }
@@ -310,12 +294,6 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
-      const agentInboxAckAllMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/ack-all$/);
-      if (req.method === "POST" && agentInboxAckAllMatch) {
-        send(res, 200, service.ackAllInboxItems(decodeURIComponent(agentInboxAckAllMatch[1])));
-        return;
-      }
-
       const agentInboxCompactMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/compact$/);
       if (req.method === "POST" && agentInboxCompactMatch) {
         send(res, 200, service.compactInbox(decodeURIComponent(agentInboxCompactMatch[1])));
@@ -327,15 +305,17 @@ export function createServer(service: AgentInboxService): http.Server {
         const body = await readJson(req);
         const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map((itemId) => String(itemId)) : [];
         const throughItemId = parseOptionalString(body.throughItemId);
-        if (throughItemId && itemIds.length > 0) {
-          send(res, 400, { error: "inbox/ack accepts either itemIds or throughItemId" });
+        const ackAll = parseOptionalBoolean(body.all) ?? false;
+        const modeCount = Number(itemIds.length > 0) + Number(Boolean(throughItemId)) + Number(ackAll);
+        if (modeCount !== 1) {
+          send(res, 400, { error: "inbox/ack accepts exactly one of itemIds, throughItemId, or all" });
           return;
         }
-        if (throughItemId) {
-          send(res, 200, service.ackInboxItemsThrough(decodeURIComponent(agentInboxAckMatch[1]), throughItemId));
-          return;
-        }
-        send(res, 200, service.ackInboxItems(decodeURIComponent(agentInboxAckMatch[1]), itemIds));
+        send(res, 200, service.ackInbox(decodeURIComponent(agentInboxAckMatch[1]), {
+          itemIds,
+          throughItemId: throughItemId ?? null,
+          all: ackAll,
+        }));
         return;
       }
 
@@ -411,12 +391,12 @@ function parsePositiveInteger(value: unknown): number {
 function isBadRequestError(message: string): boolean {
   return (
     message.startsWith("manual append is not supported") ||
-    message.startsWith("fixtures/emit requires") ||
     message.startsWith("sources/events requires") ||
     message.startsWith("deliveryHandle requires") ||
     message.startsWith("subscriptions/reset requires") ||
-    message.startsWith("agents/register requires") ||
+    message.startsWith("agents requires") ||
     message.startsWith("agents/targets requires") ||
+    message.startsWith("subscriptions requires") ||
     message.startsWith("agent register conflict") ||
     message.startsWith("unsupported activation target kind") ||
     message.startsWith("unsupported lifecycle mode") ||

@@ -94,7 +94,7 @@ Add or inspect subscriptions:
 
 ```bash
 agentinbox subscription add <agentId> <sourceId>
-agentinbox subscription add <agentId> <sourceId> --match-json '{"headBranch":"main","conclusion":"failure"}'
+agentinbox subscription add <agentId> <sourceId> --filter-json '{"metadata":{"headBranch":"main","conclusion":"failure"}}'
 agentinbox subscription list --agent-id <agentId>
 agentinbox subscription show <subscriptionId>
 agentinbox subscription remove <subscriptionId>

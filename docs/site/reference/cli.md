@@ -38,6 +38,7 @@ agentinbox agent remove <agent_id>
 agentinbox source add <source_type> <source_key> [--config-json ...]
 agentinbox source list
 agentinbox source show <source_id>
+agentinbox source schema <source_type>
 agentinbox source poll <source_id>
 agentinbox source event <source_id> --native-id <id> --event <variant>
 ```
@@ -45,9 +46,10 @@ agentinbox source event <source_id> --native-id <id> --event <variant>
 ## Subscriptions
 
 ```bash
-agentinbox subscription add <agent_id> <source_id> [--match-json ...]
+agentinbox subscription add <agent_id> <source_id> [--filter-json ...]
 agentinbox subscription list
 agentinbox subscription show <subscription_id>
+agentinbox subscription remove <subscription_id>
 agentinbox subscription lag <subscription_id>
 agentinbox subscription reset <subscription_id> --start-policy latest
 ```
@@ -72,3 +74,7 @@ agentinbox inbox compact <agent_id>
 agentinbox gc
 agentinbox status
 ```
+
+## HTTP API
+
+See [HTTP API](./http-api.md) for the stable control-plane endpoints.

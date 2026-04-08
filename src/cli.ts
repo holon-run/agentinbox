@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     if (!type || !sourceKey) {
       throw new Error("usage: agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]");
     }
-    await printRemote(client, "/sources/register", {
+    await printRemote(client, "/sources", {
       sourceType: type,
       sourceKey,
       configRef: takeFlagValue(normalized, "--config-ref") ?? null,
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
 
   if (command === "agent" && normalized[1] === "register") {
     const detected = detectTerminalContext(process.env);
-    await printRemote(client, "/agents/register", {
+    await printRemote(client, "/agents", {
       agentId: takeFlagValue(normalized, "--agent-id") ?? null,
       forceRebind: normalized.includes("--force-rebind"),
       backend: detected.backend,
@@ -192,7 +192,7 @@ async function main(): Promise<void> {
     if (!agentId || !sourceId) {
       throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
-    await printRemote(client, "/subscriptions/register", {
+    await printRemote(client, "/subscriptions", {
       agentId,
       sourceId,
       filter: parseJsonArg(takeFlagValue(normalized, "--filter-json")),
@@ -316,14 +316,10 @@ async function main(): Promise<void> {
     if (!agentId || modeCount !== 1) {
       throw new Error("usage: agentinbox inbox ack <agentId> (--through <itemId> | --item <itemId> | --all)");
     }
-    if (ackAll) {
-      await printRemote(client, `/agents/${encodeURIComponent(agentId)}/inbox/ack-all`, {});
-      return;
-    }
     await printRemote(
       client,
       `/agents/${encodeURIComponent(agentId)}/inbox/ack`,
-      throughItemId ? { throughItemId } : { itemIds: [itemId] },
+      ackAll ? { all: true } : (throughItemId ? { throughItemId } : { itemIds: [itemId] }),
     );
     return;
   }
@@ -339,23 +335,6 @@ async function main(): Promise<void> {
 
   if (command === "gc") {
     await printRemote(client, "/gc", {});
-    return;
-  }
-
-  if (command === "fixture" && normalized[1] === "emit") {
-    const sourceId = normalized[2];
-    const sourceNativeId = takeFlagValue(normalized, "--native-id") ?? `fixture-${Date.now()}`;
-    const eventVariant = takeFlagValue(normalized, "--event") ?? "message";
-    if (!sourceId) {
-      throw new Error("usage: agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]");
-    }
-    await printRemote(client, "/fixtures/emit", {
-      sourceId,
-      sourceNativeId,
-      eventVariant,
-      metadata: parseJsonArg(takeFlagValue(normalized, "--metadata-json")),
-      rawPayload: parseJsonArg(takeFlagValue(normalized, "--payload-json")),
-    });
     return;
   }
 
@@ -560,10 +539,8 @@ Commands:
   subscription
   inbox
   gc
-  fixture
   deliver
   status
-  gc
   version
 `,
     serve: `agentinbox serve
@@ -620,11 +597,6 @@ Usage:
   agentinbox inbox watch <agentId> [--after-item ID] [--include-acked] [--heartbeat-ms N]
   agentinbox inbox ack <agentId> (--through <itemId> | --item <itemId> | --all)
   agentinbox inbox compact <agentId>
-`,
-    fixture: `agentinbox fixture
-
-Usage:
-  agentinbox fixture emit <sourceId> [--native-id ID] [--event EVENT] [--metadata-json JSON] [--payload-json JSON]
 `,
     deliver: `agentinbox deliver
 
