@@ -248,11 +248,27 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(inboxResponse.data.items.length, 1);
 
       const ackResponse = await client.request<{ acked: number }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/ack-all`,
-        {},
+        `/agents/${encodeURIComponent(agentId)}/inbox/ack`,
+        { throughItemId: inboxResponse.data.items[0].itemId },
       );
       assert.equal(ackResponse.statusCode, 200);
       assert.equal(ackResponse.data.acked, 1);
+
+      const unreadAfterAck = await client.request<{ items: InboxItem[] }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items`,
+        undefined,
+        "GET",
+      );
+      assert.equal(unreadAfterAck.statusCode, 200);
+      assert.equal(unreadAfterAck.data.items.length, 0);
+
+      const historyAfterAck = await client.request<{ items: InboxItem[] }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        undefined,
+        "GET",
+      );
+      assert.equal(historyAfterAck.statusCode, 200);
+      assert.equal(historyAfterAck.data.items.length, 1);
 
     } finally {
       await started.close();

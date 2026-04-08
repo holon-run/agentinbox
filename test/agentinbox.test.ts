@@ -224,6 +224,114 @@ test("watchInbox receives inserted items without auto-acking them", async () => 
   }
 });
 
+test("inbox read defaults to unacked items and ack through clears a processed batch", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "5");
+    const source = await service.registerSource({
+      sourceType: "custom",
+      sourceKey: "ack-through-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: alpha.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    for (const id of ["evt-1", "evt-2", "evt-3"]) {
+      await service.appendSourceEventByCaller(source.sourceId, {
+        sourceNativeId: id,
+        eventVariant: "message.created",
+        metadata: {},
+        rawPayload: { text: id },
+      });
+    }
+
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 3);
+
+    const allItems = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(allItems.length, 3);
+
+    const ack = service.ackInboxItemsThrough(alpha.agentId, allItems[1].itemId);
+    assert.equal(ack.acked, 2);
+
+    const unread = service.listInboxItems(alpha.agentId);
+    assert.equal(unread.length, 1);
+    assert.equal(unread[0].sourceNativeId, "evt-3");
+
+    const history = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(history.filter((item) => item.ackedAt !== null).length, 2);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("compact and gc remove only acked inbox items older than retention", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "6");
+    const beta = await registerTmuxAgent(service, "7");
+    const alphaInboxId = (service.getInboxDetailsByAgent(alpha.agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
+    const betaInboxId = (service.getInboxDetailsByAgent(beta.agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
+    const oldAckedAt = new Date(Date.now() - (25 * 60 * 60 * 1000)).toISOString();
+
+    store.insertInboxItem({
+      itemId: "item-alpha-old",
+      sourceId: "src-old",
+      sourceNativeId: "evt-alpha-old",
+      eventVariant: "message.created",
+      inboxId: alphaInboxId,
+      occurredAt: "2026-04-01T00:00:00Z",
+      metadata: {},
+      rawPayload: {},
+      deliveryHandle: null,
+      ackedAt: oldAckedAt,
+    });
+    store.insertInboxItem({
+      itemId: "item-alpha-live",
+      sourceId: "src-live",
+      sourceNativeId: "evt-alpha-live",
+      eventVariant: "message.created",
+      inboxId: alphaInboxId,
+      occurredAt: "2026-04-01T00:00:01Z",
+      metadata: {},
+      rawPayload: {},
+      deliveryHandle: null,
+      ackedAt: null,
+    });
+    store.insertInboxItem({
+      itemId: "item-beta-old",
+      sourceId: "src-old",
+      sourceNativeId: "evt-beta-old",
+      eventVariant: "message.created",
+      inboxId: betaInboxId,
+      occurredAt: "2026-04-01T00:00:00Z",
+      metadata: {},
+      rawPayload: {},
+      deliveryHandle: null,
+      ackedAt: oldAckedAt,
+    });
+
+    const compact = service.compactInbox(alpha.agentId);
+    assert.equal(compact.deleted, 1);
+    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
+    assert.equal(service.listInboxItems(beta.agentId, { includeAcked: true }).length, 1);
+
+    const gc = service.gcAckedInboxItems();
+    assert.equal(gc.deleted, 1);
+    assert.equal(service.listInboxItems(beta.agentId, { includeAcked: true }).length, 0);
+    assert.equal(service.listInboxItems(alpha.agentId).length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("webhook and terminal targets share ack-gated notification flow", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const terminalDispatcher = new RecordingTerminalDispatcher();

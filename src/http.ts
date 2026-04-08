@@ -50,6 +50,11 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      if (req.method === "POST" && url.pathname === "/gc") {
+        send(res, 200, service.gcAckedInboxItems());
+        return;
+      }
+
       if (req.method === "GET" && url.pathname === "/sources") {
         send(res, 200, { sources: service.listSources() });
         return;
@@ -285,10 +290,25 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      const agentInboxCompactMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/compact$/);
+      if (req.method === "POST" && agentInboxCompactMatch) {
+        send(res, 200, service.compactInbox(decodeURIComponent(agentInboxCompactMatch[1])));
+        return;
+      }
+
       const agentInboxAckMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/ack$/);
       if (req.method === "POST" && agentInboxAckMatch) {
         const body = await readJson(req);
         const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map((itemId) => String(itemId)) : [];
+        const throughItemId = parseOptionalString(body.throughItemId);
+        if (throughItemId && itemIds.length > 0) {
+          send(res, 400, { error: "inbox/ack accepts either itemIds or throughItemId" });
+          return;
+        }
+        if (throughItemId) {
+          send(res, 200, service.ackInboxItemsThrough(decodeURIComponent(agentInboxAckMatch[1]), throughItemId));
+          return;
+        }
         send(res, 200, service.ackInboxItems(decodeURIComponent(agentInboxAckMatch[1]), itemIds));
         return;
       }

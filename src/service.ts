@@ -43,6 +43,8 @@ const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
 const DEFAULT_NOTIFY_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_NOTIFY_RETRY_MS = 5_000;
+const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 
@@ -79,10 +81,12 @@ export class AgentInboxService {
   private readonly inFlightSubscriptions = new Set<string>();
   private readonly activationWindowMs: number;
   private readonly activationMaxItems: number;
+  private readonly ackedRetentionMs: number;
   private readonly notificationBuffers = new Map<string, BufferedNotification>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private syncInterval: NodeJS.Timeout | null = null;
   private stopping = false;
+  private lastGcAt = 0;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -96,6 +100,7 @@ export class AgentInboxService {
     this.backend = backend ?? new SqliteEventBusBackend(store);
     this.activationWindowMs = activationPolicy?.windowMs ?? DEFAULT_ACTIVATION_WINDOW_MS;
     this.activationMaxItems = activationPolicy?.maxItems ?? DEFAULT_ACTIVATION_MAX_ITEMS;
+    this.ackedRetentionMs = DEFAULT_ACKED_RETENTION_MS;
     this.terminalDispatcher = terminalDispatcher;
   }
 
@@ -110,9 +115,11 @@ export class AgentInboxService {
     this.syncInterval = setInterval(() => {
       void this.syncAllSubscriptions();
       void this.syncActivationDispatchStates();
+      void this.runAckedInboxGcIfDue();
     }, 2_000);
     await this.syncAllSubscriptions();
     await this.syncActivationDispatchStates();
+    await this.runAckedInboxGcIfDue(true);
   }
 
   async stop(): Promise<void> {
@@ -538,6 +545,15 @@ export class AgentInboxService {
     return { acked };
   }
 
+  ackInboxItemsThrough(agentId: string, itemId: string): { acked: number } {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const acked = this.store.ackItemsThrough(inbox.inboxId, itemId, nowIso());
+    if (acked > 0) {
+      void this.handleInboxAckEffects(agentId);
+    }
+    return { acked };
+  }
+
   ackAllInboxItems(agentId: string): { acked: number } {
     const inbox = this.ensureInboxForAgent(agentId);
     const itemIds = this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => item.itemId);
@@ -546,6 +562,21 @@ export class AgentInboxService {
       void this.handleInboxAckEffects(agentId);
     }
     return { acked };
+  }
+
+  compactInbox(agentId: string): { deleted: number; retentionMs: number } {
+    const inbox = this.ensureInboxForAgent(agentId);
+    return {
+      deleted: this.store.deleteAckedInboxItems(inbox.inboxId, retentionCutoffIso(this.ackedRetentionMs)),
+      retentionMs: this.ackedRetentionMs,
+    };
+  }
+
+  gcAckedInboxItems(): { deleted: number; retentionMs: number } {
+    return {
+      deleted: this.store.deleteAckedInboxItemsGlobal(retentionCutoffIso(this.ackedRetentionMs)),
+      retentionMs: this.ackedRetentionMs,
+    };
   }
 
   async pollSource(sourceId: string): Promise<SourcePollResult> {
@@ -699,6 +730,10 @@ export class AgentInboxService {
 
   status(): Record<string, unknown> {
     return {
+      retention: {
+        ackedInboxItemsMs: this.ackedRetentionMs,
+        gcIntervalMs: DEFAULT_GC_INTERVAL_MS,
+      },
       counts: this.store.getCounts(),
       agents: this.store.listAgents(),
       sources: this.store.listSources(),
@@ -737,6 +772,15 @@ export class AgentInboxService {
       unacked,
       acked: total - unacked,
     };
+  }
+
+  private async runAckedInboxGcIfDue(force = false): Promise<void> {
+    const now = Date.now();
+    if (!force && now - this.lastGcAt < DEFAULT_GC_INTERVAL_MS) {
+      return;
+    }
+    this.lastGcAt = now;
+    this.gcAckedInboxItems();
   }
 
   private async ensureStreamForSource(source: SubscriptionSource) {
@@ -1074,6 +1118,10 @@ export class AgentInboxService {
       }
     }
   }
+}
+
+function retentionCutoffIso(retentionMs: number): string {
+  return new Date(Date.now() - retentionMs).toISOString();
 }
 
 function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {
