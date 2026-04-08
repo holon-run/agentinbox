@@ -62,11 +62,11 @@ This detects the current runtime and terminal context, assigns or restores an
 The shortest end-to-end flow is a local source:
 
 ```bash
-agentinbox source add custom local-demo
+agentinbox source add local_event local-demo
 agentinbox subscription add <agent_id> <source_id>
 agentinbox source event <source_id> \
   --native-id demo-1 \
-  --event custom.demo \
+  --event local.demo \
   --metadata-json '{"channel":"engineering"}' \
   --payload-json '{"text":"hello from a local producer"}'
 agentinbox inbox read <agent_id>

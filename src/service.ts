@@ -482,7 +482,7 @@ export class AgentInboxService {
 
   async appendSourceEventByCaller(sourceId: string, input: Omit<AppendSourceEventInput, "sourceId">): Promise<AppendSourceEventResult> {
     const source = this.getSource(sourceId);
-    if (source.sourceType !== "custom") {
+    if (source.sourceType !== "local_event") {
       throw new Error(`manual append is not supported for source type: ${source.sourceType}`);
     }
     return this.appendSourceEvent({ ...input, sourceId });
