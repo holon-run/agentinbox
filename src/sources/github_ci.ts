@@ -130,7 +130,9 @@ export class GithubCiSourceRuntime {
   }
 
   private async syncAll(): Promise<void> {
-    const sources = this.store.listSources().filter((source) => source.sourceType === "github_repo_ci");
+    const sources = this.store
+      .listSources()
+      .filter((source) => source.sourceType === "github_repo_ci" && source.status !== "paused");
     for (const source of sources) {
       try {
         await this.syncSource(source.sourceId, false);

@@ -96,6 +96,9 @@ export function assignedAgentIdFromContext(input: {
 export class TerminalDispatcher {
   constructor(
     private readonly execAsync: ExecFileAsyncLike = execFileAsync,
+    private readonly options: {
+      iterm2ApiPath?: string;
+    } = {},
   ) {}
 
   async dispatch(target: TerminalActivationTarget, prompt: string): Promise<void> {
@@ -108,7 +111,7 @@ export class TerminalDispatcher {
     }
 
     if (target.backend === "iterm2") {
-      await dispatchToIterm2(target, prompt, this.execAsync);
+      await dispatchToIterm2(target, prompt, this.execAsync, this.options.iterm2ApiPath);
       return;
     }
 
@@ -305,20 +308,24 @@ async function dispatchToIterm2(
   target: TerminalActivationTarget,
   prompt: string,
   execAsync: ExecFileAsyncLike,
+  iterm2ApiPath?: string,
 ): Promise<void> {
   const sessionId = normalizeOptionalString(target.itermSessionId);
   if (!sessionId) {
     throw new Error(`iTerm2 terminal target ${target.targetId} is missing itermSessionId`);
   }
 
-  const it2api = resolveIterm2ApiPath();
+  const it2api = resolveIterm2ApiPath(iterm2ApiPath);
   await execAsync(it2api, ["send-text", sessionId, prompt]);
   // Background Codex/Claude sessions only submit reliably when Return is sent
   // in a second call rather than concatenated to the original prompt payload.
   await execAsync(it2api, ["send-text", sessionId, "\r"]);
 }
 
-function resolveIterm2ApiPath(): string {
+function resolveIterm2ApiPath(override?: string): string {
+  if (override) {
+    return override;
+  }
   const candidates = [
     "/Applications/iTerm.app/Contents/Resources/it2api",
     "/Applications/iTerm.app/Contents/Resources/utilities/it2api",

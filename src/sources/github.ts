@@ -214,7 +214,9 @@ export class GithubSourceRuntime {
   }
 
   private async syncAll(): Promise<void> {
-    const sources = this.store.listSources().filter((source) => source.sourceType === "github_repo");
+    const sources = this.store
+      .listSources()
+      .filter((source) => source.sourceType === "github_repo" && source.status !== "paused");
     for (const source of sources) {
       try {
         await this.syncSource(source.sourceId);
