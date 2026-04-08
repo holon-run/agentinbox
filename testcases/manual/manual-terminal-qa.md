@@ -42,6 +42,7 @@ daemon state:
 ```bash
 export QA_HOME="$(mktemp -d /tmp/agentinbox-manual-qa.XXXXXX)"
 export REPO="/absolute/path/to/agentinbox"
+export NODE_BIN="$(command -v node)"
 ```
 
 ## Runtime Identity Toggle
@@ -68,7 +69,7 @@ text is captured to a file:
 
 ```bash
 tmux new-session -d -P -F '#{pane_id}' -s agentinbox_manual_tmux \
-  "cd $REPO && AGENTINBOX_HOME=$QA_HOME $RUNTIME_ENV /usr/local/bin/node -r ts-node/register src/cli.ts agent register > $QA_HOME/tmux-register.json && exec cat > $QA_HOME/tmux-capture.txt"
+  "cd $REPO && AGENTINBOX_HOME=$QA_HOME $RUNTIME_ENV $NODE_BIN -r ts-node/register src/cli.ts agent register > $QA_HOME/tmux-register.json && exec cat > $QA_HOME/tmux-capture.txt"
 ```
 
 Read the registered agent id:
@@ -80,14 +81,14 @@ cat "$QA_HOME/tmux-register.json"
 Create a local source and subscription:
 
 ```bash
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts source add local_event manual-tmux --config-json '{}'
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts subscription add <agentId> <sourceId> --start-policy earliest
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts source add local_event manual-tmux --config-json '{}'
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts subscription add <agentId> <sourceId> --start-policy earliest
 ```
 
 Append one event:
 
 ```bash
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts source event <sourceId> --native-id evt-tmux-1 --event local.demo --payload-json '{"message":"hello tmux"}'
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts source event <sourceId> --native-id evt-tmux-1 --event local.demo --payload-json '{"message":"hello tmux"}'
 ```
 
 Expected result:
@@ -103,7 +104,7 @@ AgentInbox: 1 new items arrived in inbox ...
 Cleanup:
 
 ```bash
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts inbox ack <agentId> --all
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts inbox ack <agentId> --all
 tmux kill-session -t agentinbox_manual_tmux
 ```
 
@@ -112,7 +113,7 @@ tmux kill-session -t agentinbox_manual_tmux
 Open a dedicated iTerm2 window that registers itself and then waits on `cat`:
 
 ```bash
-osascript -e 'tell application "iTerm2" to create window with default profile command "zsh -lc \"cd '"$REPO"' && AGENTINBOX_HOME='"$QA_HOME"' '"$RUNTIME_ENV"' /usr/local/bin/node -r ts-node/register src/cli.ts agent register > '"$QA_HOME"'/iterm-register.json && exec cat > '"$QA_HOME"'/iterm-capture.txt\""'
+osascript -e 'tell application "iTerm2" to create window with default profile command "zsh -lc \"cd '"$REPO"' && AGENTINBOX_HOME='"$QA_HOME"' '"$RUNTIME_ENV"' '"$NODE_BIN"' -r ts-node/register src/cli.ts agent register > '"$QA_HOME"'/iterm-register.json && exec cat > '"$QA_HOME"'/iterm-capture.txt\""'
 ```
 
 Read the registered agent id:
@@ -124,14 +125,14 @@ cat "$QA_HOME/iterm-register.json"
 Create a local source and subscription:
 
 ```bash
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts source add local_event manual-iterm --config-json '{}'
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts subscription add <agentId> <sourceId> --start-policy earliest
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts source add local_event manual-iterm --config-json '{}'
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts subscription add <agentId> <sourceId> --start-policy earliest
 ```
 
 Append one event:
 
 ```bash
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts source event <sourceId> --native-id evt-iterm-1 --event local.demo --payload-json '{"message":"hello iterm"}'
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts source event <sourceId> --native-id evt-iterm-1 --event local.demo --payload-json '{"message":"hello iterm"}'
 ```
 
 Expected result:
@@ -143,7 +144,7 @@ Expected result:
 Cleanup:
 
 ```bash
-AGENTINBOX_HOME="$QA_HOME" /usr/local/bin/node -r ts-node/register src/cli.ts inbox ack <agentId> --all
+AGENTINBOX_HOME="$QA_HOME" "$NODE_BIN" -r ts-node/register src/cli.ts inbox ack <agentId> --all
 ```
 
 Then close the dedicated iTerm2 window manually, or via AppleScript if you
