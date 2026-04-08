@@ -283,10 +283,19 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       } satisfies RegisterSourceInput);
       assert.equal(sourceResponse.statusCode, 200);
 
+      const schemaResponse = await client.request<{ sourceType: string; metadataFields: unknown[] }>(
+        "/source-types/github_repo_ci/schema",
+        undefined,
+        "GET",
+      );
+      assert.equal(schemaResponse.statusCode, 200);
+      assert.equal(schemaResponse.data.sourceType, "github_repo_ci");
+      assert.ok(schemaResponse.data.metadataFields.length > 0);
+
       const subscriptionResponse = await client.request<{ subscriptionId: string }>("/subscriptions/register", {
         agentId,
         sourceId: sourceResponse.data.sourceId,
-        matchRules: { channel: "engineering" },
+        filter: { metadata: { channel: "engineering" } },
         startPolicy: "earliest",
       });
       assert.equal(subscriptionResponse.statusCode, 200);

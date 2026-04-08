@@ -71,6 +71,12 @@ export function createServer(service: AgentInboxService): http.Server {
         return;
       }
 
+      const sourceSchemaMatch = url.pathname.match(/^\/source-types\/([^/]+)\/schema$/);
+      if (req.method === "GET" && sourceSchemaMatch) {
+        send(res, 200, service.getSourceSchema(decodeURIComponent(sourceSchemaMatch[1]) as never));
+        return;
+      }
+
       const sourcePollMatch = url.pathname.match(/^\/sources\/([^/]+)\/poll$/);
       if (req.method === "POST" && sourcePollMatch) {
         send(res, 200, await service.pollSource(decodeURIComponent(sourcePollMatch[1])));
@@ -171,7 +177,15 @@ export function createServer(service: AgentInboxService): http.Server {
       }
 
       if (req.method === "POST" && url.pathname === "/subscriptions/register") {
-        send(res, 200, await service.registerSubscription(await readJson(req) as never));
+        const body = await readJson(req);
+        send(res, 200, await service.registerSubscription({
+          agentId: parseRequiredString(body.agentId, "subscriptions/register requires agentId"),
+          sourceId: parseRequiredString(body.sourceId, "subscriptions/register requires sourceId"),
+          filter: asObject(body.filter),
+          startPolicy: parseOptionalString(body.startPolicy) as never,
+          startOffset: parseOptionalInteger(body.startOffset),
+          startTime: parseOptionalString(body.startTime) ?? undefined,
+        }));
         return;
       }
 
