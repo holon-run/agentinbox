@@ -9,8 +9,10 @@ Use this checklist before pushing a release tag such as `v0.1.0-beta.1` or
 - [package.json](../../package.json) version already matches the intended tag without the `v` prefix
 - [CHANGELOG.md](../../CHANGELOG.md) has a section for that exact version
 - CI on `main` is green
-- npm publish credentials are available as `NPM_TOKEN`
 - GitHub Actions `release` environment is configured and approved
+- npm trusted publisher is configured for `.github/workflows/release.yml`
+  - for the very first public release, this may not be possible yet because the
+    package does not exist on npm
 
 ## Automated Checks
 
@@ -52,7 +54,21 @@ Also verify:
 1. Update `package.json` version and add the matching `CHANGELOG.md` section in a PR.
 2. Merge the PR to `main`.
 3. Run the manual QA matrix.
-4. Create and push the release tag:
+4. If this is the first npm release for `@holon-run/agentinbox`, publish it manually from a trusted local machine:
+
+```bash
+npm publish --access public
+```
+
+Then configure npm trusted publishing for:
+
+- package: `@holon-run/agentinbox`
+- provider: GitHub Actions
+- repository: `holon-run/agentinbox`
+- workflow: `release.yml`
+- environment: `release`
+
+5. Create and push the release tag:
 
 ```bash
 git checkout main
@@ -61,8 +77,10 @@ git tag v0.1.0-beta.1
 git push origin v0.1.0-beta.1
 ```
 
-5. Wait for the `Release` GitHub Actions workflow to complete.
-6. Verify the npm package and GitHub Release page.
+6. Wait for the `Release` GitHub Actions workflow to complete.
+   - if the version was already published manually, the workflow should skip
+     `npm publish` and still create the GitHub Release
+7. Verify the npm package and GitHub Release page.
 
 ## Post-Release Checks
 
