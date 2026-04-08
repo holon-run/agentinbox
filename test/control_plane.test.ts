@@ -281,6 +281,115 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
   }
 });
 
+test("control plane exposes inbox compact and global gc endpoints", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-gc-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const agentResponse = await client.request<{
+        agent: { agentId: string };
+      }>("/agents/register", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-gc",
+        tmuxPaneId: "%55",
+        notifyLeaseMs: 200,
+      });
+      assert.equal(agentResponse.statusCode, 200);
+      const agentId = agentResponse.data.agent.agentId;
+      const inboxId = `inbox_${agentId}`;
+      const oldAckedAt = new Date(Date.now() - (25 * 60 * 60 * 1000)).toISOString();
+
+      store.insertInboxItem({
+        itemId: "item-old",
+        sourceId: "src-old",
+        sourceNativeId: "evt-old",
+        eventVariant: "message.created",
+        inboxId,
+        occurredAt: "2026-04-01T00:00:00Z",
+        metadata: {},
+        rawPayload: {},
+        deliveryHandle: null,
+        ackedAt: oldAckedAt,
+      });
+      store.insertInboxItem({
+        itemId: "item-live",
+        sourceId: "src-live",
+        sourceNativeId: "evt-live",
+        eventVariant: "message.created",
+        inboxId,
+        occurredAt: "2026-04-01T00:00:01Z",
+        metadata: {},
+        rawPayload: {},
+        deliveryHandle: null,
+        ackedAt: null,
+      });
+
+      const compactResponse = await client.request<{ deleted: number; retentionMs: number }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/compact`,
+        {},
+      );
+      assert.equal(compactResponse.statusCode, 200);
+      assert.equal(compactResponse.data.deleted, 1);
+
+      const compactRead = await client.request<{ items: InboxItem[] }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        undefined,
+        "GET",
+      );
+      assert.equal(compactRead.statusCode, 200);
+      assert.equal(compactRead.data.items.length, 1);
+
+      store.insertInboxItem({
+        itemId: "item-old-global",
+        sourceId: "src-old-global",
+        sourceNativeId: "evt-old-global",
+        eventVariant: "message.created",
+        inboxId,
+        occurredAt: "2026-04-01T00:00:02Z",
+        metadata: {},
+        rawPayload: {},
+        deliveryHandle: null,
+        ackedAt: oldAckedAt,
+      });
+
+      const gcResponse = await client.request<{ deleted: number; retentionMs: number }>(
+        "/gc",
+        {},
+      );
+      assert.equal(gcResponse.statusCode, 200);
+      assert.equal(gcResponse.data.deleted, 1);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<never>((_, reject) => {

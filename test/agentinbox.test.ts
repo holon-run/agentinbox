@@ -239,12 +239,17 @@ test("inbox read defaults to unacked items and ack through clears a processed ba
       startPolicy: "earliest",
     });
 
-    for (const id of ["evt-1", "evt-2", "evt-3"]) {
+    for (const event of [
+      { id: "evt-1", occurredAt: "2026-04-01T00:00:00.000Z" },
+      { id: "evt-2", occurredAt: "2026-04-01T00:00:01.000Z" },
+      { id: "evt-3", occurredAt: "2026-04-01T00:00:02.000Z" },
+    ]) {
       await service.appendSourceEventByCaller(source.sourceId, {
-        sourceNativeId: id,
+        sourceNativeId: event.id,
         eventVariant: "message.created",
         metadata: {},
-        rawPayload: { text: id },
+        rawPayload: { text: event.id },
+        occurredAt: event.occurredAt,
       });
     }
 

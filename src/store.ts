@@ -28,7 +28,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -289,6 +289,12 @@ export class AgentInboxStore {
 
       create index if not exists idx_activation_dispatch_states_target
         on activation_dispatch_states(target_id, lease_expires_at);
+
+      create index if not exists idx_inbox_items_acked_at
+        on inbox_items(acked_at);
+
+      create index if not exists idx_inbox_items_inbox_acked_at
+        on inbox_items(inbox_id, acked_at);
 
       create index if not exists idx_stream_events_stream_offset
         on stream_events(stream_id, offset);
