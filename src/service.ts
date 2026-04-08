@@ -986,11 +986,17 @@ export class AgentInboxService {
       }
     }
 
+    const remainingSubscriptions = this.store.listSubscriptionsForAgent(subscription.agentId);
     const states = this.store.listActivationDispatchStatesForAgent(subscription.agentId);
     for (const state of states) {
+      const directlyReferencesRemovedSubscription = state.pendingSubscriptionIds.includes(subscription.subscriptionId);
+      if (!directlyReferencesRemovedSubscription && remainingSubscriptions.length > 0) {
+        continue;
+      }
       // Dispatch state is stored per target rather than per subscription.
-      // Once a subscription is removed, we cannot safely attribute notified
-      // lease state back to a specific subscription, so drop it conservatively.
+      // Drop states that still directly reference the removed subscription.
+      // If the agent has no subscriptions left, also clear any residual lease
+      // state so future subscriptions do not inherit a stale notified window.
       this.store.deleteActivationDispatchState(state.agentId, state.targetId);
     }
   }
