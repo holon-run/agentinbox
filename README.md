@@ -108,7 +108,7 @@ Public docs live in the mdorigin site under [`docs/site`](./docs/site).
 - onboarding with the agent skill: [`docs/site/guides/onboarding-with-agent-skill.md`](./docs/site/guides/onboarding-with-agent-skill.md)
 - getting started: [`docs/site/guides/getting-started.md`](./docs/site/guides/getting-started.md)
 - review workflows: [`docs/site/guides/review-workflows.md`](./docs/site/guides/review-workflows.md)
-- skill docs: [`docs/site/skills/README.md`](./docs/site/skills/README.md)
+- skill docs: [`skills/README.md`](./skills/README.md)
 - CLI reference: [`docs/site/reference/cli.md`](./docs/site/reference/cli.md)
 - source types: [`docs/site/reference/source-types.md`](./docs/site/reference/source-types.md)
 - architecture: [`docs/site/concepts/architecture.md`](./docs/site/concepts/architecture.md)
