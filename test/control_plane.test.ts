@@ -370,6 +370,14 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(subscriptionsAfterDelete.statusCode, 200);
       assert.equal(subscriptionsAfterDelete.data.subscriptions.length, 0);
 
+      const invalidLifecycleResponse = await client.request<{ error: string }>("/subscriptions/register", {
+        agentId,
+        sourceId: sourceResponse.data.sourceId,
+        lifecycleMode: "ephemeral",
+      });
+      assert.equal(invalidLifecycleResponse.statusCode, 400);
+      assert.match(invalidLifecycleResponse.data.error, /unsupported lifecycle mode/);
+
     } finally {
       await started.close();
     }

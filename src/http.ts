@@ -406,6 +406,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("agents/register requires") ||
     message.startsWith("agents/targets requires") ||
     message.startsWith("unsupported activation target kind") ||
+    message.startsWith("unsupported lifecycle mode") ||
     message.startsWith("unsupported start policy") ||
     message.startsWith("unsupported terminal") ||
     message.startsWith("expected integer") ||
