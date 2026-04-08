@@ -117,6 +117,8 @@ async function main(): Promise<void> {
   if (command === "agent" && normalized[1] === "register") {
     const detected = detectTerminalContext(process.env);
     await printRemote(client, "/agents/register", {
+      agentId: takeFlagValue(normalized, "--agent-id") ?? null,
+      forceRebind: normalized.includes("--force-rebind"),
       backend: detected.backend,
       runtimeKind: detected.runtimeKind,
       runtimeSessionId: detected.runtimeSessionId ?? null,
@@ -590,7 +592,7 @@ Usage:
     agent: `agentinbox agent
 
 Usage:
-  agentinbox agent register [--notify-lease-ms N]
+  agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N]
   agentinbox agent list
   agentinbox agent show <agentId>
   agentinbox agent remove <agentId>

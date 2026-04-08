@@ -26,7 +26,7 @@ agentinbox daemon status
 ## Agent
 
 ```bash
-agentinbox agent register
+agentinbox agent register [--agent-id ID] [--force-rebind]
 agentinbox agent list
 agentinbox agent show <agent_id>
 agentinbox agent remove <agent_id>

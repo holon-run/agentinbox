@@ -109,6 +109,8 @@ export function createServer(service: AgentInboxService): http.Server {
         const body = await readJson(req);
         const backend = parseRequiredString(body.backend, "agents/register requires backend");
         send(res, 200, service.registerAgent({
+          agentId: parseOptionalString(body.agentId) ?? null,
+          forceRebind: Boolean(body.forceRebind),
           backend: backend as never,
           runtimeKind: parseOptionalString(body.runtimeKind) as never,
           runtimeSessionId: parseOptionalString(body.runtimeSessionId),
@@ -405,6 +407,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("subscriptions/reset requires") ||
     message.startsWith("agents/register requires") ||
     message.startsWith("agents/targets requires") ||
+    message.startsWith("agent register conflict") ||
     message.startsWith("unsupported activation target kind") ||
     message.startsWith("unsupported lifecycle mode") ||
     message.startsWith("unsupported start policy") ||

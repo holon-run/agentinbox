@@ -28,7 +28,7 @@ export interface DaemonStatusResult {
   transport: ClientTransport;
 }
 
-const START_TIMEOUT_MS = 5_000;
+const START_TIMEOUT_MS = 15_000;
 
 export async function ensureDaemonForClient(options: DaemonCliOptions = {}): Promise<ClientTransport> {
   const transport = resolveDaemonClientTransport(options);
