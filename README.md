@@ -66,6 +66,7 @@ Register the current terminal session:
 
 ```bash
 agentinbox agent register
+agentinbox agent register --agent-id agent-alpha
 ```
 
 Create a local source and publish an event:

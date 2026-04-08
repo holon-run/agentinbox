@@ -51,6 +51,7 @@ Register the current terminal session as an agent:
 
 ```bash
 agentinbox agent register
+agentinbox agent register --agent-id agent-alpha
 ```
 
 This detects the current runtime and terminal context, assigns or restores an

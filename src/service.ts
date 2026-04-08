@@ -200,7 +200,7 @@ export class AgentInboxService {
     validateTerminalRegistration(input);
 
     const runtimeKind = input.runtimeKind ?? "unknown";
-    const agentId = assignedAgentIdFromContext({
+    const agentId = input.agentId ?? assignedAgentIdFromContext({
       runtimeKind,
       runtimeSessionId: input.runtimeSessionId ?? null,
       backend: input.backend,
@@ -209,6 +209,7 @@ export class AgentInboxService {
       tty: input.tty ?? null,
     });
     const now = nowIso();
+    this.handleAgentRegistrationConflicts(agentId, input);
     const existingAgent = this.store.getAgent(agentId);
     const agent = existingAgent
       ? this.store.updateAgent(agentId, {
@@ -878,6 +879,36 @@ export class AgentInboxService {
     }
   }
 
+  private handleAgentRegistrationConflicts(agentId: string, input: RegisterAgentInput): void {
+    const currentTarget = findExistingTerminalActivationTarget(this.store, input);
+    if (currentTarget && currentTarget.agentId !== agentId) {
+      if (!input.forceRebind) {
+        throw new Error(
+          `agent register conflict: current terminal target ${currentTarget.targetId} is already bound to agent ${currentTarget.agentId}; retry with forceRebind to rebind`,
+        );
+      }
+      this.store.deleteActivationTarget(currentTarget.agentId, currentTarget.targetId);
+      this.reconcileAgentStatus(currentTarget.agentId);
+    }
+
+    const conflictingTargets = this.store
+      .listActivationTargetsForAgent(agentId)
+      .filter((target): target is TerminalActivationTarget => target.kind === "terminal")
+      .filter((target) => !isSameTerminalIdentity(target, input));
+
+    if (conflictingTargets.length > 0 && !input.forceRebind) {
+      throw new Error(
+        `agent register conflict: agent ${agentId} is already bound to terminal target ${conflictingTargets[0].targetId}; retry with forceRebind to rebind`,
+      );
+    }
+
+    if (input.forceRebind) {
+      for (const target of conflictingTargets) {
+        this.store.deleteActivationTarget(agentId, target.targetId);
+      }
+    }
+  }
+
   private upsertTerminalActivationTarget(agentId: string, input: RegisterAgentInput, now: string): TerminalActivationTarget {
     const existing = findExistingTerminalActivationTarget(this.store, input);
     if (existing) {
@@ -1448,6 +1479,24 @@ function findExistingTerminalActivationTarget(store: AgentInboxStore, input: Reg
     }
   }
   return null;
+}
+
+function isSameTerminalIdentity(target: TerminalActivationTarget, input: RegisterAgentInput): boolean {
+  if (input.runtimeSessionId && target.runtimeKind === (input.runtimeKind ?? "unknown") && target.runtimeSessionId === input.runtimeSessionId) {
+    return true;
+  }
+  if (input.backend === "tmux" && input.tmuxPaneId && target.backend === "tmux" && target.tmuxPaneId === input.tmuxPaneId) {
+    return true;
+  }
+  if (input.backend === "iterm2" && target.backend === "iterm2") {
+    if (input.itermSessionId && target.itermSessionId === input.itermSessionId) {
+      return true;
+    }
+    if (input.tty && target.tty === input.tty) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function uniqueSorted(values: string[]): string[] {

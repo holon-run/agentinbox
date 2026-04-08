@@ -176,6 +176,8 @@ export interface RegisterSourceInput {
 }
 
 export interface RegisterAgentInput {
+  agentId?: string | null;
+  forceRebind?: boolean;
   runtimeKind?: RuntimeKind | null;
   runtimeSessionId?: string | null;
   backend: TerminalBackend;

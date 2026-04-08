@@ -113,6 +113,96 @@ test("agent register creates a stable agent, inbox, and terminal activation targ
   }
 });
 
+test("agent register accepts caller-supplied agent ids and upserts the same logical agent", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const first = service.registerAgent({
+      agentId: "agent-alpha",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-agent-alpha",
+      tmuxPaneId: "%501",
+    });
+    const second = service.registerAgent({
+      agentId: "agent-alpha",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-agent-alpha",
+      tmuxPaneId: "%501",
+    });
+
+    assert.equal(first.agent.agentId, "agent-alpha");
+    assert.equal(second.agent.agentId, "agent-alpha");
+    assert.equal(second.terminalTarget.targetId, first.terminalTarget.targetId);
+    assert.equal(store.listAgents().length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent register rejects caller-supplied agent id conflicts without force rebind", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    service.registerAgent({
+      agentId: "agent-alpha",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-agent-alpha",
+      tmuxPaneId: "%502",
+    });
+
+    await assert.rejects(async () => {
+      service.registerAgent({
+        agentId: "agent-alpha",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-agent-alpha-rebound",
+        tmuxPaneId: "%503",
+      });
+    }, /agent register conflict/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent register force rebind moves the logical agent to the current terminal target", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const first = service.registerAgent({
+      agentId: "agent-alpha",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-agent-alpha",
+      tmuxPaneId: "%504",
+    });
+
+    const rebound = service.registerAgent({
+      agentId: "agent-alpha",
+      forceRebind: true,
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-agent-alpha-rebound",
+      tmuxPaneId: "%505",
+    });
+
+    assert.equal(rebound.agent.agentId, "agent-alpha");
+    assert.equal(rebound.agent.runtimeSessionId, "thread-agent-alpha-rebound");
+    assert.notEqual(rebound.terminalTarget.targetId, first.terminalTarget.targetId);
+    const targets = service.listActivationTargets("agent-alpha");
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].kind, "terminal");
+    assert.equal(targets[0].kind === "terminal" ? targets[0].tmuxPaneId : null, "%505");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("shared source can route one stream event to multiple agent inboxes", async () => {
   const { store, service, dir } = await makeService();
   try {

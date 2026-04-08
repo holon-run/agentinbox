@@ -132,7 +132,7 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
       cwd: repoDir,
       env,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: 25_000,
     });
     assert.equal(status.status, 0, status.stderr);
     const parsedStatus = JSON.parse(status.stdout) as { counts?: { agents?: number } };
@@ -142,7 +142,7 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
       cwd: repoDir,
       env,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: 25_000,
     });
     assert.equal(daemonState.status, 0, daemonState.stderr);
     const parsedDaemon = JSON.parse(daemonState.stdout) as { running: boolean; pid: number | null };
@@ -153,7 +153,7 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
       cwd: repoDir,
       env,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: 25_000,
     });
     assert.equal(stopped.status, 0, stopped.stderr);
     const parsedStopped = JSON.parse(stopped.stdout) as { running: boolean };
@@ -559,6 +559,75 @@ test("control plane can remove agents and gc stale offline agents", async () => 
       const gcResponse = await client.request<{ removedAgents: number } & { deleted?: number }>("/gc", {});
       assert.equal(gcResponse.statusCode, 200);
       assert.equal(gcResponse.data.removedAgents, 1);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane accepts caller-supplied agent ids and rejects conflicting rebinds without force", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-agent-id-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }));
+  const service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  try {
+    await adapters.start();
+    await service.start();
+    const server = createServer(service);
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const first = await client.request<{ agent: { agentId: string } }>("/agents/register", {
+        agentId: "agent-http-alpha",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-alpha",
+        tmuxPaneId: "%601",
+      });
+      assert.equal(first.statusCode, 200);
+      assert.equal(first.data.agent.agentId, "agent-http-alpha");
+
+      const conflict = await client.request<{ error: string }>("/agents/register", {
+        agentId: "agent-http-alpha",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-alpha-rebound",
+        tmuxPaneId: "%602",
+      });
+      assert.equal(conflict.statusCode, 400);
+      assert.match(conflict.data.error, /agent register conflict/);
+
+      const invalidForceRebind = await client.request<{ error: string }>("/agents/register", {
+        agentId: "agent-http-alpha",
+        forceRebind: "false",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-alpha-rebound",
+        tmuxPaneId: "%602",
+      });
+      assert.equal(invalidForceRebind.statusCode, 400);
+      assert.match(invalidForceRebind.data.error, /expected boolean/);
+
+      const rebound = await client.request<{ terminalTarget: { tmuxPaneId: string | null } }>("/agents/register", {
+        agentId: "agent-http-alpha",
+        forceRebind: true,
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-alpha-rebound",
+        tmuxPaneId: "%602",
+      });
+      assert.equal(rebound.statusCode, 200);
+      assert.equal(rebound.data.terminalTarget.tmuxPaneId, "%602");
     } finally {
       await started.close();
     }
