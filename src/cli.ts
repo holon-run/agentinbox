@@ -281,15 +281,35 @@ async function main(): Promise<void> {
   if (command === "inbox" && normalized[1] === "ack") {
     const agentId = normalized[2];
     const itemId = takeFlagValue(normalized, "--item");
+    const throughItemId = takeFlagValue(normalized, "--through");
     const ackAll = hasFlag(normalized, "--all");
-    if (!agentId || (ackAll && itemId) || (!ackAll && !itemId)) {
-      throw new Error("usage: agentinbox inbox ack <agentId> (--item <itemId> | --all)");
+    const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughItemId)) + Number(ackAll);
+    if (!agentId || modeCount !== 1) {
+      throw new Error("usage: agentinbox inbox ack <agentId> (--through <itemId> | --item <itemId> | --all)");
     }
     if (ackAll) {
       await printRemote(client, `/agents/${encodeURIComponent(agentId)}/inbox/ack-all`, {});
       return;
     }
-    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/inbox/ack`, { itemIds: [itemId] });
+    await printRemote(
+      client,
+      `/agents/${encodeURIComponent(agentId)}/inbox/ack`,
+      throughItemId ? { throughItemId } : { itemIds: [itemId] },
+    );
+    return;
+  }
+
+  if (command === "inbox" && normalized[1] === "compact") {
+    const agentId = normalized[2];
+    if (!agentId) {
+      throw new Error("usage: agentinbox inbox compact <agentId>");
+    }
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/inbox/compact`, {});
+    return;
+  }
+
+  if (command === "gc") {
+    await printRemote(client, "/gc", {});
     return;
   }
 
@@ -505,6 +525,7 @@ Commands:
   agent
   subscription
   inbox
+  gc
   fixture
   deliver
   status
@@ -559,7 +580,8 @@ Usage:
   agentinbox inbox show <agentId>
   agentinbox inbox read <agentId> [--after-item ID] [--include-acked]
   agentinbox inbox watch <agentId> [--after-item ID] [--include-acked] [--heartbeat-ms N]
-  agentinbox inbox ack <agentId> (--item <itemId> | --all)
+  agentinbox inbox ack <agentId> (--through <itemId> | --item <itemId> | --all)
+  agentinbox inbox compact <agentId>
 `,
     fixture: `agentinbox fixture
 
@@ -575,6 +597,11 @@ Usage:
 
 Usage:
   agentinbox status
+`,
+    gc: `agentinbox gc
+
+Usage:
+  agentinbox gc
 `,
     version: `agentinbox version
 

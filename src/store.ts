@@ -28,7 +28,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -289,6 +289,12 @@ export class AgentInboxStore {
 
       create index if not exists idx_activation_dispatch_states_target
         on activation_dispatch_states(target_id, lease_expires_at);
+
+      create index if not exists idx_inbox_items_acked_at
+        on inbox_items(acked_at);
+
+      create index if not exists idx_inbox_items_inbox_acked_at
+        on inbox_items(inbox_id, acked_at);
 
       create index if not exists idx_stream_events_stream_offset
         on stream_events(stream_id, offset);
@@ -770,7 +776,7 @@ export class AgentInboxStore {
   }
 
   listInboxItems(inboxId: string, options?: ListInboxItemsOptions): InboxItem[] {
-    const includeAcked = options?.includeAcked ?? true;
+    const includeAcked = options?.includeAcked ?? false;
     const filters = ["inbox_id = ?"];
     const params: Array<string | number | null> = [inboxId];
 
@@ -810,6 +816,64 @@ export class AgentInboxStore {
       );
       changes += this.changes();
     }
+    if (changes > 0) {
+      this.persist();
+    }
+    return changes;
+  }
+
+  ackItemsThrough(inboxId: string, itemId: string, ackedAt: string): number {
+    const anchor = this.getOne(
+      "select occurred_at, item_id from inbox_items where inbox_id = ? and item_id = ?",
+      [inboxId, itemId],
+    );
+    if (!anchor) {
+      throw new Error(`unknown inbox item: ${itemId}`);
+    }
+    this.db.run(
+      `
+      update inbox_items
+      set acked_at = ?
+      where inbox_id = ?
+        and acked_at is null
+        and ((occurred_at < ?) or (occurred_at = ? and item_id <= ?))
+    `,
+      [ackedAt, inboxId, String(anchor.occurred_at), String(anchor.occurred_at), String(anchor.item_id)],
+    );
+    const changes = this.changes();
+    if (changes > 0) {
+      this.persist();
+    }
+    return changes;
+  }
+
+  deleteAckedInboxItems(inboxId: string, olderThan: string): number {
+    this.db.run(
+      `
+      delete from inbox_items
+      where inbox_id = ?
+        and acked_at is not null
+        and acked_at < ?
+    `,
+      [inboxId, olderThan],
+    );
+    const changes = this.changes();
+    if (changes > 0) {
+      this.persist();
+    }
+    return changes;
+  }
+
+  deleteAckedInboxItemsGlobal(olderThan: string): number {
+    this.db.run(
+      `
+      delete from inbox_items
+      where acked_at is not null
+        and acked_at < ?
+    `,
+      [olderThan],
+    );
+    const changes = this.changes();
     if (changes > 0) {
       this.persist();
     }
