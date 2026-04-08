@@ -7,7 +7,7 @@
     "type": "git",
     "url": "git+https://github.com/holon-run/agentinbox.git"
   },
-  "homepage": "https://github.com/holon-run/agentinbox#readme",
+  "homepage": "https://agentinbox.holon.run",
   "bugs": {
     "url": "https://github.com/holon-run/agentinbox/issues"
   },
@@ -38,7 +38,7 @@
     "test": "node --require ts-node/register --test test/*.test.ts"
   },
   "dependencies": {
-    "@holon-run/uxc-daemon-client": "^0.13.1",
+    "@holon-run/uxc-daemon-client": "^0.13.3",
     "jexl": "^2.3.0",
     "sql.js": "^1.13.0"
   },
