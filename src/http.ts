@@ -1,6 +1,7 @@
 import http from "node:http";
 import Fastify from "fastify";
 import swagger from "@fastify/swagger";
+import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
 import { ActivationMode, DeliveryHandle, WatchInboxOptions } from "./model";
 import { jsonResponse } from "./util";
@@ -267,6 +268,13 @@ function buildFastifyServer(service: AgentInboxService) {
   app.get("/agents", {
     schema: {
       tags: ["agents"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          include_targets: { type: "string", enum: ["true", "false"] },
+        },
+      },
       response: {
         200: {
           type: "object",
@@ -277,7 +285,18 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
     },
-  }, async () => ({ agents: service.listAgents() }));
+  }, async (request) => {
+    const query = request.query as { include_targets?: "true" | "false" };
+    if (query.include_targets === "true") {
+      return {
+        agents: service.listAgents().map((agent) => ({
+          agent,
+          activationTargets: service.listActivationTargets(agent.agentId).map(summarizeActivationTarget),
+        })),
+      };
+    }
+    return { agents: service.listAgents() };
+  });
 
   app.post("/agents", {
     schema: {
