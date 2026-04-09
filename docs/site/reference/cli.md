@@ -49,7 +49,7 @@ agentinbox source event <source_id> --native-id <id> --event <variant>
 
 ```bash
 agentinbox subscription add <source_id> [--agent-id <agent_id>] [--filter-json ...]
-agentinbox subscription list [--agent-id <agent_id>]
+agentinbox subscription list [--agent-id <agent_id>] [--source-id <source_id>]
 agentinbox subscription show <subscription_id>
 agentinbox subscription remove <subscription_id>
 agentinbox subscription lag <subscription_id>

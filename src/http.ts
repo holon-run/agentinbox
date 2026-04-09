@@ -287,15 +287,26 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const query = request.query as { include_targets?: "true" | "false" };
+    const agents = service.listAgents();
     if (query.include_targets === "true") {
+      const activationTargetsByAgentId = service.listActivationTargets().reduce((grouped, target) => {
+        const targets = grouped.get(target.agentId);
+        const summarized = summarizeActivationTarget(target);
+        if (targets) {
+          targets.push(summarized);
+        } else {
+          grouped.set(target.agentId, [summarized]);
+        }
+        return grouped;
+      }, new Map<string, ReturnType<typeof summarizeActivationTarget>[]>());
       return {
-        agents: service.listAgents().map((agent) => ({
+        agents: agents.map((agent) => ({
           agent,
-          activationTargets: service.listActivationTargets(agent.agentId).map(summarizeActivationTarget),
+          activationTargets: activationTargetsByAgentId.get(agent.agentId) ?? [],
         })),
       };
     }
-    return { agents: service.listAgents() };
+    return { agents };
   });
 
   app.post("/agents", {

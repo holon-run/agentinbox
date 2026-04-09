@@ -15,17 +15,12 @@ export interface TerminalTargetSummary {
   runtimeSessionId?: string | null;
 }
 
-export interface ActivationTargetSummary {
+export interface WebhookTargetSummary {
   targetId: string;
-  kind: ActivationTarget["kind"];
-  backend?: TerminalBackend | null;
-  tmuxPaneId?: string | null;
-  tty?: string | null;
-  termProgram?: string | null;
-  itermSessionId?: string | null;
-  runtimeKind?: RuntimeKind | null;
-  runtimeSessionId?: string | null;
+  kind: "webhook";
 }
+
+export type ActivationTargetSummary = TerminalTargetSummary | WebhookTargetSummary;
 
 export interface AgentWithTargets {
   agent: Agent;
