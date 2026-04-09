@@ -708,7 +708,9 @@ function tryDetectTerminalContext() {
 }
 
 function bindingKindForRecord(record: AgentWithTargets): BindingKind {
-  return record.activationTargets.some((target) => target.kind === "terminal") ? "session_bound" : "detached";
+  return record.agent.status === "active" && record.activationTargets.some((target) => target.kind === "terminal" && target.status === "active")
+    ? "session_bound"
+    : "detached";
 }
 
 function positionalArgs(args: string[], flagsWithValues: string[]): string[] {

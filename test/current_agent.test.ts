@@ -4,6 +4,7 @@ import { annotateAgents, AgentWithTargets, resolveCurrentAgent } from "../src/cu
 
 function makeAgentRecord(input: {
   agentId: string;
+  status?: "active" | "offline";
   runtimeKind?: "codex" | "claude_code" | "unknown";
   runtimeSessionId?: string | null;
   activationTargets?: AgentWithTargets["activationTargets"];
@@ -11,7 +12,7 @@ function makeAgentRecord(input: {
   return {
     agent: {
       agentId: input.agentId,
-      status: "active",
+      status: input.status ?? "active",
       offlineSince: null,
       runtimeKind: input.runtimeKind ?? "codex",
       runtimeSessionId: input.runtimeSessionId ?? null,
@@ -31,6 +32,7 @@ test("resolveCurrentAgent prefers terminal identity over runtime identity", () =
       activationTargets: [{
         targetId: "tgt-runtime",
         kind: "terminal",
+        status: "active",
         backend: "tmux",
         tmuxPaneId: "%101",
         runtimeKind: "codex",
@@ -43,6 +45,7 @@ test("resolveCurrentAgent prefers terminal identity over runtime identity", () =
       activationTargets: [{
         targetId: "tgt-terminal",
         kind: "terminal",
+        status: "active",
         backend: "tmux",
         tmuxPaneId: "%202",
         runtimeKind: "codex",
@@ -78,6 +81,7 @@ test("annotateAgents marks current and detached agents correctly", () => {
       activationTargets: [{
         targetId: "tgt-current",
         kind: "terminal",
+        status: "active",
         backend: "iterm2",
         itermSessionId: "SESSION-1",
         tty: "/dev/ttys009",
@@ -107,4 +111,46 @@ test("annotateAgents marks current and detached agents correctly", () => {
   assert.equal(annotated.agents[1]?.isCurrent, false);
   assert.equal(annotated.agents[1]?.bindingKind, "detached");
   assert.equal(annotated.agents[1]?.terminalIdentity, null);
+});
+
+test("resolveCurrentAgent ignores offline agents and offline terminal targets", () => {
+  const agents: AgentWithTargets[] = [
+    makeAgentRecord({
+      agentId: "agent-offline-target",
+      activationTargets: [{
+        targetId: "tgt-offline",
+        kind: "terminal",
+        status: "offline",
+        backend: "tmux",
+        tmuxPaneId: "%501",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-offline-target",
+      }],
+    }),
+    makeAgentRecord({
+      agentId: "agent-offline-agent",
+      status: "offline",
+      activationTargets: [{
+        targetId: "tgt-active",
+        kind: "terminal",
+        status: "active",
+        backend: "tmux",
+        tmuxPaneId: "%501",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-offline-agent",
+      }],
+    }),
+  ];
+
+  const current = resolveCurrentAgent(agents, {
+    backend: "tmux",
+    tmuxPaneId: "%501",
+    tty: "/dev/ttys501",
+    termProgram: "tmux",
+    itermSessionId: null,
+    runtimeKind: "codex",
+    runtimeSessionId: "thread-offline-target",
+  });
+
+  assert.equal(current, null);
 });

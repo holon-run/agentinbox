@@ -379,6 +379,7 @@ test("control plane GET /agents can include activation target summaries", async 
       assert.deepEqual(listed.activationTargets[0], {
         targetId: listed.activationTargets[0]?.targetId,
         kind: "terminal",
+        status: "active",
         backend: "tmux",
         tmuxPaneId: "%777",
         tty: null,
@@ -388,6 +389,7 @@ test("control plane GET /agents can include activation target summaries", async 
         runtimeSessionId: "thread-http-list",
       });
       assert.equal(listed.activationTargets[1]?.kind, "webhook");
+      assert.equal(listed.activationTargets[1]?.status, "active");
       assert.equal("url" in (listed.activationTargets[1] ?? {}), false);
     } finally {
       await started.close();

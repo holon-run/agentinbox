@@ -6,6 +6,7 @@ export type BindingKind = "session_bound" | "detached";
 export interface TerminalTargetSummary {
   targetId: string;
   kind: "terminal";
+  status: "active" | "offline";
   backend: TerminalBackend;
   tmuxPaneId?: string | null;
   tty?: string | null;
@@ -18,6 +19,7 @@ export interface TerminalTargetSummary {
 export interface WebhookTargetSummary {
   targetId: string;
   kind: "webhook";
+  status: "active" | "offline";
 }
 
 export type ActivationTargetSummary = TerminalTargetSummary | WebhookTargetSummary;
@@ -48,6 +50,7 @@ export function summarizeActivationTarget(target: ActivationTarget): ActivationT
     return {
       targetId: target.targetId,
       kind: "terminal",
+      status: target.status,
       backend: target.backend,
       tmuxPaneId: target.tmuxPaneId ?? null,
       tty: target.tty ?? null,
@@ -60,6 +63,7 @@ export function summarizeActivationTarget(target: ActivationTarget): ActivationT
   return {
     targetId: target.targetId,
     kind: "webhook",
+    status: target.status,
   };
 }
 
@@ -109,7 +113,7 @@ function resolveAgentRecord(
 ): AgentWithTargets | null {
   if (context.tmuxPaneId) {
     const match = agents.find((agent) =>
-      terminalTargets(agent).some((target) => target.backend === "tmux" && target.tmuxPaneId === context.tmuxPaneId),
+      activeTerminalTargets(agent).some((target) => target.backend === "tmux" && target.tmuxPaneId === context.tmuxPaneId),
     );
     if (match) {
       return match;
@@ -118,7 +122,7 @@ function resolveAgentRecord(
 
   if (context.itermSessionId) {
     const match = agents.find((agent) =>
-      terminalTargets(agent).some((target) => target.backend === "iterm2" && target.itermSessionId === context.itermSessionId),
+      activeTerminalTargets(agent).some((target) => target.backend === "iterm2" && target.itermSessionId === context.itermSessionId),
     );
     if (match) {
       return match;
@@ -127,7 +131,7 @@ function resolveAgentRecord(
 
   if (context.tty) {
     const match = agents.find((agent) =>
-      terminalTargets(agent).some((target) => target.tty === context.tty),
+      activeTerminalTargets(agent).some((target) => target.tty === context.tty),
     );
     if (match) {
       return match;
@@ -145,15 +149,22 @@ function resolveAgentRecord(
 }
 
 function bindingKindForAgent(agent: AgentWithTargets): BindingKind {
-  return terminalTargets(agent).length > 0 ? "session_bound" : "detached";
+  return activeTerminalTargets(agent).length > 0 ? "session_bound" : "detached";
 }
 
 function terminalTargets(agent: AgentWithTargets): TerminalTargetSummary[] {
   return agent.activationTargets.filter((target): target is TerminalTargetSummary => target.kind === "terminal");
 }
 
+function activeTerminalTargets(agent: AgentWithTargets): TerminalTargetSummary[] {
+  if (agent.agent.status !== "active") {
+    return [];
+  }
+  return terminalTargets(agent).filter((target) => target.status === "active");
+}
+
 function terminalIdentityForAgent(agent: AgentWithTargets): string | null {
-  const target = terminalTargets(agent)[0];
+  const target = activeTerminalTargets(agent)[0];
   if (!target) {
     return null;
   }
@@ -170,7 +181,7 @@ function terminalIdentityForAgent(agent: AgentWithTargets): string | null {
 }
 
 function matchesCurrentTerminal(agent: AgentWithTargets, context: DetectedTerminalContext): boolean {
-  return terminalTargets(agent).some((target) =>
+  return activeTerminalTargets(agent).some((target) =>
     (context.tmuxPaneId != null && target.tmuxPaneId === context.tmuxPaneId)
     || (context.itermSessionId != null && target.itermSessionId === context.itermSessionId)
     || (context.tty != null && target.tty === context.tty),
@@ -178,10 +189,13 @@ function matchesCurrentTerminal(agent: AgentWithTargets, context: DetectedTermin
 }
 
 function matchesCurrentRuntime(agent: AgentWithTargets, context: DetectedTerminalContext): boolean {
+  if (agent.agent.status !== "active") {
+    return false;
+  }
   if (!context.runtimeSessionId) {
     return false;
   }
-  return terminalTargets(agent).some((target) =>
+  return activeTerminalTargets(agent).some((target) =>
     target.runtimeKind === context.runtimeKind && target.runtimeSessionId === context.runtimeSessionId,
   ) || (
     agent.agent.runtimeKind === context.runtimeKind
