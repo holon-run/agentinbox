@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const sources = sqliteTable("sources", {
   sourceId: text("source_id").primaryKey(),
@@ -23,13 +23,17 @@ export const agents = sqliteTable("agents", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   lastSeenAt: text("last_seen_at").notNull(),
-});
+}, (table) => ({
+  statusOfflineIdx: index("idx_agents_status_offline").on(table.status, table.offlineSince),
+}));
 
 export const inboxes = sqliteTable("inboxes", {
   inboxId: text("inbox_id").primaryKey(),
   ownerAgentId: text("owner_agent_id").notNull(),
   createdAt: text("created_at").notNull(),
-});
+}, (table) => ({
+  ownerAgentIdUnique: uniqueIndex("idx_inboxes_owner_agent_id").on(table.ownerAgentId),
+}));
 
 export const subscriptions = sqliteTable("subscriptions", {
   subscriptionId: text("subscription_id").primaryKey(),
@@ -66,7 +70,9 @@ export const activationTargets = sqliteTable("activation_targets", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   lastSeenAt: text("last_seen_at").notNull(),
-});
+}, (table) => ({
+  agentStatusIdx: index("idx_activation_targets_agent_status").on(table.agentId, table.status),
+}));
 
 export const activationDispatchStates = sqliteTable("activation_dispatch_states", {
   agentId: text("agent_id").notNull(),
@@ -78,7 +84,10 @@ export const activationDispatchStates = sqliteTable("activation_dispatch_states"
   pendingSubscriptionIdsJson: text("pending_subscription_ids_json").notNull(),
   pendingSourceIdsJson: text("pending_source_ids_json").notNull(),
   updatedAt: text("updated_at").notNull(),
-});
+}, (table) => ({
+  pk: primaryKey({ columns: [table.agentId, table.targetId] }),
+  targetLeaseIdx: index("idx_activation_dispatch_states_target").on(table.targetId, table.leaseExpiresAt),
+}));
 
 export const inboxItems = sqliteTable("inbox_items", {
   itemId: text("item_id").primaryKey(),
@@ -91,7 +100,13 @@ export const inboxItems = sqliteTable("inbox_items", {
   rawPayloadJson: text("raw_payload_json").notNull(),
   deliveryHandleJson: text("delivery_handle_json"),
   ackedAt: text("acked_at"),
-});
+}, (table) => ({
+  sourceNativeEventInboxUnique: uniqueIndex("idx_inbox_items_source_native_event_inbox")
+    .on(table.sourceId, table.sourceNativeId, table.eventVariant, table.inboxId),
+  ackedAtIdx: index("idx_inbox_items_acked_at").on(table.ackedAt),
+  inboxAckedAtIdx: index("idx_inbox_items_inbox_acked_at").on(table.inboxId, table.ackedAt),
+  sourceOccurredAtIdx: index("idx_inbox_items_source_occurred_at").on(table.sourceId, table.occurredAt),
+}));
 
 export const activations = sqliteTable("activations", {
   activationId: text("activation_id").primaryKey(),
@@ -128,7 +143,10 @@ export const streams = sqliteTable("streams", {
   streamKey: text("stream_key").notNull(),
   backend: text("backend").notNull(),
   createdAt: text("created_at").notNull(),
-});
+}, (table) => ({
+  sourceIdUnique: uniqueIndex("idx_streams_source_id").on(table.sourceId),
+  streamKeyUnique: uniqueIndex("idx_streams_stream_key").on(table.streamKey),
+}));
 
 export const streamEvents = sqliteTable("stream_events", {
   offset: integer("offset").primaryKey({ autoIncrement: true }),
@@ -142,7 +160,13 @@ export const streamEvents = sqliteTable("stream_events", {
   rawPayloadJson: text("raw_payload_json").notNull(),
   deliveryHandleJson: text("delivery_handle_json"),
   createdAt: text("created_at").notNull(),
-});
+}, (table) => ({
+  streamEventIdUnique: uniqueIndex("idx_stream_events_stream_event_id").on(table.streamEventId),
+  streamSourceNativeVariantUnique: uniqueIndex("idx_stream_events_stream_source_native_variant")
+    .on(table.streamId, table.sourceNativeId, table.eventVariant),
+  streamOffsetIdx: index("idx_stream_events_stream_offset").on(table.streamId, table.offset),
+  streamOccurredAtIdx: index("idx_stream_events_stream_occurred_at").on(table.streamId, table.occurredAt),
+}));
 
 export const consumers = sqliteTable("consumers", {
   consumerId: text("consumer_id").primaryKey(),
@@ -155,7 +179,11 @@ export const consumers = sqliteTable("consumers", {
   nextOffset: integer("next_offset").notNull(),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
-});
+}, (table) => ({
+  subscriptionIdUnique: uniqueIndex("idx_consumers_subscription_id").on(table.subscriptionId),
+  consumerKeyUnique: uniqueIndex("idx_consumers_consumer_key").on(table.consumerKey),
+  streamIdx: index("idx_consumers_stream").on(table.streamId),
+}));
 
 export const consumerCommits = sqliteTable("consumer_commits", {
   commitId: text("commit_id").primaryKey(),
@@ -163,5 +191,6 @@ export const consumerCommits = sqliteTable("consumer_commits", {
   streamId: text("stream_id").notNull(),
   committedOffset: integer("committed_offset").notNull(),
   committedAt: text("committed_at").notNull(),
-});
-
+}, (table) => ({
+  consumerCommittedOffsetIdx: index("idx_consumer_commits_consumer").on(table.consumerId, table.committedOffset),
+}));
