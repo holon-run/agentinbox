@@ -76,5 +76,5 @@ going forward.
 
 - `local_event` is the only source type that supports direct manual append through
   `POST /sources/{sourceId}/events`.
-- `remote_source` is publicly reserved but registration is intentionally rejected
-  until the declarative runtime exists.
+- `remote_source` is supported and requires `config.profilePath` (and optional
+  `config.profileConfig`) when registering.
