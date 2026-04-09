@@ -29,7 +29,7 @@ import {
 } from "./model";
 import { generateId, nowIso } from "./util";
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 type SqlBindParams = unknown[];
 
 function parseJson<T>(value: string | null): T {
@@ -367,15 +367,10 @@ export class AgentInboxStore {
   }
 
   getSourceByKey(sourceType: string, sourceKey: string): SubscriptionSource | null {
-    const row = sourceType === "local_event"
-      ? this.getOne(
-        "select * from sources where source_type in (?, ?) and source_key = ? order by case when source_type = ? then 0 else 1 end limit 1",
-        ["local_event", "custom", sourceKey, "local_event"],
-      )
-      : this.getOne(
-        "select * from sources where source_type = ? and source_key = ?",
-        [sourceType, sourceKey],
-      );
+    const row = this.getOne(
+      "select * from sources where source_type = ? and source_key = ?",
+      [sourceType, sourceKey],
+    );
     return row ? this.mapSource(row) : null;
   }
 
@@ -1362,12 +1357,9 @@ export class AgentInboxStore {
   }
 
   private mapSource(row: Record<string, unknown>): SubscriptionSource {
-    const sourceType = String(row.source_type) === "custom"
-      ? "local_event"
-      : row.source_type as SubscriptionSource["sourceType"];
     return {
       sourceId: String(row.source_id),
-      sourceType,
+      sourceType: row.source_type as SubscriptionSource["sourceType"],
       sourceKey: String(row.source_key),
       configRef: row.config_ref ? String(row.config_ref) : null,
       config: parseJson<Record<string, unknown>>(row.config_json as string),

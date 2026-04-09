@@ -89,7 +89,7 @@ agentinbox inbox read <agent_id>
 agentinbox source add github_repo_ci holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
 agentinbox subscription add <agent_id> <source_id> \
-  --match-json '{"status":"completed","conclusion":"failure","headBranch":"main"}'
+  --filter-json '{"metadata":{"status":"completed","conclusion":"failure","headBranch":"main"}}'
 agentinbox source poll <source_id>
 ```
 

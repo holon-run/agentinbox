@@ -1,15 +1,6 @@
 import { SourceSchema, SourceType } from "./model";
 
 const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
-  fixture: {
-    sourceType: "fixture",
-    metadataFields: [],
-    payloadExamples: [
-      { text: "hello from fixture" },
-    ],
-    eventVariantExamples: ["message.created"],
-    configFields: [],
-  },
   local_event: {
     sourceType: "local_event",
     metadataFields: [

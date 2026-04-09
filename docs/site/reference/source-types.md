@@ -23,6 +23,10 @@ It exists to distinguish future external source definitions from:
 The name is intentional: it describes source semantics without exposing
 implementation details such as `uxc`.
 
+`remote_source` is reserved but not yet supported at runtime. Registration
+currently returns a client error until the declarative external-source runtime
+exists.
+
 ## `github_repo`
 
 `github_repo` watches GitHub repository activity and is best suited for:

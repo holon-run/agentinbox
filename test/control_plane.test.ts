@@ -259,7 +259,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       const agentResponse = await client.request<{
         agent: { agentId: string };
         terminalTarget: { targetId: string };
-      }>("/agents/register", {
+      }>("/agents", {
         backend: "tmux",
         runtimeKind: "codex",
         runtimeSessionId: "thread-e2e",
@@ -276,8 +276,8 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       });
       assert.equal(targetResponse.statusCode, 200);
 
-      const sourceResponse = await client.request<{ sourceId: string }>("/sources/register", {
-        sourceType: "fixture",
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "local_event",
         sourceKey: "e2e-demo",
         config: {},
       } satisfies RegisterSourceInput);
@@ -292,7 +292,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(schemaResponse.data.sourceType, "github_repo_ci");
       assert.ok(schemaResponse.data.metadataFields.length > 0);
 
-      const subscriptionResponse = await client.request<{ subscriptionId: string }>("/subscriptions/register", {
+      const subscriptionResponse = await client.request<{ subscriptionId: string }>("/subscriptions", {
         agentId,
         sourceId: sourceResponse.data.sourceId,
         filter: { metadata: { channel: "engineering" } },
@@ -300,13 +300,12 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       });
       assert.equal(subscriptionResponse.statusCode, 200);
 
-      const appendResponse = await client.request<{ appended: number }>("/fixtures/emit", {
-        sourceId: sourceResponse.data.sourceId,
+      const appendResponse = await client.request<{ appended: number }>(`/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/events`, {
         sourceNativeId: "evt-e2e-1",
         eventVariant: "message.created",
         occurredAt: "2026-04-05T00:00:00Z",
         metadata: { channel: "engineering", subject: "hello" },
-        rawPayload: { text: "hello from fixture" },
+        rawPayload: { text: "hello from local event source" },
       });
       assert.equal(appendResponse.statusCode, 200);
       assert.equal(appendResponse.data.appended, 1);
@@ -370,7 +369,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(subscriptionsAfterDelete.statusCode, 200);
       assert.equal(subscriptionsAfterDelete.data.subscriptions.length, 0);
 
-      const invalidLifecycleResponse = await client.request<{ error: string }>("/subscriptions/register", {
+      const invalidLifecycleResponse = await client.request<{ error: string }>("/subscriptions", {
         agentId,
         sourceId: sourceResponse.data.sourceId,
         lifecycleMode: "ephemeral",
@@ -416,7 +415,7 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
       });
       const agentResponse = await client.request<{
         agent: { agentId: string };
-      }>("/agents/register", {
+      }>("/agents", {
         backend: "tmux",
         runtimeKind: "codex",
         runtimeSessionId: "thread-gc",
@@ -522,7 +521,7 @@ test("control plane can remove agents and gc stale offline agents", async () => 
       });
       const agentResponse = await client.request<{
         agent: { agentId: string };
-      }>("/agents/register", {
+      }>("/agents", {
         backend: "tmux",
         runtimeKind: "codex",
         runtimeSessionId: "thread-remove-http",
@@ -587,7 +586,7 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
     const started = await startControlServer(server, { kind: "socket", socketPath });
     try {
       const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
-      const first = await client.request<{ agent: { agentId: string } }>("/agents/register", {
+      const first = await client.request<{ agent: { agentId: string } }>("/agents", {
         agentId: "agent-http-alpha",
         backend: "tmux",
         runtimeKind: "codex",
@@ -597,7 +596,7 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
       assert.equal(first.statusCode, 200);
       assert.equal(first.data.agent.agentId, "agent-http-alpha");
 
-      const conflict = await client.request<{ error: string }>("/agents/register", {
+      const conflict = await client.request<{ error: string }>("/agents", {
         agentId: "agent-http-alpha",
         backend: "tmux",
         runtimeKind: "codex",
@@ -607,7 +606,7 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
       assert.equal(conflict.statusCode, 400);
       assert.match(conflict.data.error, /agent register conflict/);
 
-      const invalidForceRebind = await client.request<{ error: string }>("/agents/register", {
+      const invalidForceRebind = await client.request<{ error: string }>("/agents", {
         agentId: "agent-http-alpha",
         forceRebind: "false",
         backend: "tmux",
@@ -618,7 +617,7 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
       assert.equal(invalidForceRebind.statusCode, 400);
       assert.match(invalidForceRebind.data.error, /expected boolean/);
 
-      const rebound = await client.request<{ terminalTarget: { tmuxPaneId: string | null } }>("/agents/register", {
+      const rebound = await client.request<{ terminalTarget: { tmuxPaneId: string | null } }>("/agents", {
         agentId: "agent-http-alpha",
         forceRebind: true,
         backend: "tmux",
@@ -664,7 +663,7 @@ test("control plane rejects reserved remote_source registration", async () => {
         socketPath,
         source: "flag",
       });
-      const response = await client.request<{ error: string }>("/sources/register", {
+      const response = await client.request<{ error: string }>("/sources", {
         sourceType: "remote_source",
         sourceKey: "reserved-demo",
         config: {},

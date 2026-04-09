@@ -49,13 +49,12 @@ class NoopDeliveryAdapter implements DeliveryAdapter {
 }
 
 export class AdapterRegistry {
-  private readonly fixtureSource = new NoopSourceAdapter("fixture");
   private readonly localEventSource = new NoopSourceAdapter("local_event");
   private readonly remoteSource = new NoopSourceAdapter("remote_source");
   private readonly feishuSource: FeishuSourceRuntime;
   private readonly githubSource: GithubSourceRuntime;
   private readonly githubCiSource: GithubCiSourceRuntime;
-  private readonly fixtureDelivery = new NoopDeliveryAdapter();
+  private readonly defaultDelivery = new NoopDeliveryAdapter();
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
 
@@ -66,9 +65,6 @@ export class AdapterRegistry {
   }
 
   sourceAdapterFor(type: SourceType): SourceAdapter {
-    if (type === "fixture") {
-      return this.fixtureSource;
-    }
     if (type === "local_event") {
       return this.localEventSource;
     }
@@ -84,20 +80,17 @@ export class AdapterRegistry {
     if (type === "feishu_bot") {
       return this.feishuSource;
     }
-    return this.fixtureSource;
+    return this.localEventSource;
   }
 
   deliveryAdapterFor(provider: string): DeliveryAdapter {
-    if (provider === "fixture") {
-      return this.fixtureDelivery;
-    }
     if (provider === "feishu") {
       return this.feishuDelivery;
     }
     if (provider === "github") {
       return this.githubDelivery;
     }
-    return this.fixtureDelivery;
+    return this.defaultDelivery;
   }
 
   async start(): Promise<void> {

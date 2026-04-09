@@ -491,14 +491,6 @@ export class AgentInboxService {
     return this.appendSourceEvent({ ...input, sourceId });
   }
 
-  async appendFixtureEvent(sourceId: string, input: Omit<AppendSourceEventInput, "sourceId">): Promise<AppendSourceEventResult> {
-    const source = this.getSource(sourceId);
-    if (source.sourceType !== "fixture") {
-      throw new Error(`fixtures/emit requires fixture source, received: ${source.sourceType}`);
-    }
-    return this.appendSourceEvent({ ...input, sourceId });
-  }
-
   listInboxAgentIds(): string[] {
     return this.store.listInboxes().map((inbox) => inbox.ownerAgentId);
   }
@@ -621,6 +613,20 @@ export class AgentInboxService {
       void this.handleInboxAckEffects(agentId);
     }
     return { acked };
+  }
+
+  ackInbox(agentId: string, input: {
+    itemIds?: string[];
+    throughItemId?: string | null;
+    all?: boolean;
+  }): { acked: number } {
+    if (input.all) {
+      return this.ackAllInboxItems(agentId);
+    }
+    if (input.throughItemId) {
+      return this.ackInboxItemsThrough(agentId, input.throughItemId);
+    }
+    return this.ackInboxItems(agentId, input.itemIds ?? []);
   }
 
   compactInbox(agentId: string): { deleted: number; retentionMs: number } {
