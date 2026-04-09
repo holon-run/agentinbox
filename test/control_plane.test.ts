@@ -208,6 +208,70 @@ test("unix socket control plane replaces stale socket files and serves requests"
   }
 });
 
+test("control plane validates sources/events occurredAt and deliveries/send request shape", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "local_event",
+        sourceKey: "schema-validate-demo",
+        config: {},
+      } satisfies RegisterSourceInput);
+      assert.equal(sourceResponse.statusCode, 200);
+
+      const invalidOccurredAt = await client.request<{ error: string }>(
+        `/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/events`,
+        {
+          sourceNativeId: "evt-schema-1",
+          eventVariant: "message.created",
+          occurredAt: "",
+          metadata: {},
+          rawPayload: {},
+        },
+      );
+      assert.equal(invalidOccurredAt.statusCode, 400);
+      assert.equal(typeof invalidOccurredAt.data.error, "string");
+
+      const invalidDelivery = await client.request<{ error: string }>("/deliveries/send", {
+        kind: "comment",
+        payload: { body: "hello" },
+      });
+      assert.equal(invalidDelivery.statusCode, 400);
+      assert.equal(typeof invalidDelivery.data.error, "string");
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("e2e control plane can register an agent, route events, watch inbox, and send aggregated activation webhook", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-e2e-home-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");

@@ -213,7 +213,7 @@ function buildFastifyServer(service: AgentInboxService) {
         properties: {
           sourceNativeId: { type: "string", minLength: 1 },
           eventVariant: { type: "string", minLength: 1 },
-          occurredAt: { type: "string" },
+          occurredAt: { type: "string", minLength: 1 },
           metadata: jsonObjectSchema,
           rawPayload: jsonObjectSchema,
           deliveryHandle: deliveryHandleSchema,
@@ -237,7 +237,7 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.appendSourceEventByCaller(decodeURIComponent(params.sourceId), {
       sourceNativeId: body.sourceNativeId,
       eventVariant: body.eventVariant,
-      occurredAt: body.occurredAt,
+      occurredAt: optionalString(body.occurredAt),
       metadata: body.metadata ?? {},
       rawPayload: body.rawPayload ?? {},
       deliveryHandle: body.deliveryHandle ?? null,
@@ -823,9 +823,37 @@ function buildFastifyServer(service: AgentInboxService) {
   app.post("/deliveries/send", {
     schema: {
       tags: ["deliveries"],
-      body: jsonObjectSchema,
+      body: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "payload", "deliveryHandle"],
+            properties: {
+              kind: { type: "string", minLength: 1 },
+              payload: jsonObjectSchema,
+              deliveryHandle: deliveryHandleSchema,
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "payload", "provider", "surface", "targetRef"],
+            properties: {
+              kind: { type: "string", minLength: 1 },
+              payload: jsonObjectSchema,
+              provider: { type: "string", minLength: 1 },
+              surface: { type: "string", minLength: 1 },
+              targetRef: { type: "string", minLength: 1 },
+              threadRef: { type: "string" },
+              replyMode: { type: "string" },
+            },
+          },
+        ],
+      },
       response: {
         200: jsonObjectSchema,
+        400: errorResponseSchema,
       },
     },
   }, async (request) => service.sendDelivery(request.body as never));
