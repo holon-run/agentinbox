@@ -1,25 +1,9 @@
 import http from "node:http";
+import Fastify from "fastify";
+import swagger from "@fastify/swagger";
 import { AgentInboxService } from "./service";
 import { ActivationMode, DeliveryHandle, WatchInboxOptions } from "./model";
-import { asObject, jsonResponse } from "./util";
-
-async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.from(chunk));
-  }
-  const body = Buffer.concat(chunks).toString("utf8");
-  if (!body) {
-    return {};
-  }
-  return asObject(JSON.parse(body));
-}
-
-function send(res: http.ServerResponse, statusCode: number, data: unknown): void {
-  res.statusCode = statusCode;
-  res.setHeader("content-type", "application/json; charset=utf-8");
-  res.end(jsonResponse(data));
-}
+import { jsonResponse } from "./util";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
@@ -30,328 +14,910 @@ function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
   res.write(`${payload}\n\n`);
 }
 
-export function createServer(service: AgentInboxService): http.Server {
-  return http.createServer(async (req, res) => {
-    try {
-      if (!req.url || !req.method) {
-        send(res, 400, { error: "missing request metadata" });
-        return;
-      }
+const jsonObjectSchema = {
+  type: "object",
+  additionalProperties: true,
+} as const;
 
-      const url = new URL(req.url, "http://127.0.0.1");
+const errorResponseSchema = {
+  type: "object",
+  required: ["error"],
+  additionalProperties: false,
+  properties: {
+    error: { type: "string" },
+  },
+} as const;
 
-      if (req.method === "GET" && url.pathname === "/healthz") {
-        send(res, 200, { ok: true });
-        return;
-      }
+const deliveryHandleSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["provider", "surface", "targetRef"],
+  properties: {
+    provider: { type: "string", minLength: 1 },
+    surface: { type: "string", minLength: 1 },
+    targetRef: { type: "string", minLength: 1 },
+    threadRef: { type: "string" },
+    replyMode: { type: "string" },
+  },
+} as const;
 
-      if (req.method === "GET" && url.pathname === "/status") {
-        send(res, 200, service.status());
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/gc") {
-        send(res, 200, service.gc());
-        return;
-      }
-
-      if (req.method === "GET" && url.pathname === "/sources") {
-        send(res, 200, { sources: service.listSources() });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/sources") {
-        send(res, 200, await service.registerSource(await readJson(req) as never));
-        return;
-      }
-
-      const sourceMatch = url.pathname.match(/^\/sources\/([^/]+)$/);
-      if (req.method === "GET" && sourceMatch) {
-        send(res, 200, service.getSourceDetails(decodeURIComponent(sourceMatch[1])));
-        return;
-      }
-
-      const sourceSchemaMatch = url.pathname.match(/^\/source-types\/([^/]+)\/schema$/);
-      if (req.method === "GET" && sourceSchemaMatch) {
-        send(res, 200, service.getSourceSchema(decodeURIComponent(sourceSchemaMatch[1]) as never));
-        return;
-      }
-
-      const sourcePollMatch = url.pathname.match(/^\/sources\/([^/]+)\/poll$/);
-      if (req.method === "POST" && sourcePollMatch) {
-        send(res, 200, await service.pollSource(decodeURIComponent(sourcePollMatch[1])));
-        return;
-      }
-
-      const sourceEventsMatch = url.pathname.match(/^\/sources\/([^/]+)\/events$/);
-      if (req.method === "POST" && sourceEventsMatch) {
-        const body = await readJson(req);
-        const sourceId = decodeURIComponent(sourceEventsMatch[1]);
-        const sourceNativeId = parseRequiredString(body.sourceNativeId, "sources/events requires sourceNativeId");
-        const eventVariant = parseRequiredString(body.eventVariant, "sources/events requires eventVariant");
-        send(res, 200, await service.appendSourceEventByCaller(sourceId, {
-          sourceNativeId,
-          eventVariant,
-          occurredAt: parseOptionalString(body.occurredAt),
-          metadata: asObject(body.metadata),
-          rawPayload: asObject(body.rawPayload),
-          deliveryHandle: parseOptionalDeliveryHandle(body.deliveryHandle),
-        }));
-        return;
-      }
-
-      if (req.method === "GET" && url.pathname === "/agents") {
-        send(res, 200, { agents: service.listAgents() });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/agents") {
-        const body = await readJson(req);
-        const backend = parseRequiredString(body.backend, "agents requires backend");
-        send(res, 200, service.registerAgent({
-          agentId: parseOptionalString(body.agentId) ?? null,
-          forceRebind: parseOptionalBoolean(body.forceRebind) ?? false,
-          backend: backend as never,
-          runtimeKind: parseOptionalString(body.runtimeKind) as never,
-          runtimeSessionId: parseOptionalString(body.runtimeSessionId),
-          mode: "agent_prompt",
-          tmuxPaneId: parseOptionalString(body.tmuxPaneId),
-          tty: parseOptionalString(body.tty),
-          termProgram: parseOptionalString(body.termProgram),
-          itermSessionId: parseOptionalString(body.itermSessionId),
-          notifyLeaseMs: parseOptionalInteger(body.notifyLeaseMs) ?? null,
-        }));
-        return;
-      }
-
-      const agentMatch = url.pathname.match(/^\/agents\/([^/]+)$/);
-      if (req.method === "GET" && agentMatch) {
-        send(res, 200, service.getAgentDetails(decodeURIComponent(agentMatch[1])));
-        return;
-      }
-      if (req.method === "DELETE" && agentMatch) {
-        send(res, 200, service.removeAgent(decodeURIComponent(agentMatch[1])));
-        return;
-      }
-
-      const agentTargetsMatch = url.pathname.match(/^\/agents\/([^/]+)\/targets$/);
-      if (req.method === "GET" && agentTargetsMatch) {
-        send(res, 200, {
-          targets: service.listActivationTargets(decodeURIComponent(agentTargetsMatch[1])),
-        });
-        return;
-      }
-
-      if (req.method === "POST" && agentTargetsMatch) {
-        const body = await readJson(req);
-        const agentId = decodeURIComponent(agentTargetsMatch[1]);
-        const kind = parseRequiredString(body.kind, "agents/targets requires kind");
-        if (kind !== "webhook") {
-          send(res, 400, { error: `unsupported activation target kind: ${kind}` });
-          return;
-        }
-        const urlValue = parseRequiredString(body.url, "agents/targets requires url");
-        send(res, 200, service.addWebhookActivationTarget(agentId, {
-          url: urlValue,
-          activationMode: parseOptionalString(body.activationMode) as ActivationMode | undefined,
-          notifyLeaseMs: parseOptionalInteger(body.notifyLeaseMs) ?? null,
-        }));
-        return;
-      }
-
-      const agentTargetMatch = url.pathname.match(/^\/agents\/([^/]+)\/targets\/([^/]+)$/);
-      if (req.method === "DELETE" && agentTargetMatch) {
-        send(res, 200, service.removeActivationTarget(
-          decodeURIComponent(agentTargetMatch[1]),
-          decodeURIComponent(agentTargetMatch[2]),
-        ));
-        return;
-      }
-
-      if (req.method === "GET" && url.pathname === "/subscriptions") {
-        send(res, 200, {
-          subscriptions: service.listSubscriptions({
-            sourceId: url.searchParams.get("source_id") ?? undefined,
-            agentId: url.searchParams.get("agent_id") ?? undefined,
-          }),
-        });
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/subscriptions") {
-        const body = await readJson(req);
-        send(res, 200, await service.registerSubscription({
-          agentId: parseRequiredString(body.agentId, "subscriptions requires agentId"),
-          sourceId: parseRequiredString(body.sourceId, "subscriptions requires sourceId"),
-          filter: asObject(body.filter),
-          lifecycleMode: parseOptionalString(body.lifecycleMode) as never,
-          expiresAt: parseOptionalString(body.expiresAt) ?? null,
-          startPolicy: parseOptionalString(body.startPolicy) as never,
-          startOffset: parseOptionalInteger(body.startOffset),
-          startTime: parseOptionalString(body.startTime) ?? undefined,
-        }));
-        return;
-      }
-
-      const subscriptionMatch = url.pathname.match(/^\/subscriptions\/([^/]+)$/);
-      if (req.method === "GET" && subscriptionMatch) {
-        send(res, 200, await service.getSubscriptionDetails(decodeURIComponent(subscriptionMatch[1])));
-        return;
-      }
-      if (req.method === "DELETE" && subscriptionMatch) {
-        send(res, 200, await service.removeSubscription(decodeURIComponent(subscriptionMatch[1])));
-        return;
-      }
-
-      const subscriptionPollMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/poll$/);
-      if (req.method === "POST" && subscriptionPollMatch) {
-        send(res, 200, await service.pollSubscription(decodeURIComponent(subscriptionPollMatch[1])));
-        return;
-      }
-
-      const subscriptionLagMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/lag$/);
-      if (req.method === "GET" && subscriptionLagMatch) {
-        send(res, 200, await service.getSubscriptionLag(decodeURIComponent(subscriptionLagMatch[1])));
-        return;
-      }
-
-      const subscriptionResetMatch = url.pathname.match(/^\/subscriptions\/([^/]+)\/reset$/);
-      if (req.method === "POST" && subscriptionResetMatch) {
-        const body = await readJson(req);
-        const startPolicy = parseRequiredString(body.startPolicy, "subscriptions/reset requires startPolicy");
-        send(res, 200, await service.resetSubscription({
-          subscriptionId: decodeURIComponent(subscriptionResetMatch[1]),
-          startPolicy: startPolicy as never,
-          startOffset: parseOptionalInteger(body.startOffset),
-          startTime: parseOptionalString(body.startTime) ?? null,
-        }));
-        return;
-      }
-
-      const agentInboxMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox$/);
-      if (req.method === "GET" && agentInboxMatch) {
-        send(res, 200, service.getInboxDetailsByAgent(decodeURIComponent(agentInboxMatch[1])));
-        return;
-      }
-
-      const agentInboxItemsMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/items$/);
-      if (req.method === "GET" && agentInboxItemsMatch) {
-        send(res, 200, {
-          items: service.listInboxItems(decodeURIComponent(agentInboxItemsMatch[1]), {
-            afterItemId: url.searchParams.get("after_item_id") ?? undefined,
-            includeAcked: url.searchParams.has("include_acked")
-              ? url.searchParams.get("include_acked") === "true"
-              : undefined,
-          }),
-        });
-        return;
-      }
-
-      const agentInboxWatchMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/watch$/);
-      if (req.method === "GET" && agentInboxWatchMatch) {
-        const agentId = decodeURIComponent(agentInboxWatchMatch[1]);
-        const watchOptions: WatchInboxOptions = {
-          afterItemId: url.searchParams.get("after_item_id") ?? undefined,
-          includeAcked: url.searchParams.has("include_acked")
-            ? url.searchParams.get("include_acked") === "true"
-            : undefined,
-          heartbeatMs: url.searchParams.has("heartbeat_ms")
-            ? parsePositiveInteger(url.searchParams.get("heartbeat_ms"))
-            : undefined,
-        };
-
-        res.writeHead(200, {
-          "content-type": "text/event-stream; charset=utf-8",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-        });
-
-        const session = service.watchInbox(agentId, watchOptions, (event) => {
-          sendSse(res, event.event, event);
-        });
-        sendSse(res, "items", {
-          event: "items",
-          agentId,
-          items: session.initialItems,
-        });
-        session.start();
-
-        const heartbeatMs = watchOptions.heartbeatMs ?? 15_000;
-        const heartbeat = setInterval(() => {
-          sendSse(res, "heartbeat", {
-            event: "heartbeat",
-            agentId,
-            timestamp: new Date().toISOString(),
-          });
-        }, heartbeatMs);
-
-        const cleanup = () => {
-          clearInterval(heartbeat);
-          session.close();
-        };
-        req.on("close", cleanup);
-        req.on("error", cleanup);
-        return;
-      }
-
-      const agentInboxCompactMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/compact$/);
-      if (req.method === "POST" && agentInboxCompactMatch) {
-        send(res, 200, service.compactInbox(decodeURIComponent(agentInboxCompactMatch[1])));
-        return;
-      }
-
-      const agentInboxAckMatch = url.pathname.match(/^\/agents\/([^/]+)\/inbox\/ack$/);
-      if (req.method === "POST" && agentInboxAckMatch) {
-        const body = await readJson(req);
-        const itemIds = Array.isArray(body.itemIds) ? body.itemIds.map((itemId) => String(itemId)) : [];
-        const throughItemId = parseOptionalString(body.throughItemId);
-        const ackAll = parseOptionalBoolean(body.all) ?? false;
-        const modeCount = Number(itemIds.length > 0) + Number(Boolean(throughItemId)) + Number(ackAll);
-        if (modeCount !== 1) {
-          send(res, 400, { error: "inbox/ack accepts exactly one of itemIds, throughItemId, or all" });
-          return;
-        }
-        send(res, 200, service.ackInbox(decodeURIComponent(agentInboxAckMatch[1]), {
-          itemIds,
-          throughItemId: throughItemId ?? null,
-          all: ackAll,
-        }));
-        return;
-      }
-
-      if (req.method === "POST" && url.pathname === "/deliveries/send") {
-        send(res, 200, await service.sendDelivery(await readJson(req) as never));
-        return;
-      }
-      send(res, 404, { error: "not found" });
-    } catch (error) {
-      if (error instanceof SyntaxError) {
-        send(res, 400, { error: error.message });
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("unknown ")) {
-        send(res, 404, { error: message });
-        return;
-      }
-      if (isBadRequestError(message)) {
-        send(res, 400, { error: message });
-        return;
-      }
-      send(res, 500, { error: message });
-    }
+function buildFastifyServer(service: AgentInboxService) {
+  const app = Fastify({
+    logger: false,
+    ajv: {
+      customOptions: {
+        coerceTypes: false,
+      },
+    },
   });
+
+  void app.register(swagger, {
+    openapi: {
+      info: {
+        title: "AgentInbox Control Plane API",
+        version: "0.1.0",
+      },
+    },
+  });
+
+  app.get("/healthz", {
+    schema: {
+      tags: ["system"],
+      response: {
+        200: {
+          type: "object",
+          required: ["ok"],
+          properties: {
+            ok: { type: "boolean" },
+          },
+        },
+      },
+    },
+  }, async () => ({ ok: true }));
+
+  app.get("/status", {
+    schema: {
+      tags: ["system"],
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async () => service.status());
+
+  app.get("/openapi.json", {
+    schema: {
+      tags: ["system"],
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async () => app.swagger());
+
+  app.post("/gc", {
+    schema: {
+      tags: ["inbox"],
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async () => service.gc());
+
+  app.get("/sources", {
+    schema: {
+      tags: ["sources"],
+      response: {
+        200: {
+          type: "object",
+          required: ["sources"],
+          properties: {
+            sources: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async () => ({ sources: service.listSources() }));
+
+  app.post("/sources", {
+    schema: {
+      tags: ["sources"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sourceType", "sourceKey"],
+        properties: {
+          sourceType: { type: "string", minLength: 1 },
+          sourceKey: { type: "string", minLength: 1 },
+          configRef: { type: "string" },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.registerSource(request.body as never));
+
+  app.get("/sources/:sourceId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.getSourceDetails(decodeURIComponent(params.sourceId));
+  });
+
+  app.get("/source-types/:sourceType/schema", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceType"],
+        properties: {
+          sourceType: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceType: string };
+    return service.getSourceSchema(decodeURIComponent(params.sourceType) as never);
+  });
+
+  app.post("/sources/:sourceId/poll", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.pollSource(decodeURIComponent(params.sourceId));
+  });
+
+  app.post("/sources/:sourceId/events", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sourceNativeId", "eventVariant"],
+        properties: {
+          sourceNativeId: { type: "string", minLength: 1 },
+          eventVariant: { type: "string", minLength: 1 },
+          occurredAt: { type: "string", minLength: 1 },
+          metadata: jsonObjectSchema,
+          rawPayload: jsonObjectSchema,
+          deliveryHandle: deliveryHandleSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    const body = request.body as {
+      sourceNativeId: string;
+      eventVariant: string;
+      occurredAt?: string;
+      metadata?: Record<string, unknown>;
+      rawPayload?: Record<string, unknown>;
+      deliveryHandle?: DeliveryHandle;
+    };
+    return service.appendSourceEventByCaller(decodeURIComponent(params.sourceId), {
+      sourceNativeId: body.sourceNativeId,
+      eventVariant: body.eventVariant,
+      occurredAt: optionalString(body.occurredAt),
+      metadata: body.metadata ?? {},
+      rawPayload: body.rawPayload ?? {},
+      deliveryHandle: body.deliveryHandle ?? null,
+    });
+  });
+
+  app.get("/agents", {
+    schema: {
+      tags: ["agents"],
+      response: {
+        200: {
+          type: "object",
+          required: ["agents"],
+          properties: {
+            agents: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async () => ({ agents: service.listAgents() }));
+
+  app.post("/agents", {
+    schema: {
+      tags: ["agents"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["backend"],
+        properties: {
+          agentId: { type: "string" },
+          forceRebind: { type: "boolean" },
+          backend: { type: "string", minLength: 1 },
+          runtimeKind: { type: "string" },
+          runtimeSessionId: { type: "string" },
+          tmuxPaneId: { type: "string" },
+          tty: { type: "string" },
+          termProgram: { type: "string" },
+          itermSessionId: { type: "string" },
+          notifyLeaseMs: { type: "integer", minimum: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const body = request.body as Record<string, unknown>;
+    return service.registerAgent({
+      agentId: optionalString(body.agentId) ?? null,
+      forceRebind: body.forceRebind === true,
+      backend: String(body.backend) as never,
+      runtimeKind: optionalString(body.runtimeKind) as never,
+      runtimeSessionId: optionalString(body.runtimeSessionId),
+      mode: "agent_prompt",
+      tmuxPaneId: optionalString(body.tmuxPaneId),
+      tty: optionalString(body.tty),
+      termProgram: optionalString(body.termProgram),
+      itermSessionId: optionalString(body.itermSessionId),
+      notifyLeaseMs: typeof body.notifyLeaseMs === "number" ? body.notifyLeaseMs : null,
+    });
+  });
+
+  app.get("/agents/:agentId", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.getAgentDetails(decodeURIComponent(params.agentId));
+  });
+
+  app.delete("/agents/:agentId", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.removeAgent(decodeURIComponent(params.agentId));
+  });
+
+  app.get("/agents/:agentId/targets", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["targets"],
+          properties: {
+            targets: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return { targets: service.listActivationTargets(decodeURIComponent(params.agentId)) };
+  });
+
+  app.post("/agents/:agentId/targets", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "url"],
+        properties: {
+          kind: { type: "string", enum: ["webhook"] },
+          url: { type: "string", minLength: 1 },
+          activationMode: { type: "string" },
+          notifyLeaseMs: { type: "integer", minimum: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const body = request.body as {
+      url: string;
+      activationMode?: ActivationMode;
+      notifyLeaseMs?: number;
+    };
+    return service.addWebhookActivationTarget(decodeURIComponent(params.agentId), {
+      url: body.url,
+      activationMode: body.activationMode,
+      notifyLeaseMs: body.notifyLeaseMs ?? null,
+    });
+  });
+
+  app.delete("/agents/:agentId/targets/:targetId", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId", "targetId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          targetId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; targetId: string };
+    return service.removeActivationTarget(decodeURIComponent(params.agentId), decodeURIComponent(params.targetId));
+  });
+
+  app.get("/subscriptions", {
+    schema: {
+      tags: ["subscriptions"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          source_id: { type: "string" },
+          agent_id: { type: "string" },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["subscriptions"],
+          properties: {
+            subscriptions: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const query = request.query as { source_id?: string; agent_id?: string };
+    return {
+      subscriptions: service.listSubscriptions({
+        sourceId: query.source_id,
+        agentId: query.agent_id,
+      }),
+    };
+  });
+
+  app.post("/subscriptions", {
+    schema: {
+      tags: ["subscriptions"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["agentId", "sourceId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          sourceId: { type: "string", minLength: 1 },
+          filter: jsonObjectSchema,
+          lifecycleMode: { type: "string" },
+          expiresAt: { type: "string" },
+          startPolicy: { type: "string" },
+          startOffset: { type: "integer" },
+          startTime: { type: "string" },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const body = request.body as Record<string, unknown>;
+    return service.registerSubscription({
+      agentId: String(body.agentId),
+      sourceId: String(body.sourceId),
+      filter: (body.filter as Record<string, unknown> | undefined) ?? {},
+      lifecycleMode: optionalString(body.lifecycleMode) as never,
+      expiresAt: optionalString(body.expiresAt) ?? null,
+      startPolicy: optionalString(body.startPolicy) as never,
+      startOffset: typeof body.startOffset === "number" ? body.startOffset : undefined,
+      startTime: optionalString(body.startTime) ?? undefined,
+    });
+  });
+
+  app.get("/subscriptions/:subscriptionId", {
+    schema: {
+      tags: ["subscriptions"],
+      params: {
+        type: "object",
+        required: ["subscriptionId"],
+        properties: {
+          subscriptionId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { subscriptionId: string };
+    return service.getSubscriptionDetails(decodeURIComponent(params.subscriptionId));
+  });
+
+  app.delete("/subscriptions/:subscriptionId", {
+    schema: {
+      tags: ["subscriptions"],
+      params: {
+        type: "object",
+        required: ["subscriptionId"],
+        properties: {
+          subscriptionId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { subscriptionId: string };
+    return service.removeSubscription(decodeURIComponent(params.subscriptionId));
+  });
+
+  app.post("/subscriptions/:subscriptionId/poll", {
+    schema: {
+      tags: ["subscriptions"],
+      params: {
+        type: "object",
+        required: ["subscriptionId"],
+        properties: {
+          subscriptionId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { subscriptionId: string };
+    return service.pollSubscription(decodeURIComponent(params.subscriptionId));
+  });
+
+  app.get("/subscriptions/:subscriptionId/lag", {
+    schema: {
+      tags: ["subscriptions"],
+      params: {
+        type: "object",
+        required: ["subscriptionId"],
+        properties: {
+          subscriptionId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { subscriptionId: string };
+    return service.getSubscriptionLag(decodeURIComponent(params.subscriptionId));
+  });
+
+  app.post("/subscriptions/:subscriptionId/reset", {
+    schema: {
+      tags: ["subscriptions"],
+      params: {
+        type: "object",
+        required: ["subscriptionId"],
+        properties: {
+          subscriptionId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["startPolicy"],
+        properties: {
+          startPolicy: { type: "string", minLength: 1 },
+          startOffset: { type: "integer" },
+          startTime: { type: "string" },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { subscriptionId: string };
+    const body = request.body as { startPolicy: string; startOffset?: number; startTime?: string };
+    return service.resetSubscription({
+      subscriptionId: decodeURIComponent(params.subscriptionId),
+      startPolicy: body.startPolicy as never,
+      startOffset: body.startOffset,
+      startTime: body.startTime ?? null,
+    });
+  });
+
+  app.get("/agents/:agentId/inbox", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.getInboxDetailsByAgent(decodeURIComponent(params.agentId));
+  });
+
+  app.get("/agents/:agentId/inbox/items", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          after_item_id: { type: "string" },
+          include_acked: { type: "string", enum: ["true", "false"] },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["items"],
+          properties: {
+            items: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const query = request.query as { after_item_id?: string; include_acked?: "true" | "false" };
+    return {
+      items: service.listInboxItems(decodeURIComponent(params.agentId), {
+        afterItemId: query.after_item_id,
+        includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
+      }),
+    };
+  });
+
+  app.get("/agents/:agentId/inbox/watch", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          after_item_id: { type: "string" },
+          include_acked: { type: "string", enum: ["true", "false"] },
+          heartbeat_ms: { type: "string", pattern: "^[1-9][0-9]*$" },
+        },
+      },
+      response: {
+        200: { type: "string" },
+      },
+    },
+  }, async (request, reply) => {
+    const params = request.params as { agentId: string };
+    const query = request.query as {
+      after_item_id?: string;
+      include_acked?: "true" | "false";
+      heartbeat_ms?: string;
+    };
+    const agentId = decodeURIComponent(params.agentId);
+    const watchOptions: WatchInboxOptions = {
+      afterItemId: query.after_item_id,
+      includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
+      heartbeatMs: query.heartbeat_ms ? Number(query.heartbeat_ms) : undefined,
+    };
+
+    reply.hijack();
+    const raw = reply.raw;
+    raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    });
+
+    const session = service.watchInbox(agentId, watchOptions, (event) => {
+      sendSse(raw, event.event, event);
+    });
+    sendSse(raw, "items", {
+      event: "items",
+      agentId,
+      items: session.initialItems,
+    });
+    session.start();
+
+    const heartbeatMs = watchOptions.heartbeatMs ?? 15_000;
+    const heartbeat = setInterval(() => {
+      sendSse(raw, "heartbeat", {
+        event: "heartbeat",
+        agentId,
+        timestamp: new Date().toISOString(),
+      });
+    }, heartbeatMs);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      session.close();
+      raw.end();
+    };
+    request.raw.on("close", cleanup);
+    request.raw.on("error", cleanup);
+  });
+
+  app.post("/agents/:agentId/inbox/compact", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.compactInbox(decodeURIComponent(params.agentId));
+  });
+
+  app.post("/agents/:agentId/inbox/ack", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["itemIds"],
+            properties: {
+              itemIds: {
+                type: "array",
+                minItems: 1,
+                items: { type: "string", minLength: 1 },
+              },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["throughItemId"],
+            properties: {
+              throughItemId: { type: "string", minLength: 1 },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["all"],
+            properties: {
+              all: { type: "boolean", const: true },
+            },
+          },
+        ],
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const body = request.body as {
+      itemIds?: string[];
+      throughItemId?: string;
+      all?: boolean;
+    };
+    return service.ackInbox(decodeURIComponent(params.agentId), {
+      itemIds: body.itemIds ?? [],
+      throughItemId: body.throughItemId ?? null,
+      all: body.all ?? false,
+    });
+  });
+
+  app.post("/deliveries/send", {
+    schema: {
+      tags: ["deliveries"],
+      body: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "payload", "deliveryHandle"],
+            properties: {
+              kind: { type: "string", minLength: 1 },
+              payload: jsonObjectSchema,
+              deliveryHandle: deliveryHandleSchema,
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "payload", "provider", "surface", "targetRef"],
+            properties: {
+              kind: { type: "string", minLength: 1 },
+              payload: jsonObjectSchema,
+              provider: { type: "string", minLength: 1 },
+              surface: { type: "string", minLength: 1 },
+              targetRef: { type: "string", minLength: 1 },
+              threadRef: { type: "string" },
+              replyMode: { type: "string" },
+            },
+          },
+        ],
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.sendDelivery(request.body as never));
+
+  app.setNotFoundHandler((_request, reply) => {
+    void reply.code(404).send({ error: "not found" });
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if ((error as { validation?: unknown }).validation) {
+      void reply.code(400).send({ error: normalizeValidationMessage(message) });
+      return;
+    }
+    if (message.startsWith("unknown ")) {
+      void reply.code(404).send({ error: message });
+      return;
+    }
+    if (isBadRequestError(message)) {
+      void reply.code(400).send({ error: message });
+      return;
+    }
+    void reply.code(500).send({ error: message });
+  });
+
+  return app;
 }
 
-function parseRequiredString(value: unknown, message: string): string {
-  const parsed = parseOptionalString(value);
-  if (!parsed) {
-    throw new Error(message);
-  }
-  return parsed;
+export function createServer(service: AgentInboxService): http.Server {
+  const app = buildFastifyServer(service);
+  const ready = app.ready();
+  const server = http.createServer((req, res) => {
+    void Promise.resolve(ready)
+      .then(() => {
+        app.routing(req, res);
+      })
+      .catch((error: unknown) => {
+        res.statusCode = 500;
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        const message = error instanceof Error ? error.message : String(error);
+        res.end(jsonResponse({ error: message }));
+      });
+  });
+
+  const originalClose = server.close.bind(server);
+  const wrappedClose: typeof server.close = ((callback?: (err?: Error) => void) => {
+    return originalClose((closeError?: Error) => {
+      void app
+        .close()
+        .then(() => callback?.(closeError))
+        .catch((appCloseError) => {
+          const normalized = appCloseError instanceof Error
+            ? appCloseError
+            : new Error(String(appCloseError));
+          callback?.(closeError ?? normalized);
+        });
+    });
+  }) as typeof server.close;
+  server.close = wrappedClose;
+
+  return server;
 }
 
-function parseOptionalString(value: unknown): string | undefined {
+function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -359,33 +925,17 @@ function parseOptionalString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function parseOptionalInteger(value: unknown): number | undefined {
-  if (value == null) {
-    return undefined;
+function normalizeValidationMessage(message: string): string {
+  if (message.includes("must be boolean")) {
+    return "expected boolean";
   }
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed)) {
-    throw new Error(`expected integer, received ${String(value)}`);
+  if (message.includes("must be integer")) {
+    return "expected integer";
   }
-  return parsed;
-}
-
-function parseOptionalBoolean(value: unknown): boolean | undefined {
-  if (value == null) {
-    return undefined;
+  if (message.includes("must be object")) {
+    return "expected object";
   }
-  if (typeof value !== "boolean") {
-    throw new Error(`expected boolean, received ${String(value)}`);
-  }
-  return value;
-}
-
-function parsePositiveInteger(value: unknown): number {
-  const parsed = parseOptionalInteger(value);
-  if (parsed == null || parsed <= 0) {
-    throw new Error(`expected positive integer, received ${String(value)}`);
-  }
-  return parsed;
+  return message;
 }
 
 function isBadRequestError(message: string): boolean {
@@ -413,21 +963,4 @@ function isBadRequestError(message: string): boolean {
     message.includes("requires a supported terminal context") ||
     message.includes("belongs to agent")
   );
-}
-
-function parseOptionalDeliveryHandle(value: unknown): DeliveryHandle | null {
-  if (!value) {
-    return null;
-  }
-  const object = asObject(value);
-  const provider = parseRequiredString(object.provider, "deliveryHandle.provider is required");
-  const surface = parseRequiredString(object.surface, "deliveryHandle.surface is required");
-  const targetRef = parseRequiredString(object.targetRef, "deliveryHandle.targetRef is required");
-  return {
-    provider,
-    surface,
-    targetRef,
-    threadRef: parseOptionalString(object.threadRef) ?? null,
-    replyMode: parseOptionalString(object.replyMode) ?? null,
-  };
 }
