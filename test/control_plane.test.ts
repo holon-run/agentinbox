@@ -192,6 +192,11 @@ test("unix socket control plane replaces stale socket files and serves requests"
       const health = await client.request<{ ok: boolean }>("/healthz", undefined, "GET");
       assert.equal(health.statusCode, 200);
       assert.deepEqual(health.data, { ok: true });
+
+      const openapi = await client.request<Record<string, unknown>>("/openapi.json", undefined, "GET");
+      assert.equal(openapi.statusCode, 200);
+      assert.equal(typeof openapi.data.openapi, "string");
+      assert.ok(typeof openapi.data.paths === "object");
     } finally {
       await started.close();
     }

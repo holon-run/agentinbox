@@ -12,6 +12,7 @@ going forward.
 
 - `GET /healthz`
 - `GET /status`
+- `GET /openapi.json`
 - `POST /gc`
 
 ## Sources
@@ -69,6 +70,9 @@ going forward.
 ```
 
 ## Notes
+
+- The OpenAPI contract is generated from the same Fastify route schemas used for
+  runtime validation and is served at `GET /openapi.json`.
 
 - `local_event` is the only source type that supports direct manual append through
   `POST /sources/{sourceId}/events`.
