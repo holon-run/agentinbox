@@ -806,6 +806,14 @@ test("control plane accepts remote_source registration", async () => {
         socketPath,
         source: "flag",
       });
+      const invalid = await client.request<{ error: string }>("/sources", {
+        sourceType: "remote_source",
+        sourceKey: "invalid-remote",
+        config: {},
+      });
+      assert.equal(invalid.statusCode, 400);
+      assert.match(invalid.data.error, /remote_source requires config.profilePath/);
+
       const response = await client.request<{ error: string }>("/sources", {
         sourceType: "remote_source",
         sourceKey: "remote-demo",
@@ -815,6 +823,13 @@ test("control plane accepts remote_source registration", async () => {
         },
       });
       assert.equal(response.statusCode, 200);
+      const sourceId = (response.data as { sourceId?: string; source?: { sourceId?: string } }).sourceId
+        ?? (response.data as { source?: { sourceId?: string } }).source?.sourceId;
+      assert.equal(typeof sourceId, "string");
+
+      const removed = await client.request<{ removed: boolean }>(`/sources/${encodeURIComponent(sourceId!)}`, undefined, "DELETE");
+      assert.equal(removed.statusCode, 200);
+      assert.equal(removed.data.removed, true);
     } finally {
       await started.close();
     }

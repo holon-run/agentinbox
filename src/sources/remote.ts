@@ -138,6 +138,17 @@ export class RemoteSourceRuntime {
     return this.syncSource(sourceId, true);
   }
 
+  async removeSource(sourceId: string): Promise<void> {
+    const source = this.store.getSource(sourceId);
+    if (!source || !REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return;
+    }
+    const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+    const namespace = checkpoint.managedSource?.namespace ?? MANAGED_SOURCE_NAMESPACE;
+    const sourceKey = checkpoint.managedSource?.sourceKey ?? `${source.sourceType}:${source.sourceKey}`;
+    await this.client.sourceDelete(namespace, sourceKey);
+  }
+
   status(): Record<string, unknown> {
     return {
       activeSourceIds: Array.from(this.inFlight.values()).sort(),

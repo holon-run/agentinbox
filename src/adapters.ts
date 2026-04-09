@@ -15,6 +15,7 @@ import { RemoteSourceProfileRegistry } from "./sources/remote_profiles";
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
   pollSource?(sourceId: string): Promise<SourcePollResult>;
+  removeSource?(sourceId: string): Promise<void>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   status?(): Record<string, unknown>;
@@ -41,6 +42,7 @@ class NoopSourceAdapter implements SourceAdapter {
       note: `${this.sourceType} source has no background poller`,
     };
   }
+
 }
 
 class NoopDeliveryAdapter implements DeliveryAdapter {
@@ -122,6 +124,11 @@ export class AdapterRegistry {
       };
     }
     return adapter.pollSource(source.sourceId);
+  }
+
+  async removeSource(source: SubscriptionSource): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
+    await adapter.removeSource?.(source.sourceId);
   }
 
   status(): Record<string, unknown> {

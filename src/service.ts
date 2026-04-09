@@ -195,6 +195,20 @@ export class AgentInboxService {
     return getSourceSchema(sourceType);
   }
 
+  async removeSource(sourceId: string): Promise<{ removed: boolean }> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      return { removed: false };
+    }
+    const subscriptions = this.store.listSubscriptionsForSource(sourceId);
+    if (subscriptions.length > 0) {
+      throw new Error("source remove requires no active subscriptions");
+    }
+    await this.adapters.removeSource(source);
+    this.store.deleteSource(sourceId);
+    return { removed: true };
+  }
+
   registerAgent(input: RegisterAgentInput): RegisterAgentResult {
     validateNotifyLeaseMs(input.notifyLeaseMs);
     validateTerminalRegistration(input);

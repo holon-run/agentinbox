@@ -436,6 +436,37 @@ test("remote_source registration succeeds", async () => {
   }
 });
 
+test("removeSource rejects when source still has subscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "remove-guard-demo",
+      config: {},
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remove-guard-thread",
+      tmuxPaneId: "%901",
+    });
+    await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await assert.rejects(
+      service.removeSource(source.sourceId),
+      /source remove requires no active subscriptions/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("subscription remove deletes the subscription, its consumer, and transient runtime state", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const terminalDispatcher = new RecordingTerminalDispatcher();

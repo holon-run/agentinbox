@@ -13,6 +13,7 @@ import { TerminalDispatcher } from "../src/terminal";
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   private readonly streams = new Map<string, Array<{ offset: number; raw_payload: unknown }>>();
   private readonly offsets = new Map<string, number>();
+  public readonly deletedSources: Array<{ namespace: string; sourceKey: string }> = [];
 
   push(streamId: string, payload: unknown): void {
     const currentOffset = this.offsets.get(streamId) ?? 0;
@@ -52,6 +53,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }
 
   async sourceDelete(_namespace: string, _sourceKey: string): Promise<void> {
+    this.deletedSources.push({ namespace: _namespace, sourceKey: _sourceKey });
     return;
   }
 
@@ -244,6 +246,55 @@ test("github_repo source uses remote runtime builtin profile mapping", async () 
     assert.equal(items.length, 1);
     assert.equal(items[0]?.eventVariant, "IssueCommentEvent.created");
     assert.equal(items[0]?.deliveryHandle?.provider, "github");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeSource deletes managed source binding when no subscriptions remain", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "demo-remove.mjs"),
+      `export default {
+  id: "demo.remove",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: "demo:" + raw.id, eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "remove-key",
+      config: {
+        profilePath: "demo-remove.mjs",
+        profileConfig: {},
+      },
+    });
+    const removed = await service.removeSource(source.sourceId);
+    assert.equal(removed.removed, true);
+    assert.equal(store.getSource(source.sourceId), null);
+    assert.equal(fake.deletedSources.length, 1);
+    assert.equal(fake.deletedSources[0]?.sourceKey, "remote_source:remove-key");
   } finally {
     await service.stop();
     store.close();

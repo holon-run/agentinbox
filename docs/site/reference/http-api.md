@@ -20,6 +20,7 @@ going forward.
 - `GET /sources`
 - `POST /sources`
 - `GET /sources/{sourceId}`
+- `DELETE /sources/{sourceId}`
 - `GET /source-types/{sourceType}/schema`
 - `POST /sources/{sourceId}/poll`
 - `POST /sources/{sourceId}/events`

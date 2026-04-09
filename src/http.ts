@@ -158,6 +158,26 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.getSourceDetails(decodeURIComponent(params.sourceId));
   });
 
+  app.delete("/sources/:sourceId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.removeSource(decodeURIComponent(params.sourceId));
+  });
+
   app.get("/source-types/:sourceType/schema", {
     schema: {
       tags: ["sources"],
@@ -942,6 +962,7 @@ function isBadRequestError(message: string): boolean {
   return (
     message.startsWith("manual append is not supported") ||
     message.startsWith("sources/events requires") ||
+    message.startsWith("source remove requires") ||
     message.startsWith("deliveryHandle requires") ||
     message.startsWith("subscriptions/reset requires") ||
     message.startsWith("agents requires") ||
@@ -957,6 +978,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("expected positive integer") ||
     message.startsWith("notifyLeaseMs must be a positive integer") ||
     message.startsWith("invalid webhook activation target") ||
+    message.startsWith("remote_source requires") ||
+    message.startsWith("remote_source profile") ||
     message.includes("requires tmuxPaneId") ||
     message.includes("requires iTerm2 session identity") ||
     message.includes("requires a supported terminal context") ||
