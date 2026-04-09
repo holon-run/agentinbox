@@ -25,13 +25,25 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     this.streams.set(streamId, bucket);
   }
 
-  async sourceEnsure(args: { namespace: string; sourceKey: string }): Promise<{ namespace: string; source_key: string; stream_id: string; status: string }> {
+  async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    status: string;
+    reused: boolean;
+    replaced_previous: boolean;
+  }> {
+    void args.spec;
     const streamId = `stream:${args.sourceKey}`;
     return {
       namespace: args.namespace,
       source_key: args.sourceKey,
+      run_id: `run:${args.sourceKey}`,
       stream_id: streamId,
       status: "running",
+      reused: true,
+      replaced_previous: false,
     };
   }
 

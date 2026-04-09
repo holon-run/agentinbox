@@ -41,12 +41,24 @@ class FailingTerminalDispatcher extends RecordingTerminalDispatcher {
 }
 
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
-  async sourceEnsure(args: { namespace: string; sourceKey: string }): Promise<{ namespace: string; source_key: string; stream_id: string; status: string }> {
+  async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    status: string;
+    reused: boolean;
+    replaced_previous: boolean;
+  }> {
+    void args.spec;
     return {
       namespace: args.namespace,
       source_key: args.sourceKey,
+      run_id: `run:${args.sourceKey}`,
       stream_id: `stream:${args.sourceKey}`,
       status: "running",
+      reused: true,
+      replaced_previous: false,
     };
   }
 

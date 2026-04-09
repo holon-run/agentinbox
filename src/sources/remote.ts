@@ -1,4 +1,4 @@
-import { RuntimeInvokeOptions, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
+import { ManagedSourceEnsureResponse, ManagedStreamReadResponse, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import { AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
@@ -45,32 +45,13 @@ export interface UxcRemoteSourceClient {
   }): Promise<ManagedStreamReadResponse>;
 }
 
-interface ManagedSourceEnsureResponse {
-  namespace: string;
-  source_key: string;
-  stream_id: string;
-  status: string;
-}
-
-interface ManagedStreamReadResponse {
-  stream_id: string;
-  events: Array<{
-    stream_id: string;
-    offset: number;
-    ingested_at_unix: number;
-    raw_payload: unknown;
-  }>;
-  next_after_offset: number;
-  has_more: boolean;
-}
-
 export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
   constructor(private readonly client: UxcDaemonClient = new UxcDaemonClient({ env: process.env })) {}
 
   sourceEnsure(args: { namespace: string; sourceKey: string; spec: ManagedSourceSpec }): Promise<ManagedSourceEnsureResponse> {
-    return this.client.request("source.ensure", {
+    return this.client.sourceEnsure({
       namespace: args.namespace,
-      source_key: args.sourceKey,
+      sourceKey: args.sourceKey,
       spec: {
         ...args.spec,
         operation_id: args.spec.operation_id ?? null,
@@ -80,29 +61,23 @@ export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
         subprotocols: args.spec.subprotocols ?? [],
         initial_text_frames: args.spec.initial_text_frames ?? [],
         poll_config: args.spec.poll_config ?? null,
-        options: normalizeRuntimeOptions(args.spec.options),
+        options: args.spec.options,
       },
     });
   }
 
   async sourceStop(namespace: string, sourceKey: string): Promise<void> {
-    await this.client.request("source.stop", {
-      namespace,
-      source_key: sourceKey,
-    });
+    await this.client.sourceStop(namespace, sourceKey);
   }
 
   async sourceDelete(namespace: string, sourceKey: string): Promise<void> {
-    await this.client.request("source.delete", {
-      namespace,
-      source_key: sourceKey,
-    });
+    await this.client.sourceDelete(namespace, sourceKey);
   }
 
   streamRead(args: { streamId: string; afterOffset?: number; limit?: number }): Promise<ManagedStreamReadResponse> {
-    return this.client.request("stream.read", {
-      stream_id: args.streamId,
-      after_offset: args.afterOffset ?? 0,
+    return this.client.streamRead({
+      streamId: args.streamId,
+      afterOffset: args.afterOffset ?? 0,
       limit: args.limit ?? 100,
     });
   }
@@ -349,23 +324,4 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
-}
-
-function normalizeRuntimeOptions(options: RuntimeInvokeOptions | undefined): Record<string, unknown> {
-  return {
-    auth: options?.auth ?? null,
-    inject_env: options?.inject_env ?? [],
-    no_cache: options?.no_cache ?? false,
-    cache_ttl: options?.cache_ttl ?? null,
-    refresh_schema: options?.refresh_schema ?? false,
-    schema_url: options?.schema_url ?? null,
-    link_name: options?.link_name ?? null,
-    link_skill: options?.link_skill ?? null,
-    link_skill_doc: options?.link_skill_doc ?? null,
-    link_skill_path: options?.link_skill_path ?? null,
-    schema_mapping_file: options?.schema_mapping_file ?? null,
-    daemon_exclusive: options?.daemon_exclusive ?? [],
-    daemon_idle_ttl: options?.daemon_idle_ttl ?? null,
-    request_headers: options?.request_headers ?? {},
-  };
 }
