@@ -148,6 +148,17 @@ Build docs directory indexes:
 npm run docs:index
 ```
 
+Generate new SQLite migrations after schema changes:
+
+```bash
+npm run db:migrations:generate
+```
+
+`AgentInbox` now upgrades SQLite state with versioned SQL migrations in
+`drizzle/migrations`. On upgrade with pending migrations, the daemon creates a
+local backup next to the DB file (for example,
+`~/.agentinbox/agentinbox.sqlite.backup-<timestamp>`).
+
 ## Release
 
 `AgentInbox` releases are tag-driven.
