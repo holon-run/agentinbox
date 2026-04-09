@@ -1,4 +1,4 @@
-import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
+import { RuntimeInvokeOptions, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import { AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
@@ -16,27 +16,6 @@ const DEFAULT_SYNC_INTERVAL_MS = 2_000;
 const DEFAULT_BACKOFF_BASE_SECS = 2;
 const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 const MANAGED_SOURCE_NAMESPACE = "agentinbox";
-
-interface ManagedSourceEnsureResponse {
-  namespace: string;
-  source_key: string;
-  stream_id: string;
-  status: string;
-}
-
-interface ManagedStreamEvent {
-  stream_id: string;
-  offset: number;
-  ingested_at_unix: number;
-  raw_payload: unknown;
-}
-
-interface ManagedStreamReadResponse {
-  stream_id: string;
-  events: ManagedStreamEvent[];
-  next_after_offset: number;
-  has_more: boolean;
-}
 
 interface RemoteSourceCheckpoint {
   managedSource?: {
@@ -66,6 +45,25 @@ export interface UxcRemoteSourceClient {
   }): Promise<ManagedStreamReadResponse>;
 }
 
+interface ManagedSourceEnsureResponse {
+  namespace: string;
+  source_key: string;
+  stream_id: string;
+  status: string;
+}
+
+interface ManagedStreamReadResponse {
+  stream_id: string;
+  events: Array<{
+    stream_id: string;
+    offset: number;
+    ingested_at_unix: number;
+    raw_payload: unknown;
+  }>;
+  next_after_offset: number;
+  has_more: boolean;
+}
+
 export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
   constructor(private readonly client: UxcDaemonClient = new UxcDaemonClient({ env: process.env })) {}
 
@@ -75,13 +73,14 @@ export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
       source_key: args.sourceKey,
       spec: {
         ...args.spec,
+        operation_id: args.spec.operation_id ?? null,
         resource_uri: args.spec.resource_uri ?? null,
         read_resource: args.spec.read_resource ?? false,
         transport_hint: args.spec.transport_hint ?? null,
         subprotocols: args.spec.subprotocols ?? [],
         initial_text_frames: args.spec.initial_text_frames ?? [],
         poll_config: args.spec.poll_config ?? null,
-        options: args.spec.options ?? {},
+        options: normalizeRuntimeOptions(args.spec.options),
       },
     });
   }
@@ -350,4 +349,23 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
+}
+
+function normalizeRuntimeOptions(options: RuntimeInvokeOptions | undefined): Record<string, unknown> {
+  return {
+    auth: options?.auth ?? null,
+    inject_env: options?.inject_env ?? [],
+    no_cache: options?.no_cache ?? false,
+    cache_ttl: options?.cache_ttl ?? null,
+    refresh_schema: options?.refresh_schema ?? false,
+    schema_url: options?.schema_url ?? null,
+    link_name: options?.link_name ?? null,
+    link_skill: options?.link_skill ?? null,
+    link_skill_doc: options?.link_skill_doc ?? null,
+    link_skill_path: options?.link_skill_path ?? null,
+    schema_mapping_file: options?.schema_mapping_file ?? null,
+    daemon_exclusive: options?.daemon_exclusive ?? [],
+    daemon_idle_ttl: options?.daemon_idle_ttl ?? null,
+    request_headers: options?.request_headers ?? {},
+  };
 }
