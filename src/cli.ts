@@ -388,7 +388,9 @@ async function runServe(args: string[]): Promise<void> {
 
   const store = await AgentInboxStore.open(serveConfig.dbPath);
   let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir: serveConfig.homeDir,
+  });
   service = new AgentInboxService(store, adapters);
   const server = createServer(service);
   await adapters.start();

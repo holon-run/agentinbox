@@ -147,9 +147,6 @@ export class AgentInboxService {
   }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
-    if (input.sourceType === "remote_source") {
-      throw new Error("source type is reserved and not yet supported: remote_source");
-    }
     const existing = this.store.getSourceByKey(input.sourceType, input.sourceKey);
     if (existing) {
       return existing;

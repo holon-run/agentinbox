@@ -9,8 +9,8 @@ import {
 } from "../model";
 import { AgentInboxStore } from "../store";
 
-const GITHUB_ENDPOINT = "https://api.github.com";
-const DEFAULT_EVENT_TYPES = [
+export const GITHUB_ENDPOINT = "https://api.github.com";
+export const DEFAULT_GITHUB_EVENT_TYPES = [
   "IssuesEvent",
   "IssueCommentEvent",
   "PullRequestEvent",
@@ -378,7 +378,7 @@ export function normalizeGithubRepoEvent(
   }
   const event = raw as Record<string, unknown>;
   const eventType = asString(event.type);
-  if (!eventType || !(config.eventTypes ?? DEFAULT_EVENT_TYPES).includes(eventType)) {
+  if (!eventType || !(config.eventTypes ?? DEFAULT_GITHUB_EVENT_TYPES).includes(eventType)) {
     return null;
   }
   const eventId = asString(event.id);
@@ -469,7 +469,7 @@ function buildGithubDeliveryHandle(
   };
 }
 
-function parseGithubSourceConfig(source: SubscriptionSource): GithubSourceConfig {
+export function parseGithubSourceConfig(source: SubscriptionSource): GithubSourceConfig {
   const config = source.config ?? {};
   const owner = asString(config.owner);
   const repo = asString(config.repo);
@@ -484,7 +484,7 @@ function parseGithubSourceConfig(source: SubscriptionSource): GithubSourceConfig
       uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
       pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? 30,
       perPage: asNumber(config.perPage) ?? 10,
-      eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_EVENT_TYPES,
+      eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_GITHUB_EVENT_TYPES,
     };
   }
   return {
@@ -493,7 +493,7 @@ function parseGithubSourceConfig(source: SubscriptionSource): GithubSourceConfig
     uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
     pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? 30,
     perPage: asNumber(config.perPage) ?? 10,
-    eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_EVENT_TYPES,
+    eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_GITHUB_EVENT_TYPES,
   };
 }
 
