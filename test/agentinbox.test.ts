@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
+import initSqlJs from "sql.js";
 import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
 import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget } from "../src/model";
@@ -78,6 +79,66 @@ async function registerTmuxAgent(service: AgentInboxService, suffix: string): Pr
     targetId: registered.terminalTarget.targetId,
   };
 }
+
+async function createLegacyDb(dbPath: string): Promise<void> {
+  const SQL = await initSqlJs({
+    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
+  });
+  const db = new SQL.Database();
+  const initialMigrationPath = path.join(__dirname, "..", "drizzle", "migrations", "0000_initial.sql");
+  db.exec(fs.readFileSync(initialMigrationPath, "utf8"));
+  db.exec("pragma user_version = 12;");
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+}
+
+async function readMigrationState(dbPath: string): Promise<{ appliedCount: number; hasNewIndex: boolean }> {
+  const SQL = await initSqlJs({
+    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
+  });
+  const db = new SQL.Database(fs.readFileSync(dbPath));
+  const migrationResult = db.exec("select count(*) as count from __drizzle_migrations;") as Array<{ values: unknown[][] }>;
+  const appliedCount = Number(migrationResult[0]?.values?.[0]?.[0] ?? 0);
+  const indexResult = db.exec("pragma index_list('inbox_items');") as Array<{ values: unknown[][] }>;
+  const hasNewIndex = indexResult.some((set) =>
+    set.values.some((row) => String(row[1]) === "idx_inbox_items_source_occurred_at"),
+  );
+  db.close();
+  return { appliedCount, hasNewIndex };
+}
+
+test("store migrates a new database using drizzle SQL migrations", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-new-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  const store = await AgentInboxStore.open(dbPath);
+  try {
+    const state = await readMigrationState(dbPath);
+    assert.equal(state.appliedCount, 2);
+    assert.equal(state.hasNewIndex, true);
+    const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
+    assert.equal(backups.length, 0);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store upgrades a legacy v12 database with backup and forward migration", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-legacy-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  await createLegacyDb(dbPath);
+  const store = await AgentInboxStore.open(dbPath);
+  try {
+    const state = await readMigrationState(dbPath);
+    assert.equal(state.appliedCount, 2);
+    assert.equal(state.hasNewIndex, true);
+    const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
+    assert.equal(backups.length, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("agent register creates a stable agent, inbox, and terminal activation target", async () => {
   const { store, service, dir } = await makeService();

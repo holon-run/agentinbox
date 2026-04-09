@@ -1,0 +1,21 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1744128000000,
+      "tag": "0000_initial",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1744128060000,
+      "tag": "0001_inbox_items_source_occurred_at_idx",
+      "breakpoints": true
+    }
+  ]
+}
+

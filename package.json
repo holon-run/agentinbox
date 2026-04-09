@@ -19,6 +19,7 @@
   },
   "files": [
     "dist/src/",
+    "drizzle/",
     "README.md",
     "LICENSE"
   ],
@@ -34,17 +35,20 @@
     "docs:build": "npm run docs:search && mdorigin build cloudflare --root docs/site --search dist/search",
     "docs:build:cloudflare": "npm run docs:build",
     "docs:deploy": "npm run docs:index && npm run docs:build && npx wrangler@4 deploy --config wrangler.jsonc",
+    "db:migrations:generate": "drizzle-kit generate --config drizzle.config.ts",
     "prepack": "npm run build",
     "test": "node --require ts-node/register --test test/*.test.ts"
   },
   "dependencies": {
     "@holon-run/uxc-daemon-client": "^0.13.3",
+    "drizzle-orm": "^0.44.2",
     "jexl": "^2.3.0",
     "sql.js": "^1.13.0"
   },
   "devDependencies": {
     "@types/node": "^24.5.2",
     "@types/sql.js": "^1.4.9",
+    "drizzle-kit": "^0.31.6",
     "mdorigin": "^0.5.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
