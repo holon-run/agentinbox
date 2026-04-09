@@ -147,9 +147,6 @@ export class AgentInboxService {
   }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
-    if (input.sourceType === "remote_source") {
-      throw new Error("source type is reserved and not yet supported: remote_source");
-    }
     const existing = this.store.getSourceByKey(input.sourceType, input.sourceKey);
     if (existing) {
       return existing;
@@ -196,6 +193,20 @@ export class AgentInboxService {
 
   getSourceSchema(sourceType: SubscriptionSource["sourceType"]): SourceSchema {
     return getSourceSchema(sourceType);
+  }
+
+  async removeSource(sourceId: string): Promise<{ removed: boolean }> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      return { removed: false };
+    }
+    const subscriptions = this.store.listSubscriptionsForSource(sourceId);
+    if (subscriptions.length > 0) {
+      throw new Error("source remove requires no active subscriptions");
+    }
+    await this.adapters.removeSource(source);
+    this.store.deleteSource(sourceId);
+    return { removed: true };
   }
 
   registerAgent(input: RegisterAgentInput): RegisterAgentResult {

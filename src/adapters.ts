@@ -7,13 +7,15 @@ import {
   SubscriptionSource,
 } from "./model";
 import { AgentInboxStore } from "./store";
-import { FeishuDeliveryAdapter, FeishuSourceRuntime } from "./sources/feishu";
-import { GithubDeliveryAdapter, GithubSourceRuntime } from "./sources/github";
-import { GithubCiSourceRuntime } from "./sources/github_ci";
+import { FeishuDeliveryAdapter } from "./sources/feishu";
+import { GithubDeliveryAdapter } from "./sources/github";
+import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
+import { RemoteSourceProfileRegistry } from "./sources/remote_profiles";
 
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
   pollSource?(sourceId: string): Promise<SourcePollResult>;
+  removeSource?(sourceId: string): Promise<void>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   status?(): Record<string, unknown>;
@@ -40,6 +42,7 @@ class NoopSourceAdapter implements SourceAdapter {
       note: `${this.sourceType} source has no background poller`,
     };
   }
+
 }
 
 class NoopDeliveryAdapter implements DeliveryAdapter {
@@ -50,18 +53,25 @@ class NoopDeliveryAdapter implements DeliveryAdapter {
 
 export class AdapterRegistry {
   private readonly localEventSource = new NoopSourceAdapter("local_event");
-  private readonly remoteSource = new NoopSourceAdapter("remote_source");
-  private readonly feishuSource: FeishuSourceRuntime;
-  private readonly githubSource: GithubSourceRuntime;
-  private readonly githubCiSource: GithubCiSourceRuntime;
+  private readonly remoteSource: RemoteSourceRuntime;
   private readonly defaultDelivery = new NoopDeliveryAdapter();
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
 
-  constructor(store: AgentInboxStore, appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>) {
-    this.feishuSource = new FeishuSourceRuntime(store, appendSourceEvent);
-    this.githubSource = new GithubSourceRuntime(store, appendSourceEvent);
-    this.githubCiSource = new GithubCiSourceRuntime(store, appendSourceEvent);
+  constructor(
+    store: AgentInboxStore,
+    appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
+    options?: {
+      homeDir?: string;
+      remoteSourceClient?: UxcRemoteSourceClient;
+      remoteProfileRegistry?: RemoteSourceProfileRegistry;
+    },
+  ) {
+    this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
+      homeDir: options?.homeDir,
+      client: options?.remoteSourceClient,
+      profileRegistry: options?.remoteProfileRegistry,
+    });
   }
 
   sourceAdapterFor(type: SourceType): SourceAdapter {
@@ -72,13 +82,13 @@ export class AdapterRegistry {
       return this.remoteSource;
     }
     if (type === "github_repo") {
-      return this.githubSource;
+      return this.remoteSource;
     }
     if (type === "github_repo_ci") {
-      return this.githubCiSource;
+      return this.remoteSource;
     }
     if (type === "feishu_bot") {
-      return this.feishuSource;
+      return this.remoteSource;
     }
     return this.localEventSource;
   }
@@ -94,15 +104,11 @@ export class AdapterRegistry {
   }
 
   async start(): Promise<void> {
-    await this.feishuSource.start?.();
-    await this.githubSource.start?.();
-    await this.githubCiSource.start?.();
+    await this.remoteSource.start?.();
   }
 
   async stop(): Promise<void> {
-    await this.feishuSource.stop?.();
-    await this.githubSource.stop?.();
-    await this.githubCiSource.stop?.();
+    await this.remoteSource.stop?.();
   }
 
   async pollSource(source: SubscriptionSource): Promise<SourcePollResult> {
@@ -120,11 +126,14 @@ export class AdapterRegistry {
     return adapter.pollSource(source.sourceId);
   }
 
+  async removeSource(source: SubscriptionSource): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
+    await adapter.removeSource?.(source.sourceId);
+  }
+
   status(): Record<string, unknown> {
     return {
-      feishu: this.feishuSource.status?.() ?? {},
-      github: this.githubSource.status?.() ?? {},
-      githubCi: this.githubCiSource.status?.() ?? {},
+      remote: this.remoteSource.status?.() ?? {},
     };
   }
 }

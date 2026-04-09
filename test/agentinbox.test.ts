@@ -8,6 +8,7 @@ import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
 import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget } from "../src/model";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
+import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 import { nowIso } from "../src/util";
@@ -39,6 +40,51 @@ class FailingTerminalDispatcher extends RecordingTerminalDispatcher {
   }
 }
 
+class FakeRemoteSourceClient implements UxcRemoteSourceClient {
+  async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    status: string;
+    reused: boolean;
+    replaced_previous: boolean;
+  }> {
+    void args.spec;
+    return {
+      namespace: args.namespace,
+      source_key: args.sourceKey,
+      run_id: `run:${args.sourceKey}`,
+      stream_id: `stream:${args.sourceKey}`,
+      status: "running",
+      reused: true,
+      replaced_previous: false,
+    };
+  }
+
+  async sourceStop(_namespace: string, _sourceKey: string): Promise<void> {
+    return;
+  }
+
+  async sourceDelete(_namespace: string, _sourceKey: string): Promise<void> {
+    return;
+  }
+
+  async streamRead(_args: { streamId: string; afterOffset?: number; limit?: number }): Promise<{
+    stream_id: string;
+    events: Array<{ stream_id: string; offset: number; ingested_at_unix: number; raw_payload: unknown }>;
+    next_after_offset: number;
+    has_more: boolean;
+  }> {
+    return {
+      stream_id: "stream:noop",
+      events: [],
+      next_after_offset: 0,
+      has_more: false,
+    };
+  }
+}
+
 async function makeService(options?: {
   dispatcher?: ActivationDispatcher;
   terminalDispatcher?: TerminalDispatcher;
@@ -48,7 +94,10 @@ async function makeService(options?: {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
   let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input));
+  const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
+    homeDir: dir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
   service = new AgentInboxService(
     store,
     adapters,
@@ -343,16 +392,73 @@ test("local_event source can act as a programmable event bus source", async () =
   }
 });
 
-test("remote_source registration is rejected until the runtime exists", async () => {
+test("remote_source registration succeeds", async () => {
   const { store, service, dir } = await makeService();
   try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "demo.mjs"),
+      `export default {
+  id: "demo.profile",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "remote-demo",
+      config: {
+        profilePath: "demo.mjs",
+        profileConfig: {},
+      },
+    });
+    assert.equal(source.sourceType, "remote_source");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeSource rejects when source still has subscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "remove-guard-demo",
+      config: {},
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remove-guard-thread",
+      tmuxPaneId: "%901",
+    });
+    await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
     await assert.rejects(
-      service.registerSource({
-        sourceType: "remote_source",
-        sourceKey: "reserved-demo",
-        config: {},
-      }),
-      /reserved and not yet supported/,
+      service.removeSource(source.sourceId),
+      /source remove requires no active subscriptions/,
     );
   } finally {
     await service.stop();

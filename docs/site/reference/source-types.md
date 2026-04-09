@@ -12,20 +12,18 @@ without building a provider-specific adapter first.
 
 ## `remote_source`
 
-`remote_source` is a reserved product-facing name for future declarative
-external sources.
+`remote_source` is the generic external-source runtime surface.
 
-It exists to distinguish future external source definitions from:
+It uses a local profile module to define:
 
-- local event ingress
-- built-in provider-specific sources
+- managed source spec (`source.ensure`)
+- raw event mapping (`stream.read` payload -> AgentInbox event)
+- config validation
 
-The name is intentional: it describes source semantics without exposing
-implementation details such as `uxc`.
+Configuration fields:
 
-`remote_source` is reserved but not yet supported at runtime. Registration
-currently returns a client error until the declarative external-source runtime
-exists.
+- `profilePath` (required): path under `$AGENTINBOX_HOME/source-profiles`
+- `profileConfig` (optional): profile-specific config object
 
 ## `github_repo`
 

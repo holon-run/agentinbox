@@ -38,6 +38,7 @@ agentinbox agent remove <agent_id>
 agentinbox source add <source_type> <source_key> [--config-json ...]
 agentinbox source list
 agentinbox source show <source_id>
+agentinbox source remove <source_id>
 agentinbox source schema <source_type>
 agentinbox source poll <source_id>
 agentinbox source event <source_id> --native-id <id> --event <variant>

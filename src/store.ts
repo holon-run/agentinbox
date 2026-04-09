@@ -284,6 +284,32 @@ export class AgentInboxStore {
     this.persist();
   }
 
+  deleteSource(sourceId: string): SubscriptionSource | null {
+    const source = this.getSource(sourceId);
+    if (!source) {
+      return null;
+    }
+    this.inTransaction(() => {
+      const stream = this.getStreamBySourceId(sourceId);
+      if (stream) {
+        const consumers = this.getAll(
+          "select consumer_id from consumers where stream_id = ?",
+          [stream.streamId],
+        );
+        for (const row of consumers) {
+          const consumerId = String(row.consumer_id);
+          this.db.run("delete from consumer_commits where consumer_id = ?", [consumerId]);
+        }
+        this.db.run("delete from consumers where stream_id = ?", [stream.streamId]);
+        this.db.run("delete from stream_events where stream_id = ?", [stream.streamId]);
+        this.db.run("delete from streams where stream_id = ?", [stream.streamId]);
+      }
+      this.db.run("delete from sources where source_id = ?", [sourceId]);
+    });
+    this.persist();
+    return source;
+  }
+
   getAgent(agentId: string): Agent | null {
     const row = this.getOne("select * from agents where agent_id = ?", [agentId]);
     return row ? this.mapAgent(row) : null;

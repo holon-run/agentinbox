@@ -79,6 +79,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && normalized[1] === "remove") {
+    const sourceId = normalized[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source remove <sourceId>");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}`, undefined, "DELETE");
+    return;
+  }
+
   if (command === "source" && normalized[1] === "schema") {
     const sourceType = normalized[2];
     if (!sourceType) {
@@ -388,7 +397,9 @@ async function runServe(args: string[]): Promise<void> {
 
   const store = await AgentInboxStore.open(serveConfig.dbPath);
   let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir: serveConfig.homeDir,
+  });
   service = new AgentInboxService(store, adapters);
   const server = createServer(service);
   await adapters.start();
@@ -562,6 +573,7 @@ Usage:
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source list
   agentinbox source show <sourceId>
+  agentinbox source remove <sourceId>
   agentinbox source schema <sourceType>
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]

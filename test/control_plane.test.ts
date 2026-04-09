@@ -13,8 +13,54 @@ import { createServer } from "../src/http";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveDaemonPaths, resolveServeConfig } from "../src/paths";
 import { Activation, InboxItem, RegisterSourceInput, SubscriptionPollResult } from "../src/model";
 import { AgentInboxService } from "../src/service";
+import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
+
+class FakeRemoteSourceClient implements UxcRemoteSourceClient {
+  async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    status: string;
+    reused: boolean;
+    replaced_previous: boolean;
+  }> {
+    void args.spec;
+    return {
+      namespace: args.namespace,
+      source_key: args.sourceKey,
+      run_id: `run:${args.sourceKey}`,
+      stream_id: `stream:${args.sourceKey}`,
+      status: "running",
+      reused: true,
+      replaced_previous: false,
+    };
+  }
+
+  async sourceStop(_namespace: string, _sourceKey: string): Promise<void> {
+    return;
+  }
+
+  async sourceDelete(_namespace: string, _sourceKey: string): Promise<void> {
+    return;
+  }
+
+  async streamRead(_args: { streamId: string; afterOffset?: number; limit?: number }): Promise<{
+    stream_id: string;
+    events: Array<{ stream_id: string; offset: number; ingested_at_unix: number; raw_payload: unknown }>;
+    next_after_offset: number;
+    has_more: boolean;
+  }> {
+    return {
+      stream_id: "stream:noop",
+      events: [],
+      next_after_offset: 0,
+      has_more: false,
+    };
+  }
+}
 
 test("cli version and help subcommands print text output", () => {
   const repoDir = path.resolve(__dirname, "..");
@@ -707,14 +753,42 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
   }
 });
 
-test("control plane rejects reserved remote_source registration", async () => {
+test("control plane accepts remote_source registration", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-src-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "demo.mjs"),
+    `export default {
+  id: "demo.control",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+    "utf8",
+  );
 
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;
-  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
   service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
     stdout: "",
     stderr: "",
@@ -732,13 +806,30 @@ test("control plane rejects reserved remote_source registration", async () => {
         socketPath,
         source: "flag",
       });
-      const response = await client.request<{ error: string }>("/sources", {
+      const invalid = await client.request<{ error: string }>("/sources", {
         sourceType: "remote_source",
-        sourceKey: "reserved-demo",
+        sourceKey: "invalid-remote",
         config: {},
       });
-      assert.equal(response.statusCode, 400);
-      assert.match(response.data.error, /reserved and not yet supported/);
+      assert.equal(invalid.statusCode, 400);
+      assert.match(invalid.data.error, /remote_source requires config.profilePath/);
+
+      const response = await client.request<{ error: string }>("/sources", {
+        sourceType: "remote_source",
+        sourceKey: "remote-demo",
+        config: {
+          profilePath: "demo.mjs",
+          profileConfig: {},
+        },
+      });
+      assert.equal(response.statusCode, 200);
+      const sourceId = (response.data as { sourceId?: string; source?: { sourceId?: string } }).sourceId
+        ?? (response.data as { source?: { sourceId?: string } }).source?.sourceId;
+      assert.equal(typeof sourceId, "string");
+
+      const removed = await client.request<{ removed: boolean }>(`/sources/${encodeURIComponent(sourceId!)}`, undefined, "DELETE");
+      assert.equal(removed.statusCode, 200);
+      assert.equal(removed.data.removed, true);
     } finally {
       await started.close();
     }

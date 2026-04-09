@@ -19,7 +19,8 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
     payloadExamples: [],
     eventVariantExamples: [],
     configFields: [
-      { name: "definition", type: "object", required: false, description: "Reserved for future declarative external source definitions." },
+      { name: "profilePath", type: "string", required: true, description: "Local profile module path under $AGENTINBOX_HOME/source-profiles." },
+      { name: "profileConfig", type: "object", required: false, description: "Profile-specific configuration passed to validate/spec/map hooks." },
     ],
   },
   github_repo: {

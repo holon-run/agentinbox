@@ -2,9 +2,9 @@ import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import { AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
 import { AgentInboxStore } from "../store";
 
-const GITHUB_ENDPOINT = "https://api.github.com";
-const DEFAULT_POLL_INTERVAL_SECS = 30;
-const DEFAULT_PER_PAGE = 20;
+export const GITHUB_CI_ENDPOINT = "https://api.github.com";
+export const DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS = 30;
+export const DEFAULT_GITHUB_CI_PER_PAGE = 20;
 const MAX_SEEN_KEYS = 512;
 const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
@@ -46,7 +46,7 @@ export class GithubActionsUxcClient {
     const payload: Record<string, unknown> = {
       owner: config.owner,
       repo: config.repo,
-      per_page: config.perPage ?? DEFAULT_PER_PAGE,
+      per_page: config.perPage ?? DEFAULT_GITHUB_CI_PER_PAGE,
     };
     if (config.eventFilter) {
       payload.event = config.eventFilter;
@@ -58,7 +58,7 @@ export class GithubActionsUxcClient {
       payload.status = config.statusFilter;
     }
     const response = await this.client.call({
-      endpoint: GITHUB_ENDPOINT,
+      endpoint: GITHUB_CI_ENDPOINT,
       operation: "get:/repos/{owner}/{repo}/actions/runs",
       payload,
       options: { auth: config.uxcAuth },
@@ -173,7 +173,7 @@ export class GithubCiSourceRuntime {
           };
         }
         const lastPollAt = this.lastPollAt.get(sourceId) ?? 0;
-        const pollIntervalMs = (config.pollIntervalSecs ?? DEFAULT_POLL_INTERVAL_SECS) * 1000;
+        const pollIntervalMs = (config.pollIntervalSecs ?? DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS) * 1000;
         if (Date.now() - lastPollAt < pollIntervalMs) {
           return {
             sourceId,
@@ -245,7 +245,7 @@ export class GithubCiSourceRuntime {
         this.errorCounts.set(sourceId, nextErrorCount);
         this.nextRetryAt.set(
           sourceId,
-          Date.now() + computeErrorBackoffMs(config.pollIntervalSecs ?? DEFAULT_POLL_INTERVAL_SECS, nextErrorCount),
+          Date.now() + computeErrorBackoffMs(config.pollIntervalSecs ?? DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS, nextErrorCount),
         );
         this.store.updateSourceRuntime(sourceId, {
           status: "error",
@@ -335,7 +335,7 @@ export function normalizeGithubWorkflowRunEvent(
   };
 }
 
-function parseGithubCiSourceConfig(source: SubscriptionSource): GithubCiSourceConfig {
+export function parseGithubCiSourceConfig(source: SubscriptionSource): GithubCiSourceConfig {
   const config = source.config ?? {};
   const owner = asString(config.owner);
   const repo = asString(config.repo);
@@ -348,8 +348,8 @@ function parseGithubCiSourceConfig(source: SubscriptionSource): GithubCiSourceCo
       owner: fallbackOwner,
       repo: fallbackRepo,
       uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
-      pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? DEFAULT_POLL_INTERVAL_SECS,
-      perPage: asNumber(config.perPage) ?? DEFAULT_PER_PAGE,
+      pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS,
+      perPage: asNumber(config.perPage) ?? DEFAULT_GITHUB_CI_PER_PAGE,
       eventFilter: asString(config.eventFilter) ?? undefined,
       branch: asString(config.branch) ?? undefined,
       statusFilter: asString(config.statusFilter) ?? undefined,
@@ -359,8 +359,8 @@ function parseGithubCiSourceConfig(source: SubscriptionSource): GithubCiSourceCo
     owner,
     repo,
     uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
-    pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? DEFAULT_POLL_INTERVAL_SECS,
-    perPage: asNumber(config.perPage) ?? DEFAULT_PER_PAGE,
+    pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS,
+    perPage: asNumber(config.perPage) ?? DEFAULT_GITHUB_CI_PER_PAGE,
     eventFilter: asString(config.eventFilter) ?? undefined,
     branch: asString(config.branch) ?? undefined,
     statusFilter: asString(config.statusFilter) ?? undefined,

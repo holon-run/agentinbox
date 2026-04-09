@@ -40,8 +40,8 @@
     "test": "node --require ts-node/register --test test/*.test.ts"
   },
   "dependencies": {
-    "@holon-run/uxc-daemon-client": "^0.13.3",
     "@fastify/swagger": "^9.5.2",
+    "@holon-run/uxc-daemon-client": "^0.14.0",
     "fastify": "^5.6.1",
     "jexl": "^2.3.0",
     "sql.js": "^1.13.0"

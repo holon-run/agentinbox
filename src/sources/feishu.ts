@@ -9,10 +9,10 @@ import {
 } from "../model";
 import { AgentInboxStore } from "../store";
 
-const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
-const FEISHU_IM_SCHEMA_URL =
+export const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
+export const FEISHU_IM_SCHEMA_URL =
   "https://raw.githubusercontent.com/holon-run/uxc/main/skills/feishu-openapi-skill/references/feishu-im.openapi.json";
-const DEFAULT_EVENT_TYPES = ["im.message.receive_v1"];
+export const DEFAULT_FEISHU_EVENT_TYPES = ["im.message.receive_v1"];
 const DEFAULT_SYNC_INTERVAL_SECS = 2;
 const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
@@ -393,7 +393,7 @@ export function normalizeFeishuBotEvent(
   const payload = raw as Record<string, unknown>;
   const header = asRecord(payload.header);
   const eventType = asString(payload.event_type) ?? asString(header.event_type);
-  if (!eventType || !(config.eventTypes ?? DEFAULT_EVENT_TYPES).includes(eventType)) {
+  if (!eventType || !(config.eventTypes ?? DEFAULT_FEISHU_EVENT_TYPES).includes(eventType)) {
     return null;
   }
 
@@ -460,13 +460,13 @@ export function normalizeFeishuBotEvent(
   };
 }
 
-function parseFeishuSourceConfig(source: SubscriptionSource): FeishuBotSourceConfig {
+export function parseFeishuSourceConfig(source: SubscriptionSource): FeishuBotSourceConfig {
   const config = source.config ?? {};
   return {
     endpoint: asString(config.endpoint) ?? FEISHU_OPENAPI_ENDPOINT,
     schemaUrl: asString(config.schemaUrl) ?? FEISHU_IM_SCHEMA_URL,
     uxcAuth: asString(config.uxcAuth) ?? source.configRef ?? asString(config.credentialRef) ?? undefined,
-    eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_EVENT_TYPES,
+    eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_FEISHU_EVENT_TYPES,
     chatIds: asStringArray(config.chatIds) ?? undefined,
   };
 }
