@@ -91,6 +91,8 @@ Create a local source and publish an event:
 agentinbox source add local_event local-demo
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
+agentinbox subscription add <source_id> --filter-file ./filter.json
+cat filter.json | agentinbox subscription add <source_id> --filter-stdin
 agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>

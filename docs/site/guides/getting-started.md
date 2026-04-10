@@ -96,6 +96,14 @@ agentinbox subscription add <source_id> --agent-id <agent_id> \
 agentinbox source poll <source_id>
 ```
 
+For larger filters with nested JSON or JEXL, prefer a file or stdin over shell
+quoting:
+
+```bash
+agentinbox subscription add <source_id> --filter-file ./filter.json
+cat filter.json | agentinbox subscription add <source_id> --filter-stdin
+```
+
 ## Terminal Support
 
 - `tmux`
