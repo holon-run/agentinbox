@@ -244,8 +244,7 @@ const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
         interval_secs: config.pollIntervalSecs ?? DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS,
         extract_items_pointer: "/workflow_runs",
         checkpoint_strategy: {
-          type: "item_key",
-          item_key_pointer: "/id",
+          type: "content_hash",
           seen_window: 1024,
         },
       },

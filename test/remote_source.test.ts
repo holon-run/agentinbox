@@ -7,17 +7,23 @@ import { AdapterRegistry } from "../src/adapters";
 import { AppendSourceEventInput } from "../src/model";
 import { AgentInboxService } from "../src/service";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
+import { ManagedSourceSpec } from "../src/sources/remote_profiles";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   private readonly streams = new Map<string, Array<{ offset: number; raw_payload: unknown }>>();
   private readonly offsets = new Map<string, number>();
+  private readonly streamSpecs = new Map<string, ManagedSourceSpec>();
+  private readonly streamCheckpointKeys = new Map<string, string[]>();
   public readonly ensuredSources: Array<{ namespace: string; sourceKey: string }> = [];
   public readonly stoppedSources: Array<{ namespace: string; sourceKey: string }> = [];
   public readonly deletedSources: Array<{ namespace: string; sourceKey: string }> = [];
 
   push(streamId: string, payload: unknown): void {
+    if (!this.shouldAppend(streamId, payload)) {
+      return;
+    }
     const currentOffset = this.offsets.get(streamId) ?? 0;
     this.offsets.set(streamId, currentOffset + 1);
     const bucket = this.streams.get(streamId) ?? [];
@@ -28,7 +34,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     this.streams.set(streamId, bucket);
   }
 
-  async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
+  async sourceEnsure(args: { namespace: string; sourceKey: string; spec: ManagedSourceSpec }): Promise<{
     namespace: string;
     source_key: string;
     run_id: string;
@@ -37,9 +43,9 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     reused: boolean;
     replaced_previous: boolean;
   }> {
-    void args.spec;
     this.ensuredSources.push({ namespace: args.namespace, sourceKey: args.sourceKey });
     const streamId = `stream:${args.sourceKey}`;
+    this.streamSpecs.set(streamId, args.spec);
     return {
       namespace: args.namespace,
       source_key: args.sourceKey,
@@ -82,6 +88,31 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
       next_after_offset: nextAfterOffset,
       has_more: false,
     };
+  }
+
+  private shouldAppend(streamId: string, payload: unknown): boolean {
+    const checkpointStrategy = this.streamSpecs.get(streamId)?.poll_config?.checkpoint_strategy;
+    if (!checkpointStrategy || checkpointStrategy.type === "cursor_only") {
+      return true;
+    }
+
+    const key = checkpointKeyForPayload(payload, checkpointStrategy);
+    if (!key) {
+      return true;
+    }
+
+    const keys = this.streamCheckpointKeys.get(streamId) ?? [];
+    if (keys.includes(key)) {
+      return false;
+    }
+
+    keys.push(key);
+    const seenWindow = checkpointStrategy.seen_window ?? 1024;
+    if (keys.length > seenWindow) {
+      keys.splice(0, keys.length - seenWindow);
+    }
+    this.streamCheckpointKeys.set(streamId, keys);
+    return true;
   }
 }
 
@@ -258,6 +289,74 @@ test("github_repo source uses remote runtime builtin profile mapping", async () 
   }
 });
 
+test("github_repo_ci builtin profile emits status transitions for one workflow run id", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const source = await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remote-github-ci-thread",
+      tmuxPaneId: "%902",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    fake.push("stream:github_repo_ci:holon-run/agentinbox", {
+      id: 24231721087,
+      name: "Node Tests",
+      display_title: "Node Tests",
+      event: "pull_request",
+      head_branch: "feature/issue-50-ci-transition-events",
+      html_url: "https://github.com/holon-run/agentinbox/actions/runs/24231721087",
+      created_at: "2026-04-10T01:00:00Z",
+      updated_at: "2026-04-10T01:00:30Z",
+    });
+
+    const firstSourcePoll = await service.pollSource(source.sourceId);
+    const firstSubscriptionPoll = await service.pollSubscription(subscription.subscriptionId);
+
+    fake.push("stream:github_repo_ci:holon-run/agentinbox", {
+      id: 24231721087,
+      name: "Node Tests",
+      display_title: "Node Tests",
+      status: "completed",
+      conclusion: "success",
+      event: "pull_request",
+      head_branch: "feature/issue-50-ci-transition-events",
+      html_url: "https://github.com/holon-run/agentinbox/actions/runs/24231721087",
+      created_at: "2026-04-10T01:00:00Z",
+      updated_at: "2026-04-10T01:02:00Z",
+    });
+
+    const secondSourcePoll = await service.pollSource(source.sourceId);
+    const secondSubscriptionPoll = await service.pollSubscription(subscription.subscriptionId);
+    const items = service.listInboxItems(agent.agent.agentId);
+
+    assert.equal(firstSourcePoll.appended, 1);
+    assert.equal(firstSubscriptionPoll.inboxItemsCreated, 1);
+    assert.equal(secondSourcePoll.appended, 1);
+    assert.equal(secondSubscriptionPoll.inboxItemsCreated, 1);
+    assert.equal(items.length, 2);
+    assert.deepEqual(
+      items.map((item) => item.eventVariant),
+      ["workflow_run.node_tests.observed", "workflow_run.node_tests.completed.success"],
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("removeSource deletes managed source binding when no subscriptions remain", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
@@ -306,6 +405,61 @@ test("removeSource deletes managed source binding when no subscriptions remain",
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function checkpointKeyForPayload(
+  payload: unknown,
+  strategy: NonNullable<ManagedSourceSpec["poll_config"]>["checkpoint_strategy"],
+): string | null {
+  if (strategy.type === "content_hash") {
+    return JSON.stringify(payload);
+  }
+  if (strategy.type === "item_key") {
+    const value = readJsonPointer(payload, strategy.item_key_pointer);
+    return value == null ? null : serializeCheckpointValue(value);
+  }
+  if (strategy.type === "watermark") {
+    const watermark = readJsonPointer(payload, strategy.item_watermark_pointer);
+    if (watermark == null) {
+      return null;
+    }
+    const tiebreaker = strategy.item_tiebreaker_pointer
+      ? readJsonPointer(payload, strategy.item_tiebreaker_pointer)
+      : null;
+    return `${serializeCheckpointValue(watermark)}::${serializeCheckpointValue(tiebreaker)}`;
+  }
+  return null;
+}
+
+function readJsonPointer(value: unknown, pointer: string): unknown {
+  if (pointer === "") {
+    return value;
+  }
+  if (!pointer.startsWith("/")) {
+    return null;
+  }
+  let current = value;
+  for (const rawSegment of pointer.slice(1).split("/")) {
+    const segment = rawSegment.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return null;
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
+}
+
+function serializeCheckpointValue(value: unknown): string {
+  if (value == null) {
+    return "null";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
 
 test("pauseSource stops managed source, preserves binding, and resume re-ensures it", async () => {
   const fake = new FakeRemoteSourceClient();
