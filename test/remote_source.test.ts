@@ -396,3 +396,75 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("updateSource re-ensures active remote sources but does not resume paused ones", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "demo-update.mjs"),
+      `export default {
+  id: "demo.update",
+  validateConfig(source) {
+    if (!source.config?.tenant) throw new Error("tenant required");
+  },
+  buildManagedSourceSpec(source) {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      args: { tenant: source.config.tenant },
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: "demo:" + raw.id, eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+      "utf8",
+    );
+
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "update-key",
+      config: {
+        profilePath: "demo-update.mjs",
+        profileConfig: { tenant: "team-a" },
+      },
+    });
+
+    assert.equal(fake.ensuredSources.length, 1);
+
+    const updatedActive = await service.updateSource(source.sourceId, {
+      config: {
+        profilePath: "demo-update.mjs",
+        profileConfig: { tenant: "team-b" },
+      },
+    });
+    assert.equal(updatedActive.updated, true);
+    assert.equal(updatedActive.source?.status, "active");
+    assert.equal(fake.ensuredSources.length, 2);
+
+    await service.pauseSource(source.sourceId);
+    const ensureCountBeforePausedUpdate = fake.ensuredSources.length;
+    const updatedPaused = await service.updateSource(source.sourceId, {
+      config: {
+        profilePath: "demo-update.mjs",
+        profileConfig: { tenant: "team-c" },
+      },
+    });
+    assert.equal(updatedPaused.updated, true);
+    assert.equal(updatedPaused.source?.status, "paused");
+    assert.equal(fake.ensuredSources.length, ensureCountBeforePausedUpdate);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

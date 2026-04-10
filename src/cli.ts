@@ -102,6 +102,23 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && normalized[1] === "update") {
+    const sourceId = normalized[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF]");
+    }
+    const configRef = takeFlagValue(normalized, "--config-ref");
+    const configJson = takeFlagValue(normalized, "--config-json");
+    if (configRef == null && configJson == null) {
+      throw new Error("usage: agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF]");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}`, {
+      configRef: configRef ?? undefined,
+      config: configJson != null ? parseJsonArg(configJson, "--config-json") : undefined,
+    }, "PATCH");
+    return;
+  }
+
   if (command === "source" && normalized[1] === "pause") {
     const sourceId = normalized[2];
     if (!sourceId) {
@@ -624,7 +641,7 @@ async function printRemote(
   client: AgentInboxClient,
   endpoint: string,
   body?: unknown,
-  method: "GET" | "POST" | "DELETE" = "POST",
+  method: "GET" | "POST" | "DELETE" | "PATCH" = "POST",
 ): Promise<void> {
   const response = await requestRemote(client, endpoint, body, method);
   console.log(jsonResponse(response.data));
@@ -634,7 +651,7 @@ async function requestRemote<T = unknown>(
   client: AgentInboxClient,
   endpoint: string,
   body?: unknown,
-  method: "GET" | "POST" | "DELETE" = "POST",
+  method: "GET" | "POST" | "DELETE" | "PATCH" = "POST",
 ): Promise<{ data: T }> {
   const response = await client.request<T>(endpoint, body, method);
   if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -811,6 +828,7 @@ Usage:
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source list
   agentinbox source show <sourceId>
+  agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF]
   agentinbox source remove <sourceId>
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>

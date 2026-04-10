@@ -498,6 +498,63 @@ test("control plane pause and resume endpoints update source lifecycle", async (
   }
 });
 
+test("control plane can update source config while preserving source identity", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-source-update-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "local_event",
+        sourceKey: "http-update-demo",
+        configRef: "config://before",
+        config: {
+          channel: "engineering",
+        },
+      });
+      assert.equal(sourceResponse.statusCode, 200);
+      const sourceId = sourceResponse.data.sourceId;
+
+      const updated = await client.request<{ updated: boolean; source: { sourceId: string; configRef: string; config: { channel: string } } }>(
+        `/sources/${encodeURIComponent(sourceId)}`,
+        {
+          configRef: "config://after",
+          config: {
+            channel: "infra",
+          },
+        },
+        "PATCH",
+      );
+      assert.equal(updated.statusCode, 200);
+      assert.equal(updated.data.updated, true);
+      assert.equal(updated.data.source.sourceId, sourceId);
+      assert.equal(updated.data.source.configRef, "config://after");
+      assert.deepEqual(updated.data.source.config, { channel: "infra" });
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli resolves current agent, auto-registers session workflows, and warns on cross-session targets", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-current-"));
   const envBase = {
@@ -691,6 +748,56 @@ test("cli source pause rejects unsupported local_event sources", () => {
     const resumed = runCli(["source", "resume", source.sourceId], env);
     assert.notEqual(resumed.status, 0);
     assert.match(resumed.stderr, /source type local_event does not support resume/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli source update patches config in place", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-update-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+  };
+
+  try {
+    const sourceAdd = runCli([
+      "source",
+      "add",
+      "local_event",
+      "cli-update-demo",
+      "--config-json",
+      "{\"channel\":\"engineering\"}",
+    ], env);
+    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
+    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+
+    const updated = runCli([
+      "source",
+      "update",
+      source.sourceId,
+      "--config-json",
+      "{\"channel\":\"infra\"}",
+      "--config-ref",
+      "config://cli-update",
+    ], env);
+    assert.equal(updated.status, 0, updated.stderr);
+    const updatedPayload = JSON.parse(updated.stdout) as {
+      updated: boolean;
+      source: {
+        sourceId: string;
+        configRef: string;
+        config: { channel: string };
+      };
+    };
+    assert.equal(updatedPayload.updated, true);
+    assert.equal(updatedPayload.source.sourceId, source.sourceId);
+    assert.equal(updatedPayload.source.configRef, "config://cli-update");
+    assert.deepEqual(updatedPayload.source.config, { channel: "infra" });
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

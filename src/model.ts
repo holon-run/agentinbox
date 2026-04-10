@@ -175,6 +175,11 @@ export interface RegisterSourceInput {
   config?: Record<string, unknown>;
 }
 
+export interface UpdateSourceInput {
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+}
+
 export interface RegisterAgentInput {
   agentId?: string | null;
   forceRebind?: boolean;

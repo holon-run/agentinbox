@@ -89,6 +89,7 @@ Create a local source and publish an event:
 
 ```bash
 agentinbox source add local_event local-demo
+agentinbox source update <source_id> --config-json '{"channel":"infra"}'
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox subscription add <source_id> --filter-file ./filter.json
