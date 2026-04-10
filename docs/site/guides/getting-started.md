@@ -10,7 +10,7 @@ is the preferred first-run path.
 ## Prerequisites
 
 - Node.js 20 or newer
-- `uxc` 0.13.3 or newer if you want to use GitHub or Feishu source adapters
+- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu source adapters
 
 Install `AgentInbox` globally:
 

@@ -32,7 +32,7 @@ In practice, that means `AgentInbox` can:
 Requires:
 
 - Node.js 20 or newer
-- `uxc` 0.13.3 or newer if you want to use GitHub or Feishu adapters
+- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu adapters
 
 Install globally:
 
