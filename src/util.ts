@@ -8,9 +8,21 @@ export function generateId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
-export function parseJsonArg(raw?: string, source = "JSON argument"): Record<string, unknown> {
+export function parseJsonArg(
+  raw?: string,
+  source = "JSON argument",
+  options?: {
+    requireNonEmptyObject?: boolean;
+  },
+): Record<string, unknown> {
   if (!raw) {
+    if (options?.requireNonEmptyObject) {
+      throw new Error(`invalid ${source}: expected a non-empty JSON object`);
+    }
     return {};
+  }
+  if (options?.requireNonEmptyObject && raw.trim() === "") {
+    throw new Error(`invalid ${source}: expected a non-empty JSON object`);
   }
   let parsed: unknown;
   try {
@@ -21,6 +33,9 @@ export function parseJsonArg(raw?: string, source = "JSON argument"): Record<str
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`expected ${source} to be a JSON object`);
+  }
+  if (options?.requireNonEmptyObject && Object.keys(parsed as Record<string, unknown>).length === 0) {
+    throw new Error(`invalid ${source}: expected a non-empty JSON object`);
   }
   return parsed as Record<string, unknown>;
 }

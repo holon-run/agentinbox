@@ -725,14 +725,20 @@ function readSubscriptionFilter(args: string[]): Record<string, unknown> {
     throw new Error("subscription add accepts only one of --filter-json, --filter-file, or --filter-stdin");
   }
   if (filterJson != null) {
-    return parseJsonArg(filterJson, "--filter-json");
+    return parseJsonArg(filterJson, "--filter-json", {
+      requireNonEmptyObject: true,
+    });
   }
   if (filterFile != null) {
-    return parseJsonArg(fs.readFileSync(filterFile, "utf8"), `filter file ${filterFile}`);
+    return parseJsonArg(fs.readFileSync(filterFile, "utf8"), `filter file ${filterFile}`, {
+      requireNonEmptyObject: true,
+    });
   }
   if (filterStdin) {
     const stdin = fs.readFileSync(0, "utf8");
-    return parseJsonArg(stdin, "stdin filter");
+    return parseJsonArg(stdin, "stdin filter", {
+      requireNonEmptyObject: true,
+    });
   }
   return {};
 }
