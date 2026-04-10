@@ -21,6 +21,8 @@ going forward.
 - `POST /sources`
 - `GET /sources/{sourceId}`
 - `DELETE /sources/{sourceId}`
+- `POST /sources/{sourceId}/pause`
+- `POST /sources/{sourceId}/resume`
 - `GET /source-types/{sourceType}/schema`
 - `POST /sources/{sourceId}/poll`
 - `POST /sources/{sourceId}/events`
@@ -79,3 +81,8 @@ going forward.
   `POST /sources/{sourceId}/events`.
 - `remote_source` is supported and requires `config.profilePath` (and optional
   `config.profileConfig`) when registering.
+- `POST /sources/{sourceId}/pause` and `POST /sources/{sourceId}/resume` apply
+  only to managed remote sources. Pause stops the managed runtime without
+  deleting its binding or stream state. Resume re-enters the normal ensure
+  path. `POST /sources/{sourceId}/poll` does not implicitly resume a paused
+  source.

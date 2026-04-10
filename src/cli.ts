@@ -102,6 +102,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && normalized[1] === "pause") {
+    const sourceId = normalized[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source pause <remoteSourceId>");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/pause`, {});
+    return;
+  }
+
+  if (command === "source" && normalized[1] === "resume") {
+    const sourceId = normalized[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source resume <remoteSourceId>");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/resume`, {});
+    return;
+  }
+
   if (command === "source" && normalized[1] === "schema") {
     const sourceType = normalized[2];
     if (!sourceType) {
@@ -794,6 +812,8 @@ Usage:
   agentinbox source list
   agentinbox source show <sourceId>
   agentinbox source remove <sourceId>
+  agentinbox source pause <remoteSourceId>
+  agentinbox source resume <remoteSourceId>
   agentinbox source schema <sourceType>
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]

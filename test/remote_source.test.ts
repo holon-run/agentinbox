@@ -13,6 +13,8 @@ import { TerminalDispatcher } from "../src/terminal";
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   private readonly streams = new Map<string, Array<{ offset: number; raw_payload: unknown }>>();
   private readonly offsets = new Map<string, number>();
+  public readonly ensuredSources: Array<{ namespace: string; sourceKey: string }> = [];
+  public readonly stoppedSources: Array<{ namespace: string; sourceKey: string }> = [];
   public readonly deletedSources: Array<{ namespace: string; sourceKey: string }> = [];
 
   push(streamId: string, payload: unknown): void {
@@ -36,6 +38,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     replaced_previous: boolean;
   }> {
     void args.spec;
+    this.ensuredSources.push({ namespace: args.namespace, sourceKey: args.sourceKey });
     const streamId = `stream:${args.sourceKey}`;
     return {
       namespace: args.namespace,
@@ -48,12 +51,13 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     };
   }
 
-  async sourceStop(_namespace: string, _sourceKey: string): Promise<void> {
+  async sourceStop(namespace: string, sourceKey: string): Promise<void> {
+    this.stoppedSources.push({ namespace, sourceKey });
     return;
   }
 
-  async sourceDelete(_namespace: string, _sourceKey: string): Promise<void> {
-    this.deletedSources.push({ namespace: _namespace, sourceKey: _sourceKey });
+  async sourceDelete(namespace: string, sourceKey: string): Promise<void> {
+    this.deletedSources.push({ namespace, sourceKey });
     return;
   }
 
@@ -85,6 +89,7 @@ async function makeService(fake: FakeRemoteSourceClient): Promise<{
   dir: string;
   store: AgentInboxStore;
   service: AgentInboxService;
+  adapters: AdapterRegistry;
 }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-source-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
@@ -97,7 +102,7 @@ async function makeService(fake: FakeRemoteSourceClient): Promise<{
     stdout: "",
     stderr: "",
   })));
-  return { dir, store, service };
+  return { dir, store, service, adapters };
 }
 
 test("remote_source with local profile ingests stream events", async () => {
@@ -295,6 +300,96 @@ test("removeSource deletes managed source binding when no subscriptions remain",
     assert.equal(store.getSource(source.sourceId), null);
     assert.equal(fake.deletedSources.length, 1);
     assert.equal(fake.deletedSources[0]?.sourceKey, "remote_source:remove-key");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pauseSource stops managed source, preserves binding, and resume re-ensures it", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service, adapters } = await makeService(fake);
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "demo-pause.mjs"),
+      `export default {
+  id: "demo.pause",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: "demo:" + raw.id, eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+      "utf8",
+    );
+
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "pause-key",
+      config: {
+        profilePath: "demo-pause.mjs",
+        profileConfig: {},
+      },
+    });
+    const initialEnsureCount = fake.ensuredSources.length;
+    assert.equal(initialEnsureCount, 1);
+
+    store.updateSourceRuntime(source.sourceId, {
+      checkpoint: JSON.stringify({
+        managedSource: {
+          namespace: "custom-agentinbox",
+          sourceKey: "custom:pause-key",
+          streamId: "stream:custom:pause-key",
+        },
+      }),
+    });
+
+    const remoteRuntime = (adapters as unknown as {
+      remoteSource: {
+        errorCounts: Map<string, number>;
+        nextRetryAt: Map<string, number>;
+      };
+    }).remoteSource;
+    remoteRuntime.errorCounts.set(source.sourceId, 2);
+    remoteRuntime.nextRetryAt.set(source.sourceId, Date.now() + 60_000);
+
+    const paused = await service.pauseSource(source.sourceId);
+    assert.equal(paused.paused, true);
+    assert.equal(paused.source?.status, "paused");
+    assert.deepEqual(fake.stoppedSources, [{
+      namespace: "custom-agentinbox",
+      sourceKey: "custom:pause-key",
+    }]);
+    assert.equal(remoteRuntime.errorCounts.has(source.sourceId), false);
+    assert.equal(remoteRuntime.nextRetryAt.has(source.sourceId), false);
+    assert.deepEqual((service.status().adapters as { remote: { erroredSourceIds: string[] } }).remote.erroredSourceIds, []);
+
+    const pausedPoll = await service.pollSource(source.sourceId);
+    assert.equal(pausedPoll.note, "source is paused; resume it before polling");
+    assert.equal(fake.ensuredSources.length, initialEnsureCount);
+
+    const resumed = await service.resumeSource(source.sourceId);
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.source?.status, "active");
+    assert.equal(fake.ensuredSources.length, initialEnsureCount + 1);
+    assert.deepEqual(fake.ensuredSources.at(-1), {
+      namespace: "custom-agentinbox",
+      sourceKey: "custom:pause-key",
+    });
   } finally {
     await service.stop();
     store.close();
