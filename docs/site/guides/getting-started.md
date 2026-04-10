@@ -77,6 +77,8 @@ The shortest end-to-end flow is a local source:
 agentinbox source add local_event local-demo
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
+agentinbox source pause <source_id>
+agentinbox source resume <source_id>
 agentinbox source event <source_id> \
   --native-id demo-1 \
   --event local.demo \
@@ -102,6 +104,15 @@ quoting:
 ```bash
 agentinbox subscription add <source_id> --filter-file ./filter.json
 cat filter.json | agentinbox subscription add <source_id> --filter-stdin
+```
+
+For remote-backed sources, use lifecycle commands instead of delete/recreate
+when you just want to stop delivery temporarily:
+
+```bash
+agentinbox source pause <source_id>
+agentinbox source poll <source_id>   # returns a paused note, does not resume
+agentinbox source resume <source_id>
 ```
 
 ## Terminal Support

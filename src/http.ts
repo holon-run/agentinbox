@@ -179,6 +179,44 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.removeSource(decodeURIComponent(params.sourceId));
   });
 
+  app.post("/sources/:sourceId/pause", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.pauseSource(decodeURIComponent(params.sourceId));
+  });
+
+  app.post("/sources/:sourceId/resume", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.resumeSource(decodeURIComponent(params.sourceId));
+  });
+
   app.get("/source-types/:sourceType/schema", {
     schema: {
       tags: ["sources"],

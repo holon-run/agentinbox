@@ -18,6 +18,8 @@ import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
+  public readonly ensuredSources: Array<{ namespace: string; sourceKey: string }> = [];
+  public readonly stoppedSources: Array<{ namespace: string; sourceKey: string }> = [];
   async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
     namespace: string;
     source_key: string;
@@ -28,6 +30,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     replaced_previous: boolean;
   }> {
     void args.spec;
+    this.ensuredSources.push({ namespace: args.namespace, sourceKey: args.sourceKey });
     return {
       namespace: args.namespace,
       source_key: args.sourceKey,
@@ -39,7 +42,8 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     };
   }
 
-  async sourceStop(_namespace: string, _sourceKey: string): Promise<void> {
+  async sourceStop(namespace: string, sourceKey: string): Promise<void> {
+    this.stoppedSources.push({ namespace, sourceKey });
     return;
   }
 
@@ -403,6 +407,97 @@ test("control plane GET /agents can include activation target summaries", async 
   }
 });
 
+test("control plane pause and resume endpoints update source lifecycle", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-pause-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const fake = new FakeRemoteSourceClient();
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: fake,
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "demo-pause.mjs"),
+    `export default {
+  id: "demo.pause",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: "demo:" + raw.id, eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+    "utf8",
+  );
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "remote_source",
+        sourceKey: "pause-http-key",
+        config: {
+          profilePath: "demo-pause.mjs",
+          profileConfig: {},
+        },
+      });
+      assert.equal(sourceResponse.statusCode, 200);
+      const sourceId = sourceResponse.data.sourceId;
+
+      const paused = await client.request<{ paused: boolean; source: { status: string } }>(
+        `/sources/${encodeURIComponent(sourceId)}/pause`,
+        {},
+      );
+      assert.equal(paused.statusCode, 200);
+      assert.equal(paused.data.paused, true);
+      assert.equal(paused.data.source.status, "paused");
+      assert.deepEqual(fake.stoppedSources, [{
+        namespace: "agentinbox",
+        sourceKey: "remote_source:pause-http-key",
+      }]);
+
+      const resumed = await client.request<{ resumed: boolean; source: { status: string } }>(
+        `/sources/${encodeURIComponent(sourceId)}/resume`,
+        {},
+      );
+      assert.equal(resumed.statusCode, 200);
+      assert.equal(resumed.data.resumed, true);
+      assert.equal(resumed.data.source.status, "active");
+      assert.equal(fake.ensuredSources.length, 2);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli resolves current agent, auto-registers session workflows, and warns on cross-session targets", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-current-"));
   const envBase = {
@@ -568,6 +663,34 @@ test("cli subscription add accepts filter-file and filter-stdin and echoes norma
     ], env);
     assert.notEqual(conflicting.status, 0);
     assert.match(conflicting.stderr, /only one of --filter-json, --filter-file, or --filter-stdin/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli source pause and resume update source status", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-pause-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+  };
+
+  try {
+    const sourceAdd = runCli(["source", "add", "local_event", "cli-pause-demo"], env);
+    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
+    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+
+    const paused = runCli(["source", "pause", source.sourceId], env);
+    assert.equal(paused.status, 0, paused.stderr);
+    assert.equal((JSON.parse(paused.stdout) as { source: { status: string } }).source.status, "paused");
+
+    const resumed = runCli(["source", "resume", source.sourceId], env);
+    assert.equal(resumed.status, 0, resumed.stderr);
+    assert.equal((JSON.parse(resumed.stdout) as { source: { status: string } }).source.status, "active");
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

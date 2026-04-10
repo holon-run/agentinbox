@@ -15,6 +15,8 @@ import { RemoteSourceProfileRegistry } from "./sources/remote_profiles";
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
   pollSource?(sourceId: string): Promise<SourcePollResult>;
+  pauseSource?(sourceId: string): Promise<void>;
+  resumeSource?(sourceId: string): Promise<void>;
   removeSource?(sourceId: string): Promise<void>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
@@ -124,6 +126,16 @@ export class AdapterRegistry {
       };
     }
     return adapter.pollSource(source.sourceId);
+  }
+
+  async pauseSource(source: SubscriptionSource): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
+    await adapter.pauseSource?.(source.sourceId);
+  }
+
+  async resumeSource(source: SubscriptionSource): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
+    await adapter.resumeSource?.(source.sourceId);
   }
 
   async removeSource(source: SubscriptionSource): Promise<void> {

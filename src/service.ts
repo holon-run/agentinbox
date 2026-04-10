@@ -209,6 +209,36 @@ export class AgentInboxService {
     return { removed: true };
   }
 
+  async pauseSource(sourceId: string): Promise<{ paused: boolean; source: SubscriptionSource | null }> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      return { paused: false, source: null };
+    }
+    await this.adapters.pauseSource(source);
+    if (this.store.getSource(sourceId)?.status !== "paused") {
+      this.store.updateSourceRuntime(sourceId, { status: "paused" });
+    }
+    return {
+      paused: true,
+      source: this.getSource(sourceId),
+    };
+  }
+
+  async resumeSource(sourceId: string): Promise<{ resumed: boolean; source: SubscriptionSource | null }> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      return { resumed: false, source: null };
+    }
+    await this.adapters.resumeSource(source);
+    if (this.store.getSource(sourceId)?.status === "paused") {
+      this.store.updateSourceRuntime(sourceId, { status: "active" });
+    }
+    return {
+      resumed: true,
+      source: this.getSource(sourceId),
+    };
+  }
+
   registerAgent(input: RegisterAgentInput): RegisterAgentResult {
     validateNotifyLeaseMs(input.notifyLeaseMs);
     validateTerminalRegistration(input);

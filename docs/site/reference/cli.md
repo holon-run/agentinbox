@@ -40,10 +40,16 @@ agentinbox source add <source_type> <source_key> [--config-json ...]
 agentinbox source list
 agentinbox source show <source_id>
 agentinbox source remove <source_id>
+agentinbox source pause <source_id>
+agentinbox source resume <source_id>
 agentinbox source schema <source_type>
 agentinbox source poll <source_id>
 agentinbox source event <source_id> --native-id <id> --event <variant>
 ```
+
+`source pause` stops a managed remote source without deleting its binding or
+stream checkpoint. `source resume` goes back through the normal ensure path.
+Manual `source poll` does not resume a paused source.
 
 ## Subscriptions
 

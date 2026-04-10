@@ -135,7 +135,53 @@ export class RemoteSourceRuntime {
   }
 
   async pollSource(sourceId: string): Promise<SourcePollResult> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    if (source.status === "paused") {
+      return {
+        sourceId,
+        sourceType: source.sourceType,
+        appended: 0,
+        deduped: 0,
+        eventsRead: 0,
+        note: "source is paused; resume it before polling",
+      };
+    }
     return this.syncSource(sourceId, true);
+  }
+
+  async pauseSource(sourceId: string): Promise<void> {
+    const source = this.store.getSource(sourceId);
+    if (!source || !REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return;
+    }
+    const binding = managedBindingForSource(source);
+    await this.client.sourceStop(binding.namespace, binding.sourceKey);
+    const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+    this.store.updateSourceRuntime(sourceId, {
+      status: "paused",
+      checkpoint: JSON.stringify({
+        ...checkpoint,
+        ...(checkpoint.managedSource ? {
+          managedSource: {
+            namespace: binding.namespace,
+            sourceKey: binding.sourceKey,
+            streamId: checkpoint.managedSource.streamId,
+          },
+        } : {}),
+        lastError: null,
+      } satisfies RemoteSourceCheckpoint),
+    });
+  }
+
+  async resumeSource(sourceId: string): Promise<void> {
+    const source = this.store.getSource(sourceId);
+    if (!source || !REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return;
+    }
+    await this.syncSource(sourceId, true);
   }
 
   async removeSource(sourceId: string): Promise<void> {
@@ -143,10 +189,8 @@ export class RemoteSourceRuntime {
     if (!source || !REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return;
     }
-    const checkpoint = parseRemoteCheckpoint(source.checkpoint);
-    const namespace = checkpoint.managedSource?.namespace ?? MANAGED_SOURCE_NAMESPACE;
-    const sourceKey = checkpoint.managedSource?.sourceKey ?? `${source.sourceType}:${source.sourceKey}`;
-    await this.client.sourceDelete(namespace, sourceKey);
+    const binding = managedBindingForSource(source);
+    await this.client.sourceDelete(binding.namespace, binding.sourceKey);
   }
 
   status(): Record<string, unknown> {
@@ -254,8 +298,12 @@ export class RemoteSourceRuntime {
         deduped += result.deduped;
       }
 
+      const latestSource = this.store.getSource(sourceId);
+      if (!latestSource) {
+        throw new Error(`unknown source: ${sourceId}`);
+      }
       this.store.updateSourceRuntime(sourceId, {
-        status: "active",
+        status: latestSource.status === "paused" ? "paused" : "active",
         checkpoint: JSON.stringify({
           managedSource: {
             namespace: ensured.namespace,
@@ -288,7 +336,7 @@ export class RemoteSourceRuntime {
         this.errorCounts.set(sourceId, nextErrorCount);
         this.nextRetryAt.set(sourceId, Date.now() + computeErrorBackoffMs(DEFAULT_BACKOFF_BASE_SECS, nextErrorCount));
         this.store.updateSourceRuntime(sourceId, {
-          status: "error",
+          status: source.status === "paused" ? "paused" : "error",
           checkpoint: JSON.stringify({
             ...checkpoint,
             lastError: error instanceof Error ? error.message : String(error),
@@ -310,6 +358,14 @@ function profileInputSource(source: SubscriptionSource): SubscriptionSource {
   return {
     ...source,
     config: asRecord(config.profileConfig),
+  };
+}
+
+function managedBindingForSource(source: SubscriptionSource): { namespace: string; sourceKey: string } {
+  const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+  return {
+    namespace: checkpoint.managedSource?.namespace ?? MANAGED_SOURCE_NAMESPACE,
+    sourceKey: checkpoint.managedSource?.sourceKey ?? `${source.sourceType}:${source.sourceKey}`,
   };
 }
 
