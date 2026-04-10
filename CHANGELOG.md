@@ -12,6 +12,24 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.1.1] - 2026-04-10
+
+### Added
+
+- Public maintenance docs for contributors, security reporting, and community expectations.
+- Source update support for changing persisted source config and config refs in place.
+- Source pause and resume commands for managed remote sources.
+
+### Fixed
+
+- `github_repo_ci` now preserves workflow run status transitions instead of dropping `completed.*` after an earlier `observed` event.
+- Explicit subscription filter input modes now reject empty objects as well as blank input, preventing accidental broad subscriptions.
+- Paused remote source updates now validate and roll back invalid config changes without resuming the source.
+
+### Changed
+
+- Current docs and bundled AgentInbox skill now reflect the live CLI surface and recommended onboarding flow.
+
 ## [0.1.0] - 2026-04-08
 
 ### Added
