@@ -49,12 +49,18 @@ agentinbox source event <source_id> --native-id <id> --event <variant>
 
 ```bash
 agentinbox subscription add <source_id> [--agent-id <agent_id>] [--filter-json ...]
+agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-file <path>
+agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-stdin
 agentinbox subscription list [--agent-id <agent_id>] [--source-id <source_id>]
 agentinbox subscription show <subscription_id>
 agentinbox subscription remove <subscription_id>
 agentinbox subscription lag <subscription_id>
 agentinbox subscription reset <subscription_id> --start-policy latest
 ```
+
+`subscription add` accepts exactly one of `--filter-json`, `--filter-file`, or
+`--filter-stdin`. The created subscription response echoes the normalized
+persisted `filter`.
 
 ## Inbox
 

@@ -217,10 +217,10 @@ async function main(): Promise<void> {
 
   if (command === "subscription" && normalized[1] === "add") {
     const args = normalized.slice(2);
-    const positionals = positionalArgs(args, ["--agent-id", "--filter-json", "--start-policy", "--start-offset", "--start-time"]);
+    const positionals = positionalArgs(args, ["--agent-id", "--filter-json", "--filter-file", "--start-policy", "--start-offset", "--start-time"]);
     const sourceId = positionals[0];
     if (!sourceId || positionals[1]) {
-      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -229,7 +229,7 @@ async function main(): Promise<void> {
     const response = await requestRemote<Record<string, unknown>>(client, "/subscriptions", {
       agentId: selection.agentId,
       sourceId,
-      filter: parseJsonArg(takeFlagValue(normalized, "--filter-json")),
+      filter: readSubscriptionFilter(normalized),
       startPolicy: takeFlagValue(normalized, "--start-policy") ?? undefined,
       startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
       startTime: takeFlagValue(normalized, "--start-time") ?? undefined,
@@ -677,6 +677,27 @@ function buildQuery(params: Record<string, string | undefined>): string {
   return query ? `?${query}` : "";
 }
 
+function readSubscriptionFilter(args: string[]): Record<string, unknown> {
+  const filterJson = takeFlagValue(args, "--filter-json");
+  const filterFile = takeFlagValue(args, "--filter-file");
+  const filterStdin = hasFlag(args, "--filter-stdin");
+  const configured = [filterJson != null, filterFile != null, filterStdin].filter(Boolean).length;
+  if (configured > 1) {
+    throw new Error("subscription add accepts only one of --filter-json, --filter-file, or --filter-stdin");
+  }
+  if (filterJson != null) {
+    return parseJsonArg(filterJson, "--filter-json");
+  }
+  if (filterFile != null) {
+    return parseJsonArg(fs.readFileSync(filterFile, "utf8"), `filter file ${filterFile}`);
+  }
+  if (filterStdin) {
+    const stdin = fs.readFileSync(0, "utf8");
+    return parseJsonArg(stdin, "stdin filter");
+  }
+  return {};
+}
+
 function withCommandMetadata<T extends Record<string, unknown>>(data: T, selection: AgentSelection): T & {
   agentId: string;
   autoRegistered?: true;
@@ -792,7 +813,7 @@ Usage:
     subscription: `agentinbox subscription
 
 Usage:
-  agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription remove <subscriptionId>

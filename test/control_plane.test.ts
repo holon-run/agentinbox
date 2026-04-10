@@ -62,13 +62,14 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }
 }
 
-function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000) {
+function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?: string) {
   const repoDir = path.resolve(__dirname, "..");
   return spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
     cwd: repoDir,
     env,
     encoding: "utf8",
     timeout,
+    input,
   });
 }
 
@@ -462,6 +463,113 @@ test("cli resolves current agent, auto-registers session workflows, and warns on
     assert.match(oldSyntax.stderr, /usage: agentinbox subscription add <sourceId> \[--agent-id ID]/);
   } finally {
     void runCli(["daemon", "stop"], envBase);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli subscription add accepts filter-file and filter-stdin and echoes normalized filter", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-filter-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%931",
+    CODEX_THREAD_ID: "thread-filter",
+  };
+
+  try {
+    const sourceAdd = runCli(["source", "add", "local_event", "cli-filter-demo"], env);
+    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
+    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+
+    const filterFilePath = path.join(homeDir, "filter.json");
+    fs.writeFileSync(filterFilePath, JSON.stringify({
+      metadata: {
+        status: "completed",
+        nested: {
+          branch: "main",
+        },
+      },
+      expr: "metadata.status != 'queued'",
+    }, null, 2));
+
+    const fromFile = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--filter-file",
+      filterFilePath,
+    ], env);
+    assert.equal(fromFile.status, 0, fromFile.stderr);
+    const fileResult = JSON.parse(fromFile.stdout) as {
+      filter: {
+        metadata: {
+          status: string;
+          nested: {
+            branch: string;
+          };
+        };
+        expr: string;
+      };
+    };
+    assert.deepEqual(fileResult.filter, {
+      metadata: {
+        status: "completed",
+        nested: {
+          branch: "main",
+        },
+      },
+      expr: "metadata.status != 'queued'",
+    });
+
+    const fromStdin = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--filter-stdin",
+    ], env, 25_000, JSON.stringify({
+      payload: {
+        review: {
+          state: "changes_requested",
+        },
+      },
+      expr: "payload.review.state == 'changes_requested'",
+    }));
+    assert.equal(fromStdin.status, 0, fromStdin.stderr);
+    const stdinResult = JSON.parse(fromStdin.stdout) as {
+      filter: {
+        payload: {
+          review: {
+            state: string;
+          };
+        };
+        expr: string;
+      };
+    };
+    assert.deepEqual(stdinResult.filter, {
+      payload: {
+        review: {
+          state: "changes_requested",
+        },
+      },
+      expr: "payload.review.state == 'changes_requested'",
+    });
+
+    const conflicting = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--filter-json",
+      "{\"metadata\":{\"status\":\"completed\"}}",
+      "--filter-file",
+      filterFilePath,
+    ], env);
+    assert.notEqual(conflicting.status, 0);
+    assert.match(conflicting.stderr, /only one of --filter-json, --filter-file, or --filter-stdin/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
