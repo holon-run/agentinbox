@@ -89,6 +89,7 @@ async function makeService(fake: FakeRemoteSourceClient): Promise<{
   dir: string;
   store: AgentInboxStore;
   service: AgentInboxService;
+  adapters: AdapterRegistry;
 }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-source-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
@@ -101,7 +102,7 @@ async function makeService(fake: FakeRemoteSourceClient): Promise<{
     stdout: "",
     stderr: "",
   })));
-  return { dir, store, service };
+  return { dir, store, service, adapters };
 }
 
 test("remote_source with local profile ingests stream events", async () => {
@@ -308,7 +309,7 @@ test("removeSource deletes managed source binding when no subscriptions remain",
 
 test("pauseSource stops managed source, preserves binding, and resume re-ensures it", async () => {
   const fake = new FakeRemoteSourceClient();
-  const { dir, store, service } = await makeService(fake);
+  const { dir, store, service, adapters } = await makeService(fake);
   try {
     const profileDir = path.join(dir, "source-profiles");
     fs.mkdirSync(profileDir, { recursive: true });
@@ -347,13 +348,35 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
     const initialEnsureCount = fake.ensuredSources.length;
     assert.equal(initialEnsureCount, 1);
 
+    store.updateSourceRuntime(source.sourceId, {
+      checkpoint: JSON.stringify({
+        managedSource: {
+          namespace: "custom-agentinbox",
+          sourceKey: "custom:pause-key",
+          streamId: "stream:custom:pause-key",
+        },
+      }),
+    });
+
+    const remoteRuntime = (adapters as unknown as {
+      remoteSource: {
+        errorCounts: Map<string, number>;
+        nextRetryAt: Map<string, number>;
+      };
+    }).remoteSource;
+    remoteRuntime.errorCounts.set(source.sourceId, 2);
+    remoteRuntime.nextRetryAt.set(source.sourceId, Date.now() + 60_000);
+
     const paused = await service.pauseSource(source.sourceId);
     assert.equal(paused.paused, true);
     assert.equal(paused.source?.status, "paused");
     assert.deepEqual(fake.stoppedSources, [{
-      namespace: "agentinbox",
-      sourceKey: "remote_source:pause-key",
+      namespace: "custom-agentinbox",
+      sourceKey: "custom:pause-key",
     }]);
+    assert.equal(remoteRuntime.errorCounts.has(source.sourceId), false);
+    assert.equal(remoteRuntime.nextRetryAt.has(source.sourceId), false);
+    assert.deepEqual((service.status().adapters as { remote: { erroredSourceIds: string[] } }).remote.erroredSourceIds, []);
 
     const pausedPoll = await service.pollSource(source.sourceId);
     assert.equal(pausedPoll.note, "source is paused; resume it before polling");
@@ -364,8 +387,8 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
     assert.equal(resumed.source?.status, "active");
     assert.equal(fake.ensuredSources.length, initialEnsureCount + 1);
     assert.deepEqual(fake.ensuredSources.at(-1), {
-      namespace: "agentinbox",
-      sourceKey: "remote_source:pause-key",
+      namespace: "custom-agentinbox",
+      sourceKey: "custom:pause-key",
     });
   } finally {
     await service.stop();

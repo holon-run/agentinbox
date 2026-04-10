@@ -130,11 +130,17 @@ export class AdapterRegistry {
 
   async pauseSource(source: SubscriptionSource): Promise<void> {
     const adapter = this.sourceAdapterFor(source.sourceType);
+    if (!adapter.pauseSource) {
+      throw new Error(`source type ${source.sourceType} does not support pause`);
+    }
     await adapter.pauseSource?.(source.sourceId);
   }
 
   async resumeSource(source: SubscriptionSource): Promise<void> {
     const adapter = this.sourceAdapterFor(source.sourceType);
+    if (!adapter.resumeSource) {
+      throw new Error(`source type ${source.sourceType} does not support resume`);
+    }
     await adapter.resumeSource?.(source.sourceId);
   }
 

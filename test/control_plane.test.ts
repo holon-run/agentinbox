@@ -669,7 +669,7 @@ test("cli subscription add accepts filter-file and filter-stdin and echoes norma
   }
 });
 
-test("cli source pause and resume update source status", () => {
+test("cli source pause rejects unsupported local_event sources", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-pause-"));
   const env = {
     ...process.env,
@@ -685,12 +685,12 @@ test("cli source pause and resume update source status", () => {
     const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
 
     const paused = runCli(["source", "pause", source.sourceId], env);
-    assert.equal(paused.status, 0, paused.stderr);
-    assert.equal((JSON.parse(paused.stdout) as { source: { status: string } }).source.status, "paused");
+    assert.notEqual(paused.status, 0);
+    assert.match(paused.stderr, /source type local_event does not support pause/);
 
     const resumed = runCli(["source", "resume", source.sourceId], env);
-    assert.equal(resumed.status, 0, resumed.stderr);
-    assert.equal((JSON.parse(resumed.stdout) as { source: { status: string } }).source.status, "active");
+    assert.notEqual(resumed.status, 0);
+    assert.match(resumed.stderr, /source type local_event does not support resume/);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

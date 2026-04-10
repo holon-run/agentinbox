@@ -159,6 +159,8 @@ export class RemoteSourceRuntime {
     }
     const binding = managedBindingForSource(source);
     await this.client.sourceStop(binding.namespace, binding.sourceKey);
+    this.errorCounts.delete(sourceId);
+    this.nextRetryAt.delete(sourceId);
     const checkpoint = parseRemoteCheckpoint(source.checkpoint);
     this.store.updateSourceRuntime(sourceId, {
       status: "paused",
@@ -259,10 +261,10 @@ export class RemoteSourceRuntime {
       const profileSource = profileInputSource(source);
       profile.validateConfig(profileSource);
       const spec = profile.buildManagedSourceSpec(profileSource);
-      const managedSourceKey = `${source.sourceType}:${source.sourceKey}`;
+      const binding = managedBindingForSource(source);
       const ensured = await this.client.sourceEnsure({
-        namespace: MANAGED_SOURCE_NAMESPACE,
-        sourceKey: managedSourceKey,
+        namespace: binding.namespace,
+        sourceKey: binding.sourceKey,
         spec,
       });
 
@@ -361,11 +363,19 @@ function profileInputSource(source: SubscriptionSource): SubscriptionSource {
   };
 }
 
+function defaultManagedBindingForSource(source: SubscriptionSource): { namespace: string; sourceKey: string } {
+  return {
+    namespace: MANAGED_SOURCE_NAMESPACE,
+    sourceKey: `${source.sourceType}:${source.sourceKey}`,
+  };
+}
+
 function managedBindingForSource(source: SubscriptionSource): { namespace: string; sourceKey: string } {
   const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+  const defaultBinding = defaultManagedBindingForSource(source);
   return {
-    namespace: checkpoint.managedSource?.namespace ?? MANAGED_SOURCE_NAMESPACE,
-    sourceKey: checkpoint.managedSource?.sourceKey ?? `${source.sourceType}:${source.sourceKey}`,
+    namespace: checkpoint.managedSource?.namespace ?? defaultBinding.namespace,
+    sourceKey: checkpoint.managedSource?.sourceKey ?? defaultBinding.sourceKey,
   };
 }
 
