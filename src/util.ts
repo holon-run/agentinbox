@@ -12,16 +12,16 @@ export function parseJsonArg(
   raw?: string,
   source = "JSON argument",
   options?: {
-    requireNonEmpty?: boolean;
+    requireNonEmptyObject?: boolean;
   },
 ): Record<string, unknown> {
   if (!raw) {
-    if (options?.requireNonEmpty) {
+    if (options?.requireNonEmptyObject) {
       throw new Error(`invalid ${source}: expected a non-empty JSON object`);
     }
     return {};
   }
-  if (options?.requireNonEmpty && raw.trim() === "") {
+  if (options?.requireNonEmptyObject && raw.trim() === "") {
     throw new Error(`invalid ${source}: expected a non-empty JSON object`);
   }
   let parsed: unknown;
@@ -33,6 +33,9 @@ export function parseJsonArg(
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`expected ${source} to be a JSON object`);
+  }
+  if (options?.requireNonEmptyObject && Object.keys(parsed as Record<string, unknown>).length === 0) {
+    throw new Error(`invalid ${source}: expected a non-empty JSON object`);
   }
   return parsed as Record<string, unknown>;
 }
