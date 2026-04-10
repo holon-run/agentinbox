@@ -731,6 +731,27 @@ test("cli subscription add accepts filter-file and filter-stdin and echoes norma
     ], env);
     assert.notEqual(conflicting.status, 0);
     assert.match(conflicting.stderr, /only one of --filter-json, --filter-file, or --filter-stdin/);
+
+    const emptyFilePath = path.join(homeDir, "empty-filter.json");
+    fs.writeFileSync(emptyFilePath, "");
+    const emptyFile = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--filter-file",
+      emptyFilePath,
+    ], env);
+    assert.notEqual(emptyFile.status, 0);
+    assert.match(emptyFile.stderr, /invalid filter file .*empty-filter\.json: expected a non-empty JSON object/);
+
+    const emptyStdin = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--filter-stdin",
+    ], env, 25_000, "");
+    assert.notEqual(emptyStdin.status, 0);
+    assert.match(emptyStdin.stderr, /invalid stdin filter: expected a non-empty JSON object/);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

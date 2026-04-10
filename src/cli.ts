@@ -728,11 +728,15 @@ function readSubscriptionFilter(args: string[]): Record<string, unknown> {
     return parseJsonArg(filterJson, "--filter-json");
   }
   if (filterFile != null) {
-    return parseJsonArg(fs.readFileSync(filterFile, "utf8"), `filter file ${filterFile}`);
+    return parseJsonArg(fs.readFileSync(filterFile, "utf8"), `filter file ${filterFile}`, {
+      requireNonEmpty: true,
+    });
   }
   if (filterStdin) {
     const stdin = fs.readFileSync(0, "utf8");
-    return parseJsonArg(stdin, "stdin filter");
+    return parseJsonArg(stdin, "stdin filter", {
+      requireNonEmpty: true,
+    });
   }
   return {};
 }

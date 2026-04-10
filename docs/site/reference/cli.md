@@ -71,7 +71,8 @@ agentinbox subscription reset <subscription_id> --start-policy latest
 
 `subscription add` accepts exactly one of `--filter-json`, `--filter-file`, or
 `--filter-stdin`. The created subscription response echoes the normalized
-persisted `filter`.
+persisted `filter`. When `--filter-file` or `--filter-stdin` is selected, the
+supplied payload must be a non-empty JSON object.
 
 ## Inbox
 
