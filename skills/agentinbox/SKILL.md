@@ -93,19 +93,24 @@ agentinbox source event <sourceId> --native-id evt_123 --event local.demo --payl
 Add or inspect subscriptions:
 
 ```bash
-agentinbox subscription add <agentId> <sourceId>
-agentinbox subscription add <agentId> <sourceId> --filter-json '{"metadata":{"headBranch":"main","conclusion":"failure"}}'
+agentinbox subscription add <sourceId>
+agentinbox subscription add <sourceId> --agent-id <agentId>
+agentinbox subscription add <sourceId> --filter-json '{"metadata":{"headBranch":"main","conclusion":"failure"}}'
 agentinbox subscription list --agent-id <agentId>
 agentinbox subscription show <subscriptionId>
+agentinbox subscription poll <subscriptionId>
 agentinbox subscription remove <subscriptionId>
 ```
 
 Read and ack the inbox:
 
 ```bash
-agentinbox inbox read <agentId>
-agentinbox inbox watch <agentId>
-agentinbox inbox ack <agentId> --all
+agentinbox inbox read
+agentinbox inbox read --agent-id <agentId>
+agentinbox inbox watch
+agentinbox inbox watch --agent-id <agentId>
+agentinbox inbox ack --all
+agentinbox inbox ack --agent-id <agentId> --all
 ```
 
 Manage activation targets:

@@ -89,17 +89,27 @@ Create a local source and publish an event:
 
 ```bash
 agentinbox source add local_event local-demo
-agentinbox source update <source_id> --config-json '{"channel":"infra"}'
-agentinbox source update <source_id> --clear-config-ref
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox subscription add <source_id> --filter-file ./filter.json
 cat filter.json | agentinbox subscription add <source_id> --filter-stdin
-agentinbox source pause <remote_source_id>
-agentinbox source resume <remote_source_id>
 agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
+```
+
+Update an existing source in place:
+
+```bash
+agentinbox source update <source_id> --config-json '{"channel":"infra"}'
+agentinbox source update <source_id> --clear-config-ref
+```
+
+Pause and resume a managed remote source:
+
+```bash
+agentinbox source pause <remote_source_id>
+agentinbox source resume <remote_source_id>
 ```
 
 Remove a task-specific subscription without deleting the whole agent:
@@ -167,21 +177,6 @@ npm run db:migrations:generate
 `drizzle/migrations`. On upgrade with pending migrations, the daemon creates a
 local backup next to the DB file (for example,
 `~/.agentinbox/agentinbox.sqlite.backup-<timestamp>`).
-
-## Release
-
-`AgentInbox` releases are tag-driven.
-
-- update [package.json](./package.json) and [CHANGELOG.md](./CHANGELOG.md) in a PR before release
-- merge to `main`
-- run the manual terminal smoke matrix in [testcases/manual/manual-terminal-qa.md](./testcases/manual/manual-terminal-qa.md)
-- push a tag in the form `v<package.json version>`
-
-Public beta tags such as `v0.1.0-beta.1` publish to npm with the `beta`
-dist-tag. Stable tags such as `v0.1.0` publish with the `latest` dist-tag.
-
-The operational checklist lives in
-[testcases/manual/release-checklist.md](./testcases/manual/release-checklist.md).
 
 ## License
 

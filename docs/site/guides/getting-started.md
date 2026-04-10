@@ -75,11 +75,8 @@ The shortest end-to-end flow is a local source:
 
 ```bash
 agentinbox source add local_event local-demo
-agentinbox source update <source_id> --config-json '{"channel":"infra"}'
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
-agentinbox source pause <remote_source_id>
-agentinbox source resume <remote_source_id>
 agentinbox source event <source_id> \
   --native-id demo-1 \
   --event local.demo \
@@ -87,6 +84,14 @@ agentinbox source event <source_id> \
   --payload-json '{"text":"hello from a local producer"}'
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
+```
+
+If you need to change an existing source definition without replacing its
+subscriptions, update it in place:
+
+```bash
+agentinbox source update <source_id> --config-json '{"channel":"infra"}'
+agentinbox source update <source_id> --clear-config-ref
 ```
 
 ## GitHub Repo CI Example

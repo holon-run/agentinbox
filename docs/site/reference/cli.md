@@ -65,6 +65,7 @@ agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-stdin
 agentinbox subscription list [--agent-id <agent_id>] [--source-id <source_id>]
 agentinbox subscription show <subscription_id>
 agentinbox subscription remove <subscription_id>
+agentinbox subscription poll <subscription_id>
 agentinbox subscription lag <subscription_id>
 agentinbox subscription reset <subscription_id> --start-policy latest
 ```
@@ -80,6 +81,7 @@ must be a non-empty JSON object.
 Inbox commands use `agentId`, not `inboxId`.
 
 ```bash
+agentinbox inbox list
 agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
 agentinbox inbox watch [--agent-id <agent_id>]
