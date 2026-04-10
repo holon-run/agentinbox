@@ -56,6 +56,7 @@ Register the current terminal session as an agent:
 ```bash
 agentinbox agent register
 agentinbox agent register --agent-id agent-alpha
+agentinbox agent current
 ```
 
 This detects the current runtime and terminal context, assigns or restores an
@@ -74,13 +75,15 @@ The shortest end-to-end flow is a local source:
 
 ```bash
 agentinbox source add local_event local-demo
-agentinbox subscription add <agent_id> <source_id>
+agentinbox subscription add <source_id>
+agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox source event <source_id> \
   --native-id demo-1 \
   --event local.demo \
   --metadata-json '{"channel":"engineering"}' \
   --payload-json '{"text":"hello from a local producer"}'
-agentinbox inbox read <agent_id>
+agentinbox inbox read
+agentinbox inbox read --agent-id <agent_id>
 ```
 
 ## GitHub Repo CI Example
@@ -88,7 +91,7 @@ agentinbox inbox read <agent_id>
 ```bash
 agentinbox source add github_repo_ci holon-run/agentinbox \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
-agentinbox subscription add <agent_id> <source_id> \
+agentinbox subscription add <source_id> --agent-id <agent_id> \
   --filter-json '{"metadata":{"status":"completed","conclusion":"failure","headBranch":"main"}}'
 agentinbox source poll <source_id>
 ```

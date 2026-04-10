@@ -62,6 +62,16 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }
 }
 
+function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000) {
+  const repoDir = path.resolve(__dirname, "..");
+  return spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
+    cwd: repoDir,
+    env,
+    encoding: "utf8",
+    timeout,
+  });
+}
+
 test("cli version and help subcommands print text output", () => {
   const repoDir = path.resolve(__dirname, "..");
   const version = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "--version"], {
@@ -314,6 +324,144 @@ test("control plane validates sources/events occurredAt and deliveries/send requ
     await adapters.stop();
     await service.stop();
     store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane GET /agents can include activation target summaries", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-agents-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const agentResponse = await client.request<{
+        agent: { agentId: string };
+      }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-list",
+        tmuxPaneId: "%777",
+      });
+      assert.equal(agentResponse.statusCode, 200);
+      const agentId = agentResponse.data.agent.agentId;
+
+      const targetResponse = await client.request<{ targetId: string }>(`/agents/${encodeURIComponent(agentId)}/targets`, {
+        kind: "webhook",
+        url: "http://127.0.0.1:9999/webhook",
+      });
+      assert.equal(targetResponse.statusCode, 200);
+
+      const agentsResponse = await client.request<{
+        agents: Array<{
+          agent: { agentId: string };
+          activationTargets: Array<Record<string, unknown>>;
+        }>;
+      }>("/agents?include_targets=true", undefined, "GET");
+      assert.equal(agentsResponse.statusCode, 200);
+      const listed = agentsResponse.data.agents[0];
+      assert.ok(listed);
+      assert.equal(listed.agent.agentId, agentId);
+      assert.equal(Array.isArray(listed.activationTargets), true);
+      assert.deepEqual(listed.activationTargets[0], {
+        targetId: listed.activationTargets[0]?.targetId,
+        kind: "terminal",
+        status: "active",
+        backend: "tmux",
+        tmuxPaneId: "%777",
+        tty: null,
+        termProgram: null,
+        itermSessionId: null,
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-list",
+      });
+      assert.equal(listed.activationTargets[1]?.kind, "webhook");
+      assert.equal(listed.activationTargets[1]?.status, "active");
+      assert.equal("url" in (listed.activationTargets[1] ?? {}), false);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli resolves current agent, auto-registers session workflows, and warns on cross-session targets", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-current-"));
+  const envBase = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+  };
+  const envCurrent = {
+    ...envBase,
+    TMUX_PANE: "%901",
+    CODEX_THREAD_ID: "thread-current",
+  };
+  const envOther = {
+    ...envBase,
+    TMUX_PANE: "%902",
+    CODEX_THREAD_ID: "thread-other",
+  };
+
+  try {
+    const sourceAdd = runCli(["source", "add", "local_event", "cli-current-demo"], envBase);
+    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
+    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+
+    const subscribeCurrent = runCli(["subscription", "add", source.sourceId], envCurrent);
+    assert.equal(subscribeCurrent.status, 0, subscribeCurrent.stderr);
+    const subscribed = JSON.parse(subscribeCurrent.stdout) as {
+      agentId: string;
+      autoRegistered?: boolean;
+    };
+    assert.equal(subscribed.autoRegistered, true);
+
+    const current = runCli(["agent", "current"], envCurrent);
+    assert.equal(current.status, 0, current.stderr);
+    const currentAgent = JSON.parse(current.stdout) as { agentId: string };
+    assert.equal(currentAgent.agentId, subscribed.agentId);
+
+    const otherRegister = runCli(["agent", "register", "--agent-id", "agent-other"], envOther);
+    assert.equal(otherRegister.status, 0, otherRegister.stderr);
+
+    const crossSessionRead = runCli(["inbox", "read", "--agent-id", "agent-other"], envCurrent);
+    assert.equal(crossSessionRead.status, 0, crossSessionRead.stderr);
+    const readResult = JSON.parse(crossSessionRead.stdout) as {
+      agentId: string;
+      warnings?: Array<{ code: string; currentAgentId: string; requestedAgentId: string }>;
+    };
+    assert.equal(readResult.agentId, "agent-other");
+    assert.deepEqual(readResult.warnings, [{
+      code: "cross_session_agent",
+      message: "Requested agent does not match the current terminal session.",
+      currentAgentId: subscribed.agentId,
+      requestedAgentId: "agent-other",
+    }]);
+
+    const oldSyntax = runCli(["subscription", "add", "agent-other", source.sourceId], envCurrent);
+    assert.notEqual(oldSyntax.status, 0);
+    assert.match(oldSyntax.stderr, /usage: agentinbox subscription add <sourceId> \[--agent-id ID]/);
+  } finally {
+    void runCli(["daemon", "stop"], envBase);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,7 @@
 import http from "node:http";
 import Fastify from "fastify";
 import swagger from "@fastify/swagger";
+import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
 import { ActivationMode, DeliveryHandle, WatchInboxOptions } from "./model";
 import { jsonResponse } from "./util";
@@ -267,6 +268,13 @@ function buildFastifyServer(service: AgentInboxService) {
   app.get("/agents", {
     schema: {
       tags: ["agents"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          include_targets: { type: "string", enum: ["true", "false"] },
+        },
+      },
       response: {
         200: {
           type: "object",
@@ -277,7 +285,29 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
     },
-  }, async () => ({ agents: service.listAgents() }));
+  }, async (request) => {
+    const query = request.query as { include_targets?: "true" | "false" };
+    const agents = service.listAgents();
+    if (query.include_targets === "true") {
+      const activationTargetsByAgentId = service.listActivationTargets().reduce((grouped, target) => {
+        const targets = grouped.get(target.agentId);
+        const summarized = summarizeActivationTarget(target);
+        if (targets) {
+          targets.push(summarized);
+        } else {
+          grouped.set(target.agentId, [summarized]);
+        }
+        return grouped;
+      }, new Map<string, ReturnType<typeof summarizeActivationTarget>[]>());
+      return {
+        agents: agents.map((agent) => ({
+          agent,
+          activationTargets: activationTargetsByAgentId.get(agent.agentId) ?? [],
+        })),
+      };
+    }
+    return { agents };
+  });
 
   app.post("/agents", {
     schema: {

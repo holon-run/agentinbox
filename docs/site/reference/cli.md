@@ -28,6 +28,7 @@ agentinbox daemon status
 ```bash
 agentinbox agent register [--agent-id ID] [--force-rebind]
 agentinbox agent list
+agentinbox agent current
 agentinbox agent show <agent_id>
 agentinbox agent remove <agent_id>
 ```
@@ -47,8 +48,8 @@ agentinbox source event <source_id> --native-id <id> --event <variant>
 ## Subscriptions
 
 ```bash
-agentinbox subscription add <agent_id> <source_id> [--filter-json ...]
-agentinbox subscription list
+agentinbox subscription add <source_id> [--agent-id <agent_id>] [--filter-json ...]
+agentinbox subscription list [--agent-id <agent_id>] [--source-id <source_id>]
 agentinbox subscription show <subscription_id>
 agentinbox subscription remove <subscription_id>
 agentinbox subscription lag <subscription_id>
@@ -61,11 +62,11 @@ Inbox commands use `agentId`, not `inboxId`.
 
 ```bash
 agentinbox inbox show <agent_id>
-agentinbox inbox read <agent_id>
-agentinbox inbox watch <agent_id>
-agentinbox inbox ack <agent_id> --through <item_id>
-agentinbox inbox ack <agent_id> --item <item_id>
-agentinbox inbox ack <agent_id> --all
+agentinbox inbox read [--agent-id <agent_id>]
+agentinbox inbox watch [--agent-id <agent_id>]
+agentinbox inbox ack [--agent-id <agent_id>] --through <item_id>
+agentinbox inbox ack [--agent-id <agent_id>] --item <item_id>
+agentinbox inbox ack [--agent-id <agent_id>] --all
 agentinbox inbox compact <agent_id>
 ```
 

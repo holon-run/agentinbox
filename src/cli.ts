@@ -4,6 +4,7 @@ import path from "node:path";
 import { AdapterRegistry } from "./adapters";
 import { AgentInboxClient } from "./client";
 import { startControlServer } from "./control_server";
+import { AgentWithTargets, annotateAgents, BindingKind, resolveCurrentAgent } from "./current_agent";
 import { daemonStatus, ensureDaemonForClient, removePidFile, startDaemon, stopDaemon, writePidFile } from "./daemon";
 import { createServer } from "./http";
 import { resolveDaemonPaths, resolveServeConfig } from "./paths";
@@ -11,6 +12,19 @@ import { AgentInboxService } from "./service";
 import { AgentInboxStore } from "./store";
 import { detectTerminalContext } from "./terminal";
 import { jsonResponse, parseJsonArg } from "./util";
+
+interface CommandWarning {
+  code: "cross_session_agent";
+  message: string;
+  currentAgentId: string;
+  requestedAgentId: string;
+}
+
+interface AgentSelection {
+  agentId: string;
+  autoRegistered: boolean;
+  warnings: CommandWarning[];
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -59,7 +73,7 @@ async function main(): Promise<void> {
     await printRemote(client, "/sources", {
       sourceType: type,
       sourceKey,
-      configRef: takeFlagValue(normalized, "--config-ref") ?? null,
+      configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
       config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
     });
     return;
@@ -126,22 +140,27 @@ async function main(): Promise<void> {
   if (command === "agent" && normalized[1] === "register") {
     const detected = detectTerminalContext(process.env);
     await printRemote(client, "/agents", {
-      agentId: takeFlagValue(normalized, "--agent-id") ?? null,
+      agentId: takeFlagValue(normalized, "--agent-id") ?? undefined,
       forceRebind: normalized.includes("--force-rebind"),
       backend: detected.backend,
       runtimeKind: detected.runtimeKind,
-      runtimeSessionId: detected.runtimeSessionId ?? null,
-      tmuxPaneId: detected.tmuxPaneId ?? null,
-      tty: detected.tty ?? null,
-      termProgram: detected.termProgram ?? null,
-      itermSessionId: detected.itermSessionId ?? null,
-      notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? null,
+      runtimeSessionId: detected.runtimeSessionId ?? undefined,
+      tmuxPaneId: detected.tmuxPaneId ?? undefined,
+      tty: detected.tty ?? undefined,
+      termProgram: detected.termProgram ?? undefined,
+      itermSessionId: detected.itermSessionId ?? undefined,
+      notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined,
     });
     return;
   }
 
   if (command === "agent" && normalized[1] === "list") {
-    await printRemote(client, "/agents", undefined, "GET");
+    await printAgentList(client);
+    return;
+  }
+
+  if (command === "agent" && normalized[1] === "current") {
+    await printCurrentAgent(client);
     return;
   }
 
@@ -173,7 +192,7 @@ async function main(): Promise<void> {
       kind: "webhook",
       url,
       activationMode: takeFlagValue(normalized, "--activation-mode") ?? undefined,
-      notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? null,
+      notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined,
     });
     return;
   }
@@ -197,18 +216,25 @@ async function main(): Promise<void> {
   }
 
   if (command === "subscription" && normalized[1] === "add") {
-    const [agentId, sourceId] = normalized.slice(2, 4);
-    if (!agentId || !sourceId) {
-      throw new Error("usage: agentinbox subscription add <agentId> <sourceId> [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+    const args = normalized.slice(2);
+    const positionals = positionalArgs(args, ["--agent-id", "--filter-json", "--start-policy", "--start-offset", "--start-time"]);
+    const sourceId = positionals[0];
+    if (!sourceId || positionals[1]) {
+      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
-    await printRemote(client, "/subscriptions", {
-      agentId,
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const response = await requestRemote<Record<string, unknown>>(client, "/subscriptions", {
+      agentId: selection.agentId,
       sourceId,
       filter: parseJsonArg(takeFlagValue(normalized, "--filter-json")),
       startPolicy: takeFlagValue(normalized, "--start-policy") ?? undefined,
       startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
       startTime: takeFlagValue(normalized, "--start-time") ?? undefined,
     });
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
     return;
   }
 
@@ -286,24 +312,39 @@ async function main(): Promise<void> {
   }
 
   if (command === "inbox" && normalized[1] === "read") {
-    const agentId = normalized[2];
-    if (!agentId) {
-      throw new Error("usage: agentinbox inbox read <agentId>");
+    const args = normalized.slice(2);
+    if (positionalArgs(args, ["--agent-id", "--after-item"]).length > 0) {
+      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-item ID] [--include-acked]");
     }
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
     const query = buildQuery({
       after_item_id: takeFlagValue(normalized, "--after-item"),
       include_acked: hasFlag(normalized, "--include-acked") ? "true" : undefined,
     });
-    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/inbox/items${query}`, undefined, "GET");
+    const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/items${query}`, undefined, "GET");
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
     return;
   }
 
   if (command === "inbox" && normalized[1] === "watch") {
-    const agentId = normalized[2];
-    if (!agentId) {
-      throw new Error("usage: agentinbox inbox watch <agentId> [--after-item ID] [--include-acked] [--heartbeat-ms N]");
+    const args = normalized.slice(2);
+    if (positionalArgs(args, ["--agent-id", "--after-item", "--heartbeat-ms"]).length > 0) {
+      throw new Error("usage: agentinbox inbox watch [--agent-id ID] [--after-item ID] [--include-acked] [--heartbeat-ms N]");
     }
-    for await (const event of client.watchInbox(agentId, {
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const metadata = withCommandMetadata({
+      event: "watch_notice",
+    }, selection);
+    if (selection.autoRegistered || selection.warnings.length > 0) {
+      console.log(jsonResponse(metadata));
+    }
+    for await (const event of client.watchInbox(selection.agentId, {
       afterItemId: takeFlagValue(normalized, "--after-item"),
       includeAcked: hasFlag(normalized, "--include-acked"),
       heartbeatMs: parseOptionalNumber(takeFlagValue(normalized, "--heartbeat-ms")),
@@ -317,19 +358,24 @@ async function main(): Promise<void> {
   }
 
   if (command === "inbox" && normalized[1] === "ack") {
-    const agentId = normalized[2];
+    const args = normalized.slice(2);
     const itemId = takeFlagValue(normalized, "--item");
     const throughItemId = takeFlagValue(normalized, "--through");
     const ackAll = hasFlag(normalized, "--all");
     const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughItemId)) + Number(ackAll);
-    if (!agentId || modeCount !== 1) {
-      throw new Error("usage: agentinbox inbox ack <agentId> (--through <itemId> | --item <itemId> | --all)");
+    if (positionalArgs(args, ["--agent-id", "--item", "--through"]).length > 0 || modeCount !== 1) {
+      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <itemId> | --item <itemId> | --all)");
     }
-    await printRemote(
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const response = await requestRemote<Record<string, unknown>>(
       client,
-      `/agents/${encodeURIComponent(agentId)}/inbox/ack`,
+      `/agents/${encodeURIComponent(selection.agentId)}/inbox/ack`,
       ackAll ? { all: true } : (throughItemId ? { throughItemId } : { itemIds: [itemId] }),
     );
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
     return;
   }
 
@@ -359,8 +405,8 @@ async function main(): Promise<void> {
       provider,
       surface,
       targetRef,
-      threadRef: takeFlagValue(normalized, "--thread") ?? null,
-      replyMode: takeFlagValue(normalized, "--reply-mode") ?? null,
+      threadRef: takeFlagValue(normalized, "--thread") ?? undefined,
+      replyMode: takeFlagValue(normalized, "--reply-mode") ?? undefined,
       kind,
       payload: parseJsonArg(takeFlagValue(normalized, "--payload-json")),
     });
@@ -470,17 +516,113 @@ async function createClient(args: string[]): Promise<AgentInboxClient> {
   return new AgentInboxClient(transport);
 }
 
+async function printAgentList(client: AgentInboxClient): Promise<void> {
+  const records = await listAgentsWithTargets(client);
+  console.log(jsonResponse(annotateAgents(records, tryDetectTerminalContext())));
+}
+
+async function printCurrentAgent(client: AgentInboxClient): Promise<void> {
+  const context = getRequiredTerminalContext();
+  const records = await listAgentsWithTargets(client);
+  const current = resolveCurrentAgent(records, context);
+  if (!current) {
+    throw new Error("no current agent is registered for this terminal/runtime context; run `agentinbox agent register`");
+  }
+  console.log(jsonResponse(current));
+}
+
+async function selectAgentForCommand(
+  client: AgentInboxClient,
+  options: {
+    explicitAgentId?: string;
+    autoRegister: boolean;
+  },
+): Promise<AgentSelection> {
+  const records = await listAgentsWithTargets(client);
+  const context = tryDetectTerminalContext();
+
+  if (options.explicitAgentId) {
+    const current = context ? resolveCurrentAgent(records, context) : null;
+    const requested = records.find((entry) => entry.agent.agentId === options.explicitAgentId);
+    const warnings: CommandWarning[] = [];
+    if (current && requested && current.agentId !== requested.agent.agentId && current.bindingKind === "session_bound"
+      && bindingKindForRecord(requested) === "session_bound") {
+      warnings.push({
+        code: "cross_session_agent",
+        message: "Requested agent does not match the current terminal session.",
+        currentAgentId: current.agentId,
+        requestedAgentId: requested.agent.agentId,
+      });
+    }
+    return {
+      agentId: options.explicitAgentId,
+      autoRegistered: false,
+      warnings,
+    };
+  }
+
+  const contextForCurrent = getRequiredTerminalContext();
+  const current = resolveCurrentAgent(records, contextForCurrent);
+  if (current) {
+    return {
+      agentId: current.agentId,
+      autoRegistered: false,
+      warnings: [],
+    };
+  }
+
+  if (!options.autoRegister) {
+    throw new Error("no current agent is registered for this terminal/runtime context; run `agentinbox agent register`");
+  }
+
+  await requestRemote(client, "/agents", {
+    backend: contextForCurrent.backend,
+    runtimeKind: contextForCurrent.runtimeKind,
+    runtimeSessionId: contextForCurrent.runtimeSessionId ?? undefined,
+    tmuxPaneId: contextForCurrent.tmuxPaneId ?? undefined,
+    tty: contextForCurrent.tty ?? undefined,
+    termProgram: contextForCurrent.termProgram ?? undefined,
+    itermSessionId: contextForCurrent.itermSessionId ?? undefined,
+    notifyLeaseMs: undefined,
+  });
+  const refreshed = await listAgentsWithTargets(client);
+  const registered = resolveCurrentAgent(refreshed, contextForCurrent);
+  if (!registered) {
+    throw new Error("failed to resolve current agent after auto-register");
+  }
+  return {
+    agentId: registered.agentId,
+    autoRegistered: true,
+    warnings: [],
+  };
+}
+
+async function listAgentsWithTargets(client: AgentInboxClient): Promise<AgentWithTargets[]> {
+  const response = await requestRemote<{ agents: AgentWithTargets[] }>(client, "/agents?include_targets=true", undefined, "GET");
+  return response.data.agents;
+}
+
 async function printRemote(
   client: AgentInboxClient,
   endpoint: string,
   body?: unknown,
   method: "GET" | "POST" | "DELETE" = "POST",
 ): Promise<void> {
-  const response = await client.request(endpoint, body, method);
+  const response = await requestRemote(client, endpoint, body, method);
+  console.log(jsonResponse(response.data));
+}
+
+async function requestRemote<T = unknown>(
+  client: AgentInboxClient,
+  endpoint: string,
+  body?: unknown,
+  method: "GET" | "POST" | "DELETE" = "POST",
+): Promise<{ data: T }> {
+  const response = await client.request<T>(endpoint, body, method);
   if (response.statusCode < 200 || response.statusCode >= 300) {
     throw new Error(jsonResponse(response.data));
   }
-  console.log(jsonResponse(response.data));
+  return { data: response.data };
 }
 
 function takeFlagValue(args: string[], flag: string): string | undefined {
@@ -488,7 +630,11 @@ function takeFlagValue(args: string[], flag: string): string | undefined {
   if (index === -1) {
     return undefined;
   }
-  return args[index + 1];
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`flag ${flag} requires a value`);
+  }
+  return value;
 }
 
 function hasFlag(args: string[], flag: string): boolean {
@@ -529,6 +675,59 @@ function buildQuery(params: Record<string, string | undefined>): string {
   }
   const query = search.toString();
   return query ? `?${query}` : "";
+}
+
+function withCommandMetadata<T extends Record<string, unknown>>(data: T, selection: AgentSelection): T & {
+  agentId: string;
+  autoRegistered?: true;
+  warnings?: CommandWarning[];
+} {
+  return {
+    ...data,
+    agentId: selection.agentId,
+    ...(selection.autoRegistered ? { autoRegistered: true as const } : {}),
+    ...(selection.warnings.length > 0 ? { warnings: selection.warnings } : {}),
+  };
+}
+
+function getRequiredTerminalContext() {
+  try {
+    return detectTerminalContext(process.env);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`unable to resolve current agent: ${message}`);
+  }
+}
+
+function tryDetectTerminalContext() {
+  try {
+    return detectTerminalContext(process.env);
+  } catch {
+    return null;
+  }
+}
+
+function bindingKindForRecord(record: AgentWithTargets): BindingKind {
+  return record.agent.status === "active" && record.activationTargets.some((target) => target.kind === "terminal" && target.status === "active")
+    ? "session_bound"
+    : "detached";
+}
+
+function positionalArgs(args: string[], flagsWithValues: string[]): string[] {
+  const flags = new Set(flagsWithValues);
+  const positionals: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (flags.has(token)) {
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--")) {
+      continue;
+    }
+    positionals.push(token);
+  }
+  return positionals;
 }
 
 function printHelp(path: string[] = []): void {
@@ -583,6 +782,7 @@ Usage:
 Usage:
   agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N]
   agentinbox agent list
+  agentinbox agent current
   agentinbox agent show <agentId>
   agentinbox agent remove <agentId>
   agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N]
@@ -592,7 +792,7 @@ Usage:
     subscription: `agentinbox subscription
 
 Usage:
-  agentinbox subscription add <agentId> <sourceId> [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription remove <subscriptionId>
@@ -605,9 +805,9 @@ Usage:
 Usage:
   agentinbox inbox list
   agentinbox inbox show <agentId>
-  agentinbox inbox read <agentId> [--after-item ID] [--include-acked]
-  agentinbox inbox watch <agentId> [--after-item ID] [--include-acked] [--heartbeat-ms N]
-  agentinbox inbox ack <agentId> (--through <itemId> | --item <itemId> | --all)
+  agentinbox inbox read [--agent-id ID] [--after-item ID] [--include-acked]
+  agentinbox inbox watch [--agent-id ID] [--after-item ID] [--include-acked] [--heartbeat-ms N]
+  agentinbox inbox ack [--agent-id ID] (--through <itemId> | --item <itemId> | --all)
   agentinbox inbox compact <agentId>
 `,
     deliver: `agentinbox deliver

@@ -82,15 +82,18 @@ Register the current terminal session:
 ```bash
 agentinbox agent register
 agentinbox agent register --agent-id agent-alpha
+agentinbox agent current
 ```
 
 Create a local source and publish an event:
 
 ```bash
 agentinbox source add local_event local-demo
-agentinbox subscription add <agent_id> <source_id>
+agentinbox subscription add <source_id>
+agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox source event <source_id> --native-id demo-1 --event local.demo
-agentinbox inbox read <agent_id>
+agentinbox inbox read
+agentinbox inbox read --agent-id <agent_id>
 ```
 
 Remove a task-specific subscription without deleting the whole agent:
