@@ -128,7 +128,7 @@ function buildFastifyServer(service: AgentInboxService) {
         properties: {
           sourceType: { type: "string", minLength: 1 },
           sourceKey: { type: "string", minLength: 1 },
-          configRef: { type: "string" },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
           config: jsonObjectSchema,
         },
       },
@@ -194,7 +194,7 @@ function buildFastifyServer(service: AgentInboxService) {
         additionalProperties: false,
         minProperties: 1,
         properties: {
-          configRef: { type: "string" },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
           config: jsonObjectSchema,
         },
       },

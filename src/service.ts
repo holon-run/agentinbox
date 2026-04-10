@@ -215,8 +215,10 @@ export class AgentInboxService {
     if (!source) {
       return { updated: false, source: null };
     }
-    if (input.configRef == null && input.config == null) {
-      throw new Error("source update requires --config-json and/or --config-ref");
+    const hasConfigRef = Object.prototype.hasOwnProperty.call(input, "configRef");
+    const hasConfig = Object.prototype.hasOwnProperty.call(input, "config");
+    if (!hasConfigRef && !hasConfig) {
+      throw new Error("source update requires configRef and/or config");
     }
 
     const previous = {
@@ -227,24 +229,26 @@ export class AgentInboxService {
     };
 
     const updated = this.store.updateSourceDefinition(sourceId, {
-      configRef: input.configRef ?? previous.configRef,
-      config: input.config ?? previous.config,
+      ...(hasConfigRef ? { configRef: input.configRef ?? null } : {}),
+      ...(hasConfig ? { config: input.config ?? {} } : {}),
     });
 
-    if (updated.status !== "paused") {
-      try {
+    try {
+      if (updated.status === "paused") {
+        await this.adapters.sourceAdapterFor(updated.sourceType).validateSource?.(updated);
+      } else {
         await this.adapters.sourceAdapterFor(updated.sourceType).ensureSource(updated);
-      } catch (error) {
-        this.store.updateSourceDefinition(sourceId, {
-          configRef: previous.configRef,
-          config: previous.config,
-        });
-        this.store.updateSourceRuntime(sourceId, {
-          status: previous.status,
-          checkpoint: previous.checkpoint,
-        });
-        throw error;
       }
+    } catch (error) {
+      this.store.updateSourceDefinition(sourceId, {
+        configRef: previous.configRef,
+        config: previous.config,
+      });
+      this.store.updateSourceRuntime(sourceId, {
+        status: previous.status,
+        checkpoint: previous.checkpoint,
+      });
+      throw error;
     }
 
     return {

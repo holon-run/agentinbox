@@ -462,6 +462,18 @@ test("updateSource re-ensures active remote sources but does not resume paused o
     assert.equal(updatedPaused.updated, true);
     assert.equal(updatedPaused.source?.status, "paused");
     assert.equal(fake.ensuredSources.length, ensureCountBeforePausedUpdate);
+
+    await assert.rejects(
+      service.updateSource(source.sourceId, {
+        config: {
+          profilePath: "demo-update.mjs",
+          profileConfig: {},
+        },
+      }),
+      /tenant required/,
+    );
+    assert.equal(service.getSource(source.sourceId).status, "paused");
+    assert.equal(fake.ensuredSources.length, ensureCountBeforePausedUpdate);
   } finally {
     await service.stop();
     store.close();

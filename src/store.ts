@@ -275,8 +275,8 @@ export class AgentInboxStore {
       where source_id = ?
     `,
       [
-        input.configRef ?? current.configRef ?? null,
-        JSON.stringify(input.config ?? current.config ?? {}),
+        Object.prototype.hasOwnProperty.call(input, "configRef") ? input.configRef ?? null : current.configRef ?? null,
+        JSON.stringify(Object.prototype.hasOwnProperty.call(input, "config") ? input.config ?? {} : current.config ?? {}),
         nowIso(),
         sourceId,
       ],

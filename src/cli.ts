@@ -105,15 +105,19 @@ async function main(): Promise<void> {
   if (command === "source" && normalized[1] === "update") {
     const sourceId = normalized[2];
     if (!sourceId) {
-      throw new Error("usage: agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF]");
+      throw new Error("usage: agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF | --clear-config-ref]");
     }
     const configRef = takeFlagValue(normalized, "--config-ref");
+    const clearConfigRef = hasFlag(normalized, "--clear-config-ref");
     const configJson = takeFlagValue(normalized, "--config-json");
-    if (configRef == null && configJson == null) {
-      throw new Error("usage: agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF]");
+    if (configRef != null && clearConfigRef) {
+      throw new Error("source update accepts only one of --config-ref or --clear-config-ref");
+    }
+    if (!clearConfigRef && configRef == null && configJson == null) {
+      throw new Error("usage: agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF | --clear-config-ref]");
     }
     await printRemote(client, `/sources/${encodeURIComponent(sourceId)}`, {
-      configRef: configRef ?? undefined,
+      ...(clearConfigRef ? { configRef: null } : (configRef != null ? { configRef } : {})),
       config: configJson != null ? parseJsonArg(configJson, "--config-json") : undefined,
     }, "PATCH");
     return;
@@ -828,7 +832,7 @@ Usage:
   agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
   agentinbox source list
   agentinbox source show <sourceId>
-  agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF]
+  agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox source remove <sourceId>
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>

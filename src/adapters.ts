@@ -14,6 +14,7 @@ import { RemoteSourceProfileRegistry } from "./sources/remote_profiles";
 
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
+  validateSource?(source: SubscriptionSource): Promise<void>;
   pollSource?(sourceId: string): Promise<SourcePollResult>;
   pauseSource?(sourceId: string): Promise<void>;
   resumeSource?(sourceId: string): Promise<void>;
@@ -31,6 +32,10 @@ class NoopSourceAdapter implements SourceAdapter {
   constructor(private readonly sourceType: SourceType) {}
 
   async ensureSource(_source: SubscriptionSource): Promise<void> {
+    return;
+  }
+
+  async validateSource(_source: SubscriptionSource): Promise<void> {
     return;
   }
 

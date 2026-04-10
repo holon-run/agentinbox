@@ -500,6 +500,12 @@ test("updateSource preserves source identity and existing subscriptions", async 
     assert.deepEqual(updated.source?.config, { channel: "infra", enabled: false });
     assert.equal(store.listSubscriptionsForSource(source.sourceId).length, 1);
     assert.equal(store.listSubscriptionsForSource(source.sourceId)[0]?.subscriptionId, subscription.subscriptionId);
+
+    const clearedRef = await service.updateSource(source.sourceId, {
+      configRef: null,
+    });
+    assert.equal(clearedRef.updated, true);
+    assert.equal(clearedRef.source?.configRef, null);
   } finally {
     await service.stop();
     store.close();

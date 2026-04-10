@@ -544,6 +544,17 @@ test("control plane can update source config while preserving source identity", 
       assert.equal(updated.data.source.sourceId, sourceId);
       assert.equal(updated.data.source.configRef, "config://after");
       assert.deepEqual(updated.data.source.config, { channel: "infra" });
+
+      const cleared = await client.request<{ updated: boolean; source: { configRef: string | null } }>(
+        `/sources/${encodeURIComponent(sourceId)}`,
+        {
+          configRef: null,
+        },
+        "PATCH",
+      );
+      assert.equal(cleared.statusCode, 200);
+      assert.equal(cleared.data.updated, true);
+      assert.equal(cleared.data.source.configRef, null);
     } finally {
       await started.close();
     }
@@ -798,6 +809,22 @@ test("cli source update patches config in place", () => {
     assert.equal(updatedPayload.source.sourceId, source.sourceId);
     assert.equal(updatedPayload.source.configRef, "config://cli-update");
     assert.deepEqual(updatedPayload.source.config, { channel: "infra" });
+
+    const clearedRef = runCli([
+      "source",
+      "update",
+      source.sourceId,
+      "--clear-config-ref",
+    ], env);
+    assert.equal(clearedRef.status, 0, clearedRef.stderr);
+    const clearedPayload = JSON.parse(clearedRef.stdout) as {
+      updated: boolean;
+      source: {
+        configRef: string | null;
+      };
+    };
+    assert.equal(clearedPayload.updated, true);
+    assert.equal(clearedPayload.source.configRef, null);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

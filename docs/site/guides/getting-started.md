@@ -113,6 +113,7 @@ place instead of removing and recreating it:
 ```bash
 agentinbox source update <source_id> \
   --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":60}'
+agentinbox source update <source_id> --clear-config-ref
 ```
 
 For remote-backed sources, use lifecycle commands instead of delete/recreate
