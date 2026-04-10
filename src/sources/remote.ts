@@ -113,6 +113,16 @@ export class RemoteSourceRuntime {
     await this.syncSource(source.sourceId, true);
   }
 
+  async validateSource(source: SubscriptionSource): Promise<void> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return;
+    }
+    const profile = await this.profileRegistry.resolve(source, this.homeDir);
+    const profileSource = profileInputSource(source);
+    profile.validateConfig(profileSource);
+    profile.buildManagedSourceSpec(profileSource);
+  }
+
   async start(): Promise<void> {
     if (this.interval) {
       return;

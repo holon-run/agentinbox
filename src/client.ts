@@ -14,7 +14,7 @@ export class AgentInboxClient {
   async request<T = unknown>(
     endpoint: string,
     body?: unknown,
-    method: "GET" | "POST" | "DELETE" = "POST",
+    method: "GET" | "POST" | "DELETE" | "PATCH" = "POST",
   ): Promise<AgentInboxResponse<T>> {
     if (this.transport.kind === "socket") {
       return requestViaSocket<T>(this.transport.socketPath, endpoint, body, method);
@@ -46,7 +46,7 @@ function requestViaSocket<T>(
   socketPath: string,
   endpoint: string,
   body: unknown,
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "DELETE" | "PATCH",
 ): Promise<AgentInboxResponse<T>> {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
@@ -78,7 +78,7 @@ function requestViaUrl<T>(
   baseUrl: string,
   endpoint: string,
   body: unknown,
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "DELETE" | "PATCH",
 ): Promise<AgentInboxResponse<T>> {
   return new Promise((resolve, reject) => {
     const url = new URL(normalizeEndpoint(endpoint), baseUrl);

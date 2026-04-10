@@ -75,6 +75,7 @@ The shortest end-to-end flow is a local source:
 
 ```bash
 agentinbox source add local_event local-demo
+agentinbox source update <source_id> --config-json '{"channel":"infra"}'
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox source pause <remote_source_id>
@@ -104,6 +105,15 @@ quoting:
 ```bash
 agentinbox subscription add <source_id> --filter-file ./filter.json
 cat filter.json | agentinbox subscription add <source_id> --filter-stdin
+```
+
+If a source already exists and you only need to change its config, update it in
+place instead of removing and recreating it:
+
+```bash
+agentinbox source update <source_id> \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":60}'
+agentinbox source update <source_id> --clear-config-ref
 ```
 
 For remote-backed sources, use lifecycle commands instead of delete/recreate

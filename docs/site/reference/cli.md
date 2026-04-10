@@ -39,6 +39,7 @@ agentinbox agent remove <agent_id>
 agentinbox source add <source_type> <source_key> [--config-json ...]
 agentinbox source list
 agentinbox source show <source_id>
+agentinbox source update <source_id> [--config-json ...] [--config-ref ...]
 agentinbox source remove <source_id>
 agentinbox source pause <remote_source_id>
 agentinbox source resume <remote_source_id>
@@ -51,6 +52,9 @@ agentinbox source event <source_id> --native-id <id> --event <variant>
 stops the managed runtime without deleting its binding or stream checkpoint.
 Resume goes back through the normal ensure path. Manual `source poll` does not
 resume a paused source.
+
+`source update` replaces persisted `config` and/or `configRef` in place while
+preserving the existing `sourceId` and attached subscriptions.
 
 ## Subscriptions
 

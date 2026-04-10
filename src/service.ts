@@ -22,6 +22,7 @@ import {
   SubscriptionPollResult,
   SubscriptionSource,
   TerminalActivationTarget,
+  UpdateSourceInput,
   WatchInboxOptions,
   WebhookActivationTarget,
 } from "./model";
@@ -207,6 +208,53 @@ export class AgentInboxService {
     await this.adapters.removeSource(source);
     this.store.deleteSource(sourceId);
     return { removed: true };
+  }
+
+  async updateSource(sourceId: string, input: UpdateSourceInput): Promise<{ updated: boolean; source: SubscriptionSource | null }> {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      return { updated: false, source: null };
+    }
+    const hasConfigRef = Object.prototype.hasOwnProperty.call(input, "configRef");
+    const hasConfig = Object.prototype.hasOwnProperty.call(input, "config");
+    if (!hasConfigRef && !hasConfig) {
+      throw new Error("source update requires configRef and/or config");
+    }
+
+    const previous = {
+      configRef: source.configRef ?? null,
+      config: source.config ?? {},
+      status: source.status,
+      checkpoint: source.checkpoint ?? null,
+    };
+
+    const updated = this.store.updateSourceDefinition(sourceId, {
+      ...(hasConfigRef ? { configRef: input.configRef ?? null } : {}),
+      ...(hasConfig ? { config: input.config ?? {} } : {}),
+    });
+
+    try {
+      if (updated.status === "paused") {
+        await this.adapters.sourceAdapterFor(updated.sourceType).validateSource?.(updated);
+      } else {
+        await this.adapters.sourceAdapterFor(updated.sourceType).ensureSource(updated);
+      }
+    } catch (error) {
+      this.store.updateSourceDefinition(sourceId, {
+        configRef: previous.configRef,
+        config: previous.config,
+      });
+      this.store.updateSourceRuntime(sourceId, {
+        status: previous.status,
+        checkpoint: previous.checkpoint,
+      });
+      throw error;
+    }
+
+    return {
+      updated: true,
+      source: this.getSource(sourceId),
+    };
   }
 
   async pauseSource(sourceId: string): Promise<{ paused: boolean; source: SubscriptionSource | null }> {

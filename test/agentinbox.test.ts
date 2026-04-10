@@ -467,6 +467,52 @@ test("removeSource rejects when source still has subscriptions", async () => {
   }
 });
 
+test("updateSource preserves source identity and existing subscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "update-source-demo",
+      configRef: "config://before",
+      config: { channel: "engineering", enabled: true },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "update-source-thread",
+      tmuxPaneId: "%910",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    const updated = await service.updateSource(source.sourceId, {
+      configRef: "config://after",
+      config: { channel: "infra", enabled: false },
+    });
+
+    assert.equal(updated.updated, true);
+    assert.equal(updated.source?.sourceId, source.sourceId);
+    assert.equal(updated.source?.sourceKey, source.sourceKey);
+    assert.equal(updated.source?.configRef, "config://after");
+    assert.deepEqual(updated.source?.config, { channel: "infra", enabled: false });
+    assert.equal(store.listSubscriptionsForSource(source.sourceId).length, 1);
+    assert.equal(store.listSubscriptionsForSource(source.sourceId)[0]?.subscriptionId, subscription.subscriptionId);
+
+    const clearedRef = await service.updateSource(source.sourceId, {
+      configRef: null,
+    });
+    assert.equal(clearedRef.updated, true);
+    assert.equal(clearedRef.source?.configRef, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("subscription remove deletes the subscription, its consumer, and transient runtime state", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const terminalDispatcher = new RecordingTerminalDispatcher();

@@ -260,6 +260,31 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapSource(row));
   }
 
+  updateSourceDefinition(
+    sourceId: string,
+    input: { configRef?: string | null; config?: Record<string, unknown> },
+  ): SubscriptionSource {
+    const current = this.getSource(sourceId);
+    if (!current) {
+      throw new Error(`unknown source: ${sourceId}`);
+    }
+    this.db.run(
+      `
+      update sources
+      set config_ref = ?, config_json = ?, updated_at = ?
+      where source_id = ?
+    `,
+      [
+        Object.prototype.hasOwnProperty.call(input, "configRef") ? input.configRef ?? null : current.configRef ?? null,
+        JSON.stringify(Object.prototype.hasOwnProperty.call(input, "config") ? input.config ?? {} : current.config ?? {}),
+        nowIso(),
+        sourceId,
+      ],
+    );
+    this.persist();
+    return this.getSource(sourceId)!;
+  }
+
   updateSourceRuntime(
     sourceId: string,
     input: { status?: SubscriptionSource["status"]; checkpoint?: string | null },
@@ -275,8 +300,8 @@ export class AgentInboxStore {
       where source_id = ?
     `,
       [
-        input.status ?? current.status,
-        input.checkpoint ?? current.checkpoint ?? null,
+        Object.prototype.hasOwnProperty.call(input, "status") ? input.status ?? current.status : current.status,
+        Object.prototype.hasOwnProperty.call(input, "checkpoint") ? input.checkpoint ?? null : current.checkpoint ?? null,
         nowIso(),
         sourceId,
       ],

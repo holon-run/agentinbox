@@ -128,7 +128,7 @@ function buildFastifyServer(service: AgentInboxService) {
         properties: {
           sourceType: { type: "string", minLength: 1 },
           sourceKey: { type: "string", minLength: 1 },
-          configRef: { type: "string" },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
           config: jsonObjectSchema,
         },
       },
@@ -177,6 +177,35 @@ function buildFastifyServer(service: AgentInboxService) {
   }, async (request) => {
     const params = request.params as { sourceId: string };
     return service.removeSource(decodeURIComponent(params.sourceId));
+  });
+
+  app.patch("/sources/:sourceId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        minProperties: 1,
+        properties: {
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.updateSource(decodeURIComponent(params.sourceId), request.body as never);
   });
 
   app.post("/sources/:sourceId/pause", {

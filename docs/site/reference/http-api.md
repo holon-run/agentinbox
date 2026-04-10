@@ -20,6 +20,7 @@ going forward.
 - `GET /sources`
 - `POST /sources`
 - `GET /sources/{sourceId}`
+- `PATCH /sources/{sourceId}`
 - `DELETE /sources/{sourceId}`
 - `POST /sources/{sourceId}/pause`
 - `POST /sources/{sourceId}/resume`
@@ -81,6 +82,10 @@ going forward.
   `POST /sources/{sourceId}/events`.
 - `remote_source` is supported and requires `config.profilePath` (and optional
   `config.profileConfig`) when registering.
+- `PATCH /sources/{sourceId}` updates persisted `config` and/or `configRef`
+  without changing the `sourceId` or existing subscriptions. Active/error
+  sources are re-ensured after update; paused sources keep their paused
+  lifecycle state until explicitly resumed.
 - `POST /sources/{sourceId}/pause` and `POST /sources/{sourceId}/resume` apply
   only to managed remote sources. Pause stops the managed runtime without
   deleting its binding or stream state. Resume re-enters the normal ensure
