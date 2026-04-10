@@ -16,6 +16,43 @@ In practice, that means `AgentInbox` can:
 - wake or drive agent sessions running in `tmux` or `iTerm2`, even when the
   agent runtime does not expose a notification API
 
+## Event Flow
+
+At a high level, `AgentInbox` sits between external events and the current
+agent session:
+
+![AgentInbox Event Flow](./docs/site/assets/agentinbox-event-flow-v1.png)
+
+## Review Workflow
+
+One concrete workflow is reviewer / developer collaboration around a PR:
+
+```mermaid
+sequenceDiagram
+    participant D as Developer Agent
+    participant G as GitHub / CI
+    participant A as AgentInbox
+    participant R as Reviewer Agent
+
+    D->>G: Open PR / Push fix
+    G->>A: PR opened / CI started
+    A->>R: Wake reviewer
+
+    R->>G: Leave review comment
+    G->>A: Review comment created
+    A->>D: Wake developer
+
+    D->>G: Push fix
+    G->>A: CI completed
+    A->>D: Wake developer
+    A->>R: Wake reviewer
+
+    R->>G: Approve / Merge
+```
+
+`AgentInbox` is what lets both agents stay in the loop without polling GitHub
+manually or relying on the agent runtime to expose its own notification API.
+
 ## Status
 
 `AgentInbox` is public beta software.
