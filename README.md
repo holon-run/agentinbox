@@ -21,22 +21,7 @@ In practice, that means `AgentInbox` can:
 At a high level, `AgentInbox` sits between external events and the current
 agent session:
 
-```mermaid
-flowchart LR
-    E[Repo / CI / Chat / Local]
-    S[Source]
-    F[Subscription]
-    I[Inbox]
-    N[Activation]
-    A[Codex / Claude Code]
-
-    E -->|listen| S
-    S -->|filter| F
-    F -->|queue| I
-    I -->|notify| N
-    N -->|wake| A
-    A -->|act| E
-```
+![AgentInbox Event Flow](./docs/site/assets/agentinbox-event-flow-v1.png)
 
 ## Review Workflow
 
