@@ -19,13 +19,6 @@ Primary docs:
 
 ## Install
 
-If the host agent supports the community `skills` installer, install this skill
-with:
-
-```bash
-npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
-```
-
 Install `agentinbox` if it is not already available:
 
 ```bash
