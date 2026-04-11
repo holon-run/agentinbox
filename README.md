@@ -69,7 +69,8 @@ manually or relying on the agent runtime to expose its own notification API.
 Requires:
 
 - Node.js 20 or newer
-- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu adapters
+- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu adapters:
+  https://github.com/holon-run/uxc
 
 Install globally:
 
@@ -97,6 +98,13 @@ If you are using Codex or Claude Code, start with the bundled AgentInbox skill:
 
 - repo copy: [`skills/agentinbox/SKILL.md`](./skills/agentinbox/SKILL.md)
 - docs site copy: `https://agentinbox.holon.run/skills/agentinbox/SKILL`
+
+If you use the community `skills` installer, you can install the bundled skill
+directly:
+
+```bash
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
+```
 
 That skill is the recommended onboarding path. It can guide the agent through:
 

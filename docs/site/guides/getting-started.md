@@ -10,7 +10,8 @@ is the preferred first-run path.
 ## Prerequisites
 
 - Node.js 20 or newer
-- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu source adapters
+- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu source adapters:
+  https://github.com/holon-run/uxc
 
 Install `AgentInbox` globally:
 
@@ -22,6 +23,13 @@ Or run it directly:
 
 ```bash
 npx @holon-run/agentinbox --help
+```
+
+If you are using Codex or Claude Code, you can also install the bundled
+`AgentInbox` skill first:
+
+```bash
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
 ```
 
 ## Daemon

@@ -8,6 +8,12 @@ This is the preferred path for first-run setup. It avoids pushing the user
 through raw `source add`, `subscription add`, and `uxc` auth commands before the
 agent is ready.
 
+If you use the community `skills` installer, install the bundled skill with:
+
+```bash
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
+```
+
 ## What The Skill Should Do
 
 The bundled skill lives at:
@@ -48,7 +54,9 @@ If GitHub auth should be reused from `gh`:
 uxc auth credential import github --from gh
 ```
 
-This requires `uxc` 0.14.0 or newer.
+This requires `uxc` 0.14.0 or newer:
+
+- https://github.com/holon-run/uxc
 
 ## After Auth
 

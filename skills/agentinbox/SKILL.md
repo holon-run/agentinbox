@@ -19,6 +19,13 @@ Primary docs:
 
 ## Install
 
+If the host agent supports the community `skills` installer, install this skill
+with:
+
+```bash
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
+```
+
 Install `agentinbox` if it is not already available:
 
 ```bash
@@ -31,6 +38,10 @@ Install `uxc` if GitHub or Feishu adapters are needed:
 brew tap holon-run/homebrew-tap
 brew install uxc
 ```
+
+UXC repository:
+
+- `https://github.com/holon-run/uxc`
 
 Then verify:
 
