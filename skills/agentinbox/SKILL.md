@@ -1,8 +1,8 @@
 ---
 name: agentinbox
-description: Use the local AgentInbox service to onboard the current session, connect GitHub through UXC, and operate sources, subscriptions, and the agent inbox.
+description: Use the local AgentInbox service to onboard the current session, manage shared sources and subscriptions, connect external providers such as GitHub through UXC, and operate the agent inbox.
 metadata:
-  short-description: Operate the local AgentInbox service
+  short-description: Operate AgentInbox sources and subscriptions
 ---
 
 # AgentInbox Skill
@@ -75,6 +75,28 @@ agentinbox agent register
 ```
 
 Treat the returned `agentId` as the stable identity for later commands.
+
+## Usage Discipline
+
+When operating AgentInbox, follow these defaults unless there is a strong reason
+not to:
+
+1. prefer broad reusable sources and narrow subscriptions
+2. remove subscriptions when they are no longer needed
+
+In practice:
+
+- do not create one GitHub source per PR unless the source itself must be PR-
+  scoped
+- prefer one shared repo or repo-CI source and use subscription filters for PR,
+  branch, workflow, or failure-specific routing
+- treat unused task-specific subscriptions as cleanup debt and remove them when
+  the task is done
+- if GitHub polling volume looks high, inspect old subscriptions and duplicate
+  temporary sources before adding more
+
+This matches the AgentInbox model: sources are shared hosting units, while
+subscriptions carry agent-specific filtering and delivery intent.
 
 ## Core Commands
 

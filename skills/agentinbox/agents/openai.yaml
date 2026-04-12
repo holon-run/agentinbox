@@ -1,3 +1,3 @@
 display_name: AgentInbox
-short_description: Operate the local AgentInbox service for agent registration, subscriptions, inbox workflows, and activation targets.
-default_prompt: Use AgentInbox to register the current session, inspect sources and subscriptions, and read or watch the agent inbox.
+short_description: Operate the local AgentInbox service for shared sources, subscriptions, inbox workflows, activation targets, and external providers such as GitHub.
+default_prompt: Use AgentInbox to register the current session, inspect sources and subscriptions, prefer broad reusable sources with subscription-side filtering, remove stale subscriptions when they are no longer needed, and read or watch the agent inbox.
