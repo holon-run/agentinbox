@@ -240,6 +240,16 @@ export interface ResolvedSourceIdentity {
 
 export interface ResolvedSourceSchema extends SourceSchema, ResolvedSourceIdentity {
   sourceId: string;
+  aliases?: string[];
+  subscriptionSchema?: {
+    supportsTrackedResourceRef: boolean;
+    supportsLifecycleSignals: boolean;
+    shortcuts: Array<{
+      name: string;
+      description: string;
+      argsSchema?: SourceSchemaField[];
+    }>;
+  };
 }
 
 export interface AppendSourceEventInput {

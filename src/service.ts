@@ -190,18 +190,23 @@ export class AgentInboxService {
     const fallbackSchema = getSourceSchema(source.sourceType);
     let resolvedIdentity: ResolvedSourceIdentity | null = null;
     let resolutionError: string | null = null;
+    let schema: SourceSchema | ResolvedSourceSchema = fallbackSchema;
     try {
       resolvedIdentity = await this.adapters.resolveSourceIdentity(source);
+      schema = await this.adapters.resolveSourceSchema(source);
     } catch (error) {
       resolutionError = error instanceof Error ? error.message : String(error);
     }
+    const resolvedSchema = resolvedIdentity
+      ? ("hostType" in schema
+        ? schema
+        : withResolvedIdentity(source.sourceId, fallbackSchema, resolvedIdentity))
+      : fallbackSchema;
     return {
       source,
       resolvedIdentity,
       ...(resolutionError ? { resolutionError } : {}),
-      schema: resolvedIdentity
-        ? withResolvedIdentity(source.sourceId, fallbackSchema, resolvedIdentity)
-        : fallbackSchema,
+      schema: resolvedSchema,
       stream: this.store.getStreamBySourceId(sourceId),
       subscriptions: this.store.listSubscriptionsForSource(sourceId),
     };

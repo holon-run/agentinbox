@@ -441,6 +441,11 @@ test("remote_source registration succeeds", async () => {
         hostType: string;
         sourceKind: string;
         implementationId: string;
+        subscriptionSchema: {
+          supportsTrackedResourceRef: boolean;
+          supportsLifecycleSignals: boolean;
+          shortcuts: unknown[];
+        };
       };
     };
     assert.deepEqual(details.resolvedIdentity, {
@@ -452,6 +457,11 @@ test("remote_source registration succeeds", async () => {
     assert.equal(details.schema.hostType, "remote_source");
     assert.equal(details.schema.sourceKind, "remote:demo.profile");
     assert.equal(details.schema.implementationId, "demo.profile");
+    assert.deepEqual(details.schema.subscriptionSchema, {
+      supportsTrackedResourceRef: false,
+      supportsLifecycleSignals: false,
+      shortcuts: [],
+    });
   } finally {
     await service.stop();
     store.close();
@@ -478,6 +488,12 @@ test("builtin remote-backed source details expose resolved remote identity", asy
         hostType: string;
         sourceKind: string;
         implementationId: string;
+        aliases?: string[];
+        subscriptionSchema: {
+          supportsTrackedResourceRef: boolean;
+          supportsLifecycleSignals: boolean;
+          shortcuts: unknown[];
+        };
       };
     };
     assert.deepEqual(details.resolvedIdentity, {
@@ -488,6 +504,247 @@ test("builtin remote-backed source details expose resolved remote identity", asy
     assert.equal(details.schema.hostType, "remote_source");
     assert.equal(details.schema.sourceKind, "github_repo");
     assert.equal(details.schema.implementationId, "builtin.github_repo");
+    assert.deepEqual(details.schema.aliases, ["github_repo"]);
+    assert.deepEqual(details.schema.subscriptionSchema, {
+      supportsTrackedResourceRef: false,
+      supportsLifecycleSignals: false,
+      shortcuts: [],
+    });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("remote_source capability hooks override resolved schema fields and advertise shortcut/lifecycle support", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "capabilities.mjs"),
+      `export default {
+  id: "demo.capabilities",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  },
+  describeCapabilities() {
+    return {
+      sourceKind: "remote:demo.capabilities.custom",
+      aliases: ["demo_capabilities"],
+      configSchema: [{ name: "tenant", type: "string", required: true, description: "Tenant identifier." }],
+      metadataFields: [{ name: "tenant", type: "string", description: "Normalized tenant id." }],
+      eventVariantExamples: ["demo.custom.created"],
+      payloadExamples: [{ id: "evt-1", tenant: "team-a" }]
+    };
+  },
+  listSubscriptionShortcuts() {
+    return [{
+      name: "pr",
+      description: "Follow one pull request",
+      argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }]
+    }];
+  },
+  deriveTrackedResource() {
+    return { ref: "resource:demo" };
+  },
+  projectLifecycleSignal() {
+    return { ref: "resource:demo", terminal: true, state: "closed", result: "done" };
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "capabilities-demo",
+      config: {
+        profilePath: "capabilities.mjs",
+        profileConfig: {},
+      },
+    });
+
+    const schema = await service.getResolvedSourceSchema(source.sourceId);
+    assert.equal(schema.sourceKind, "remote:demo.capabilities.custom");
+    assert.equal(schema.implementationId, "demo.capabilities");
+    assert.deepEqual(schema.aliases, ["demo_capabilities"]);
+    assert.deepEqual(schema.configFields, [
+      { name: "tenant", type: "string", required: true, description: "Tenant identifier." },
+    ]);
+    assert.deepEqual(schema.metadataFields, [
+      { name: "tenant", type: "string", description: "Normalized tenant id." },
+    ]);
+    assert.deepEqual(schema.eventVariantExamples, ["demo.custom.created"]);
+    assert.deepEqual(schema.payloadExamples, [{ id: "evt-1", tenant: "team-a" }]);
+    assert.deepEqual(schema.subscriptionSchema, {
+      supportsTrackedResourceRef: true,
+      supportsLifecycleSignals: true,
+      shortcuts: [{
+        name: "pr",
+        description: "Follow one pull request",
+        argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+      }],
+    });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("local_event resolved schema does not expose remote-only subscription capability metadata", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-schema-demo",
+      config: {},
+    });
+
+    const schema = await service.getResolvedSourceSchema(source.sourceId) as {
+      hostType: string;
+      sourceKind: string;
+      implementationId: string;
+      subscriptionSchema?: unknown;
+    };
+    assert.equal(schema.hostType, "local_event");
+    assert.equal(schema.sourceKind, "local_event");
+    assert.equal(schema.implementationId, "builtin.local_event");
+    assert.equal("subscriptionSchema" in schema, false);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("source details keep a wrapped fallback schema when non-identity capability hooks throw", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "broken-shortcuts.mjs"),
+      `export default {
+  id: "demo.broken-shortcuts",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      args: {},
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listSubscriptionShortcuts() {
+    throw new Error("broken listSubscriptionShortcuts");
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "broken-shortcuts-demo",
+      config: {
+        profilePath: "broken-shortcuts.mjs",
+        profileConfig: {},
+      },
+    });
+
+    const details = await service.getSourceDetails(source.sourceId) as {
+      resolvedIdentity: {
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+      resolutionError: string;
+      schema: {
+        sourceType: string;
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+    };
+    assert.deepEqual(details.resolvedIdentity, {
+      hostType: "remote_source",
+      sourceKind: "remote:demo.broken-shortcuts",
+      implementationId: "demo.broken-shortcuts",
+    });
+    assert.match(details.resolutionError, /broken listSubscriptionShortcuts/);
+    assert.equal(details.schema.sourceType, "remote_source");
+    assert.equal(details.schema.hostType, "remote_source");
+    assert.equal(details.schema.sourceKind, "remote:demo.broken-shortcuts");
+    assert.equal(details.schema.implementationId, "demo.broken-shortcuts");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("remote_source profile contract rejects non-function optional hooks", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "invalid-hook.mjs"),
+      `export default {
+  id: "demo.invalid-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      args: {},
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listSubscriptionShortcuts: []
+};`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      service.registerSource({
+        sourceType: "remote_source",
+        sourceKey: "invalid-hook-demo",
+        config: {
+          profilePath: "invalid-hook.mjs",
+          profileConfig: {},
+        },
+      }),
+      /listSubscriptionShortcuts must be a function/,
+    );
   } finally {
     await service.stop();
     store.close();
