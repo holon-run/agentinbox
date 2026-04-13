@@ -2,3 +2,4 @@ node_modules/
 dist/
 .agentinbox/
 .claude/
+.DS_Store
