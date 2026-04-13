@@ -1,13 +1,11 @@
-import { UxcDaemonClient, type PollSubscriptionConfig, type SubscribeStartResponse, type SubscriptionEventEnvelope } from "@holon-run/uxc-daemon-client";
+import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import {
+  AppendSourceEventInput,
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryRequest,
-  AppendSourceEventInput,
-  SourcePollResult,
   SubscriptionSource,
 } from "../model";
-import { AgentInboxStore } from "../store";
 
 export const GITHUB_ENDPOINT = "https://api.github.com";
 export const DEFAULT_GITHUB_EVENT_TYPES = [
@@ -16,7 +14,6 @@ export const DEFAULT_GITHUB_EVENT_TYPES = [
   "PullRequestEvent",
   "PullRequestReviewCommentEvent",
 ];
-const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
 export interface GithubSourceConfig {
   owner: string;
@@ -27,31 +24,7 @@ export interface GithubSourceConfig {
   eventTypes?: string[];
 }
 
-interface GithubSourceCheckpoint {
-  uxcJobId?: string;
-  afterSeq?: number;
-  lastEventAt?: string;
-  lastError?: string;
-}
-
-export interface UxcLikeClient {
-  subscribeStart(args: {
-    endpoint: string;
-    operationId?: string;
-    args?: Record<string, unknown>;
-    mode?: "stream" | "poll";
-    pollConfig?: PollSubscriptionConfig;
-    options?: { auth?: string };
-    sink?: "memory:" | `file:${string}`;
-    ephemeral?: boolean;
-  }): Promise<SubscribeStartResponse>;
-  subscribeStatus(jobId: string): Promise<{ status: string }>;
-  subscriptionEvents(args: {
-    jobId: string;
-    afterSeq?: number;
-    limit?: number;
-    waitMs?: number;
-  }): Promise<{ status: string; events: SubscriptionEventEnvelope[]; next_after_seq: number; has_more: boolean }>;
+export interface GithubCallClient {
   call(args: {
     endpoint: string;
     operation: string;
@@ -61,64 +34,7 @@ export interface UxcLikeClient {
 }
 
 export class GithubUxcClient {
-  constructor(private readonly client: UxcLikeClient = new UxcDaemonClient({ env: process.env })) {}
-
-  async ensureRepoEventsSubscription(
-    config: GithubSourceConfig,
-    checkpoint: GithubSourceCheckpoint,
-  ): Promise<SubscribeStartResponse> {
-    if (checkpoint.uxcJobId) {
-      try {
-        const status = await this.client.subscribeStatus(checkpoint.uxcJobId);
-        if (status.status === "running" || status.status === "reconnecting") {
-          return {
-            job_id: checkpoint.uxcJobId,
-            mode: "poll",
-            protocol: "openapi",
-            endpoint: GITHUB_ENDPOINT,
-            sink: "memory:",
-            status: status.status,
-          };
-        }
-      } catch {
-        // Recreate the job below.
-      }
-    }
-
-    const started = await this.client.subscribeStart({
-      endpoint: GITHUB_ENDPOINT,
-      operationId: "get:/repos/{owner}/{repo}/events",
-      args: { owner: config.owner, repo: config.repo, per_page: config.perPage ?? 10 },
-      mode: "poll",
-      pollConfig: {
-        interval_secs: config.pollIntervalSecs ?? 30,
-        extract_items_pointer: "",
-        checkpoint_strategy: {
-          type: "item_key",
-          item_key_pointer: "/id",
-          seen_window: 1024,
-        },
-      },
-      options: { auth: config.uxcAuth },
-      sink: "memory:",
-      ephemeral: false,
-    });
-    return started;
-  }
-
-  async readSubscriptionEvents(jobId: string, afterSeq: number): Promise<{ events: SubscriptionEventEnvelope[]; nextAfterSeq: number; status: string }> {
-    const response = await this.client.subscriptionEvents({
-      jobId,
-      afterSeq,
-      limit: 100,
-      waitMs: 10,
-    });
-    return {
-      events: response.events,
-      nextAfterSeq: response.next_after_seq,
-      status: response.status,
-    };
-  }
+  constructor(private readonly client: GithubCallClient = new UxcDaemonClient({ env: process.env })) {}
 
   async createIssueComment(input: { owner: string; repo: string; issueNumber: number; body: string; auth?: string }): Promise<void> {
     await this.client.call({
@@ -148,188 +64,6 @@ export class GithubUxcClient {
       options: { auth: input.auth },
     });
   }
-}
-
-export class GithubSourceRuntime {
-  private readonly client: GithubUxcClient;
-  private interval: NodeJS.Timeout | null = null;
-  private readonly inFlight = new Set<string>();
-  private readonly errorCounts = new Map<string, number>();
-  private readonly nextRetryAt = new Map<string, number>();
-
-  constructor(
-    private readonly store: AgentInboxStore,
-    private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
-    client?: GithubUxcClient,
-  ) {
-    this.client = client ?? new GithubUxcClient();
-  }
-
-  async ensureSource(source: SubscriptionSource): Promise<void> {
-    if (source.sourceType !== "github_repo") {
-      return;
-    }
-    const config = parseGithubSourceConfig(source);
-    const checkpoint = parseGithubCheckpoint(source.checkpoint);
-    const started = await this.client.ensureRepoEventsSubscription(config, checkpoint);
-    this.store.updateSourceRuntime(source.sourceId, {
-      status: "active",
-      checkpoint: JSON.stringify({
-        ...checkpoint,
-        uxcJobId: started.job_id,
-      }),
-    });
-  }
-
-  async start(): Promise<void> {
-    if (this.interval) {
-      return;
-    }
-    this.interval = setInterval(() => {
-      void this.syncAll();
-    }, 2_000);
-    try {
-      await this.syncAll();
-    } catch (error) {
-      console.warn("github_repo initial sync failed:", error);
-    }
-  }
-
-  async stop(): Promise<void> {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
-    }
-  }
-
-  async pollSource(sourceId: string): Promise<SourcePollResult> {
-    return this.syncSource(sourceId);
-  }
-
-  status(): Record<string, unknown> {
-    return {
-      activeSourceIds: Array.from(this.inFlight.values()).sort(),
-      erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
-    };
-  }
-
-  private async syncAll(): Promise<void> {
-    const sources = this.store
-      .listSources()
-      .filter((source) => source.sourceType === "github_repo" && source.status !== "paused");
-    for (const source of sources) {
-      try {
-        await this.syncSource(source.sourceId);
-      } catch (error) {
-        console.warn(`github_repo sync failed for ${source.sourceId}:`, error);
-      }
-    }
-  }
-
-  private async syncSource(sourceId: string): Promise<SourcePollResult> {
-    if (this.inFlight.has(sourceId)) {
-      return {
-        sourceId,
-        sourceType: "github_repo",
-        appended: 0,
-        deduped: 0,
-        eventsRead: 0,
-        note: "source sync already in flight",
-      };
-    }
-    this.inFlight.add(sourceId);
-    try {
-      const source = this.store.getSource(sourceId);
-      if (!source) {
-        throw new Error(`unknown source: ${sourceId}`);
-      }
-      const config = parseGithubSourceConfig(source);
-      if (source.status === "error") {
-        const retryAt = this.nextRetryAt.get(sourceId) ?? 0;
-        if (Date.now() < retryAt) {
-          return {
-            sourceId,
-            sourceType: "github_repo",
-            appended: 0,
-            deduped: 0,
-            eventsRead: 0,
-            note: "error backoff not elapsed",
-          };
-        }
-      }
-      let checkpoint = parseGithubCheckpoint(source.checkpoint);
-      const subscription = await this.client.ensureRepoEventsSubscription(config, checkpoint);
-      if (subscription.job_id !== checkpoint.uxcJobId) {
-        checkpoint = { ...checkpoint, uxcJobId: subscription.job_id };
-      }
-
-      const batch = await this.client.readSubscriptionEvents(checkpoint.uxcJobId!, checkpoint.afterSeq ?? 0);
-      let appended = 0;
-      let deduped = 0;
-      for (const event of batch.events) {
-        if (event.event_kind !== "data") {
-          continue;
-        }
-        const normalized = normalizeGithubRepoEvent(source, config, event.data);
-        if (!normalized) {
-          continue;
-        }
-        const result = await this.appendSourceEvent(normalized);
-        appended += result.appended;
-        deduped += result.deduped;
-      }
-
-      this.store.updateSourceRuntime(sourceId, {
-        status: "active",
-        checkpoint: JSON.stringify({
-          ...checkpoint,
-          uxcJobId: checkpoint.uxcJobId,
-          afterSeq: batch.nextAfterSeq,
-          lastEventAt: new Date().toISOString(),
-          lastError: null,
-        }),
-      });
-      this.errorCounts.delete(sourceId);
-      this.nextRetryAt.delete(sourceId);
-
-      return {
-        sourceId,
-        sourceType: "github_repo",
-        appended,
-        deduped,
-        eventsRead: batch.events.length,
-        note: `subscription status=${batch.status}`,
-      };
-    } catch (error) {
-      const source = this.store.getSource(sourceId);
-      if (source) {
-        const checkpoint = parseGithubCheckpoint(source.checkpoint);
-        const config = parseGithubSourceConfig(source);
-        const nextErrorCount = (this.errorCounts.get(sourceId) ?? 0) + 1;
-        this.errorCounts.set(sourceId, nextErrorCount);
-        this.nextRetryAt.set(
-          sourceId,
-          Date.now() + computeErrorBackoffMs(config.pollIntervalSecs ?? 30, nextErrorCount),
-        );
-        this.store.updateSourceRuntime(sourceId, {
-          status: "error",
-          checkpoint: JSON.stringify({
-            ...checkpoint,
-            lastError: error instanceof Error ? error.message : String(error),
-          }),
-        });
-      }
-      throw error;
-    } finally {
-      this.inFlight.delete(sourceId);
-    }
-  }
-}
-
-function computeErrorBackoffMs(pollIntervalSecs: number, errorCount: number): number {
-  const baseMs = Math.max(1, pollIntervalSecs) * 1000;
-  const multiplier = Math.min(2 ** Math.max(0, errorCount - 1), MAX_ERROR_BACKOFF_MULTIPLIER);
-  return baseMs * multiplier;
 }
 
 export class GithubDeliveryAdapter {
@@ -404,7 +138,7 @@ export function normalizeGithubRepoEvent(
     asString(comment.html_url) ??
     asString(issue.html_url) ??
     asString(pullRequest.html_url) ??
-    asString(event["url"]);
+    asString(event.url);
   const deliveryHandle = buildGithubDeliveryHandle(config, eventType, number, comment);
 
   return {
@@ -495,17 +229,6 @@ export function parseGithubSourceConfig(source: SubscriptionSource): GithubSourc
     perPage: asNumber(config.perPage) ?? 10,
     eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_GITHUB_EVENT_TYPES,
   };
-}
-
-function parseGithubCheckpoint(checkpoint: string | null | undefined): GithubSourceCheckpoint {
-  if (!checkpoint) {
-    return {};
-  }
-  try {
-    return JSON.parse(checkpoint) as GithubSourceCheckpoint;
-  } catch {
-    return {};
-  }
 }
 
 function extractLabels(raw: unknown): string[] {

@@ -1,20 +1,15 @@
-import { UxcDaemonClient, type SubscribeStartResponse, type SubscriptionEventEnvelope } from "@holon-run/uxc-daemon-client";
+import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import {
   AppendSourceEventInput,
   DeliveryAttempt,
-  DeliveryHandle,
   DeliveryRequest,
-  SourcePollResult,
   SubscriptionSource,
 } from "../model";
-import { AgentInboxStore } from "../store";
 
 export const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
 export const FEISHU_IM_SCHEMA_URL =
   "https://raw.githubusercontent.com/holon-run/uxc/main/skills/feishu-openapi-skill/references/feishu-im.openapi.json";
 export const DEFAULT_FEISHU_EVENT_TYPES = ["im.message.receive_v1"];
-const DEFAULT_SYNC_INTERVAL_SECS = 2;
-const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
 export interface FeishuBotSourceConfig {
   endpoint?: string;
@@ -24,29 +19,7 @@ export interface FeishuBotSourceConfig {
   chatIds?: string[];
 }
 
-interface FeishuSourceCheckpoint {
-  uxcJobId?: string;
-  afterSeq?: number;
-  lastEventAt?: string;
-  lastError?: string | null;
-}
-
-export interface FeishuUxcLikeClient {
-  subscribeStart(args: {
-    endpoint: string;
-    mode?: "stream" | "poll";
-    options?: { auth?: string };
-    sink?: "memory:" | `file:${string}`;
-    ephemeral?: boolean;
-    transportHint?: "feishu_long_connection";
-  }): Promise<SubscribeStartResponse>;
-  subscribeStatus(jobId: string): Promise<{ status: string }>;
-  subscriptionEvents(args: {
-    jobId: string;
-    afterSeq?: number;
-    limit?: number;
-    waitMs?: number;
-  }): Promise<{ status: string; events: SubscriptionEventEnvelope[]; next_after_seq: number; has_more: boolean }>;
+export interface FeishuCallClient {
   call(args: {
     endpoint: string;
     operation: string;
@@ -56,53 +29,7 @@ export interface FeishuUxcLikeClient {
 }
 
 export class FeishuUxcClient {
-  constructor(private readonly client: FeishuUxcLikeClient = new UxcDaemonClient({ env: process.env })) {}
-
-  async ensureLongConnectionSubscription(
-    config: FeishuBotSourceConfig,
-    checkpoint: FeishuSourceCheckpoint,
-  ): Promise<SubscribeStartResponse> {
-    if (checkpoint.uxcJobId) {
-      try {
-        const status = await this.client.subscribeStatus(checkpoint.uxcJobId);
-        if (status.status === "running" || status.status === "reconnecting") {
-          return {
-            job_id: checkpoint.uxcJobId,
-            mode: "stream",
-            protocol: "feishu_long_connection",
-            endpoint: config.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
-            sink: "memory:",
-            status: status.status,
-          };
-        }
-      } catch {
-        // Recreate the job below.
-      }
-    }
-
-    return this.client.subscribeStart({
-      endpoint: config.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
-      mode: "stream",
-      options: { auth: config.uxcAuth },
-      sink: "memory:",
-      ephemeral: false,
-      transportHint: "feishu_long_connection",
-    });
-  }
-
-  async readSubscriptionEvents(jobId: string, afterSeq: number): Promise<{ events: SubscriptionEventEnvelope[]; nextAfterSeq: number; status: string }> {
-    const response = await this.client.subscriptionEvents({
-      jobId,
-      afterSeq,
-      limit: 100,
-      waitMs: 10,
-    });
-    return {
-      events: response.events,
-      nextAfterSeq: response.next_after_seq,
-      status: response.status,
-    };
-  }
+  constructor(private readonly client: FeishuCallClient = new UxcDaemonClient({ env: process.env })) {}
 
   async sendChatMessage(input: {
     endpoint?: string;
@@ -156,187 +83,6 @@ export class FeishuUxcClient {
       },
     });
   }
-}
-
-export class FeishuSourceRuntime {
-  private readonly client: FeishuUxcClient;
-  private interval: NodeJS.Timeout | null = null;
-  private readonly inFlight = new Set<string>();
-  private readonly errorCounts = new Map<string, number>();
-  private readonly nextRetryAt = new Map<string, number>();
-
-  constructor(
-    private readonly store: AgentInboxStore,
-    private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
-    client?: FeishuUxcClient,
-  ) {
-    this.client = client ?? new FeishuUxcClient();
-  }
-
-  async ensureSource(source: SubscriptionSource): Promise<void> {
-    if (source.sourceType !== "feishu_bot") {
-      return;
-    }
-    const config = parseFeishuSourceConfig(source);
-    const checkpoint = parseFeishuCheckpoint(source.checkpoint);
-    const started = await this.client.ensureLongConnectionSubscription(config, checkpoint);
-    this.store.updateSourceRuntime(source.sourceId, {
-      status: "active",
-      checkpoint: JSON.stringify({
-        ...checkpoint,
-        uxcJobId: started.job_id,
-      }),
-    });
-  }
-
-  async start(): Promise<void> {
-    if (this.interval) {
-      return;
-    }
-    this.interval = setInterval(() => {
-      void this.syncAll();
-    }, 2_000);
-    try {
-      await this.syncAll();
-    } catch (error) {
-      console.warn("feishu_bot initial sync failed:", error);
-    }
-  }
-
-  async stop(): Promise<void> {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
-    }
-  }
-
-  async pollSource(sourceId: string): Promise<SourcePollResult> {
-    return this.syncSource(sourceId);
-  }
-
-  status(): Record<string, unknown> {
-    return {
-      activeSourceIds: Array.from(this.inFlight.values()).sort(),
-      erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
-    };
-  }
-
-  private async syncAll(): Promise<void> {
-    const sources = this.store
-      .listSources()
-      .filter((source) => source.sourceType === "feishu_bot" && source.status !== "paused");
-    for (const source of sources) {
-      try {
-        await this.syncSource(source.sourceId);
-      } catch (error) {
-        console.warn(`feishu_bot sync failed for ${source.sourceId}:`, error);
-      }
-    }
-  }
-
-  private async syncSource(sourceId: string): Promise<SourcePollResult> {
-    if (this.inFlight.has(sourceId)) {
-      return {
-        sourceId,
-        sourceType: "feishu_bot",
-        appended: 0,
-        deduped: 0,
-        eventsRead: 0,
-        note: "source sync already in flight",
-      };
-    }
-    this.inFlight.add(sourceId);
-    try {
-      const source = this.store.getSource(sourceId);
-      if (!source) {
-        throw new Error(`unknown source: ${sourceId}`);
-      }
-      const config = parseFeishuSourceConfig(source);
-      if (source.status === "error") {
-        const retryAt = this.nextRetryAt.get(sourceId) ?? 0;
-        if (Date.now() < retryAt) {
-          return {
-            sourceId,
-            sourceType: "feishu_bot",
-            appended: 0,
-            deduped: 0,
-            eventsRead: 0,
-            note: "error backoff not elapsed",
-          };
-        }
-      }
-      let checkpoint = parseFeishuCheckpoint(source.checkpoint);
-      const subscription = await this.client.ensureLongConnectionSubscription(config, checkpoint);
-      if (subscription.job_id !== checkpoint.uxcJobId) {
-        checkpoint = { ...checkpoint, uxcJobId: subscription.job_id };
-      }
-
-      const batch = await this.client.readSubscriptionEvents(checkpoint.uxcJobId!, checkpoint.afterSeq ?? 0);
-      let appended = 0;
-      let deduped = 0;
-      for (const event of batch.events) {
-        if (event.event_kind !== "data") {
-          continue;
-        }
-        const normalized = normalizeFeishuBotEvent(source, config, event.data);
-        if (!normalized) {
-          continue;
-        }
-        const result = await this.appendSourceEvent(normalized);
-        appended += result.appended;
-        deduped += result.deduped;
-      }
-
-      this.store.updateSourceRuntime(sourceId, {
-        status: "active",
-        checkpoint: JSON.stringify({
-          ...checkpoint,
-          uxcJobId: checkpoint.uxcJobId,
-          afterSeq: batch.nextAfterSeq,
-          lastEventAt: new Date().toISOString(),
-          lastError: null,
-        }),
-      });
-      this.errorCounts.delete(sourceId);
-      this.nextRetryAt.delete(sourceId);
-
-      return {
-        sourceId,
-        sourceType: "feishu_bot",
-        appended,
-        deduped,
-        eventsRead: batch.events.length,
-        note: `subscription status=${batch.status}`,
-      };
-    } catch (error) {
-      const source = this.store.getSource(sourceId);
-      if (source) {
-        const checkpoint = parseFeishuCheckpoint(source.checkpoint);
-        const nextErrorCount = (this.errorCounts.get(sourceId) ?? 0) + 1;
-        this.errorCounts.set(sourceId, nextErrorCount);
-        this.nextRetryAt.set(
-          sourceId,
-          Date.now() + computeErrorBackoffMs(DEFAULT_SYNC_INTERVAL_SECS, nextErrorCount),
-        );
-        this.store.updateSourceRuntime(sourceId, {
-          status: "error",
-          checkpoint: JSON.stringify({
-            ...checkpoint,
-            lastError: error instanceof Error ? error.message : String(error),
-          }),
-        });
-      }
-      throw error;
-    } finally {
-      this.inFlight.delete(sourceId);
-    }
-  }
-}
-
-function computeErrorBackoffMs(syncIntervalSecs: number, errorCount: number): number {
-  const baseMs = Math.max(1, syncIntervalSecs) * 1000;
-  const multiplier = Math.min(2 ** Math.max(0, errorCount - 1), MAX_ERROR_BACKOFF_MULTIPLIER);
-  return baseMs * multiplier;
 }
 
 export class FeishuDeliveryAdapter {
@@ -469,17 +215,6 @@ export function parseFeishuSourceConfig(source: SubscriptionSource): FeishuBotSo
     eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_FEISHU_EVENT_TYPES,
     chatIds: asStringArray(config.chatIds) ?? undefined,
   };
-}
-
-function parseFeishuCheckpoint(checkpoint: string | null | undefined): FeishuSourceCheckpoint {
-  if (!checkpoint) {
-    return {};
-  }
-  try {
-    return JSON.parse(checkpoint) as FeishuSourceCheckpoint;
-  } catch {
-    return {};
-  }
 }
 
 function parseDeliveryConfig(payload: Record<string, unknown>): {

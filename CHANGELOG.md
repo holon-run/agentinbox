@@ -12,6 +12,13 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.1.3] - 2026-04-13
+
+### Fixed
+
+- Removed legacy GitHub and Feishu direct-subscription runtime code that no longer compiles against `@holon-run/uxc-daemon-client@0.15.0`.
+- Kept the source modules focused on the live managed-source path by retaining only delivery helpers plus event normalization and config parsing.
+
 ## [0.1.2] - 2026-04-13
 
 ### Fixed
