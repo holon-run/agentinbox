@@ -56,6 +56,56 @@ test("normalizeGithubRepoEvent extracts metadata and delivery handle", async () 
   assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#12");
 });
 
+test("normalizeGithubRepoEvent includes PullRequestReviewEvent by default", async () => {
+  const source: SubscriptionSource = {
+    sourceId: "src_review",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const normalized = normalizeGithubRepoEvent(source, { owner: "holon-run", repo: "agentinbox" }, {
+    id: "200",
+    type: "PullRequestReviewEvent",
+    created_at: "2026-04-13T10:41:34Z",
+    actor: { login: "Copilot" },
+    repo: { name: "holon-run/agentinbox" },
+    payload: {
+      action: "created",
+      review: {
+        state: "commented",
+        body: "review summary",
+        html_url: "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1",
+      },
+      pull_request: {
+        number: 67,
+        title: "feat: add remote module capability hooks",
+        body: "body",
+        html_url: "https://github.com/holon-run/agentinbox/pull/67",
+      },
+    },
+  });
+
+  assert.ok(normalized);
+  assert.equal(normalized.eventVariant, "PullRequestReviewEvent.created");
+  assert.equal(normalized.metadata?.number, 67);
+  assert.equal(normalized.metadata?.isPullRequest, true);
+  assert.equal(normalized.metadata?.reviewState, "commented");
+  assert.equal(normalized.metadata?.body, "review summary");
+  assert.equal(normalized.metadata?.url, "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1");
+  assert.deepEqual(normalized.rawPayload?.review, {
+    state: "commented",
+    body: "review summary",
+    html_url: "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1",
+  });
+  assert.equal(normalized.deliveryHandle?.surface, "issue_comment");
+  assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#67");
+});
+
 test("github delivery adapter maps issue comments and review replies to uxc calls", async () => {
   const fake = new FakeUxcClient();
   const adapter = new GithubDeliveryAdapter(new GithubUxcClient(fake));
