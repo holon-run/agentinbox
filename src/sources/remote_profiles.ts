@@ -179,6 +179,17 @@ function validateProfileContract(profile: RemoteSourceProfile, sourcePath: strin
   if (typeof profile.mapRawEvent !== "function") {
     throw new Error(`remote_source profile missing mapRawEvent(): ${sourcePath}`);
   }
+  validateOptionalHook(profile.describeCapabilities, "describeCapabilities", sourcePath);
+  validateOptionalHook(profile.listSubscriptionShortcuts, "listSubscriptionShortcuts", sourcePath);
+  validateOptionalHook(profile.expandSubscriptionShortcut, "expandSubscriptionShortcut", sourcePath);
+  validateOptionalHook(profile.deriveTrackedResource, "deriveTrackedResource", sourcePath);
+  validateOptionalHook(profile.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
+}
+
+function validateOptionalHook(value: unknown, name: string, sourcePath: string): void {
+  if (value !== undefined && typeof value !== "function") {
+    throw new Error(`remote_source profile ${name} must be a function when provided: ${sourcePath}`);
+  }
 }
 
 function resolveAndValidateProfilePath(profileRoot: string, profilePath: string): string {

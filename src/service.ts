@@ -40,6 +40,7 @@ import {
 } from "./backend";
 import { generateId, nowIso } from "./util";
 import { getSourceSchema } from "./source_schema";
+import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
 
@@ -196,13 +197,16 @@ export class AgentInboxService {
     } catch (error) {
       resolutionError = error instanceof Error ? error.message : String(error);
     }
+    const resolvedSchema = resolvedIdentity
+      ? ("hostType" in schema
+        ? schema
+        : withResolvedIdentity(source.sourceId, fallbackSchema, resolvedIdentity))
+      : fallbackSchema;
     return {
       source,
       resolvedIdentity,
       ...(resolutionError ? { resolutionError } : {}),
-      schema: resolvedIdentity
-        ? schema
-        : fallbackSchema,
+      schema: resolvedSchema,
       stream: this.store.getStreamBySourceId(sourceId),
       subscriptions: this.store.listSubscriptionsForSource(sourceId),
     };

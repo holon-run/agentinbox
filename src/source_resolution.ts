@@ -36,7 +36,9 @@ export async function resolveSourceIdentity(
   const profileRegistry = context.profileRegistry ?? new RemoteSourceProfileRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
   const profile = await profileRegistry.resolve(source, homeDir);
-  const capabilityDescription = profile.describeCapabilities?.(profileInputSource(source));
+  const capabilityDescription = typeof profile.describeCapabilities === "function"
+    ? profile.describeCapabilities(profileInputSource(source))
+    : undefined;
   return {
     hostType: "remote_source",
     sourceKind: capabilityDescription?.sourceKind?.trim() || `remote:${profile.id}`,
@@ -50,13 +52,16 @@ export async function resolveSourceSchema(
 ): Promise<ResolvedSourceSchema> {
   const profileRegistry = context.profileRegistry ?? new RemoteSourceProfileRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
-  const identity = await resolveSourceIdentity(source, context);
+  const resolvedContext: ResolveSourceContext = { ...context, profileRegistry, homeDir };
+  const identity = await resolveSourceIdentity(source, resolvedContext);
   const staticSchema = getSourceSchema(source.sourceType);
   let capabilityDescription: ReturnType<NonNullable<RemoteSourceProfile["describeCapabilities"]>> | undefined;
   let profile: RemoteSourceProfile | null = null;
   if (identity.hostType === "remote_source") {
     profile = await profileRegistry.resolve(source, homeDir);
-    capabilityDescription = profile.describeCapabilities?.(profileInputSource(source));
+    capabilityDescription = typeof profile.describeCapabilities === "function"
+      ? profile.describeCapabilities(profileInputSource(source))
+      : undefined;
   }
   return withResolvedIdentity(
     source.sourceId,
@@ -68,12 +73,16 @@ export async function resolveSourceSchema(
       configFields: capabilityDescription?.configSchema ?? staticSchema.configFields,
     },
     identity,
-    {
-      aliases: capabilityDescription?.aliases,
-      supportsTrackedResourceRef: Boolean(profile?.deriveTrackedResource),
-      supportsLifecycleSignals: Boolean(profile?.projectLifecycleSignal),
-      shortcuts: profile?.listSubscriptionShortcuts?.(profileInputSource(source)) ?? [],
-    },
+    identity.hostType === "remote_source"
+      ? {
+          aliases: capabilityDescription?.aliases,
+          supportsTrackedResourceRef: typeof profile?.deriveTrackedResource === "function",
+          supportsLifecycleSignals: typeof profile?.projectLifecycleSignal === "function",
+          shortcuts: typeof profile?.listSubscriptionShortcuts === "function"
+            ? profile.listSubscriptionShortcuts(profileInputSource(source))
+            : [],
+        }
+      : undefined,
   );
 }
 

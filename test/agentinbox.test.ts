@@ -605,6 +605,153 @@ test("remote_source capability hooks override resolved schema fields and adverti
   }
 });
 
+test("local_event resolved schema does not expose remote-only subscription capability metadata", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-schema-demo",
+      config: {},
+    });
+
+    const schema = await service.getResolvedSourceSchema(source.sourceId) as {
+      hostType: string;
+      sourceKind: string;
+      implementationId: string;
+      subscriptionSchema?: unknown;
+    };
+    assert.equal(schema.hostType, "local_event");
+    assert.equal(schema.sourceKind, "local_event");
+    assert.equal(schema.implementationId, "builtin.local_event");
+    assert.equal("subscriptionSchema" in schema, false);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("source details keep a wrapped fallback schema when non-identity capability hooks throw", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "broken-shortcuts.mjs"),
+      `export default {
+  id: "demo.broken-shortcuts",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      args: {},
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listSubscriptionShortcuts() {
+    throw new Error("broken listSubscriptionShortcuts");
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "broken-shortcuts-demo",
+      config: {
+        profilePath: "broken-shortcuts.mjs",
+        profileConfig: {},
+      },
+    });
+
+    const details = await service.getSourceDetails(source.sourceId) as {
+      resolvedIdentity: {
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+      resolutionError: string;
+      schema: {
+        sourceType: string;
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+    };
+    assert.deepEqual(details.resolvedIdentity, {
+      hostType: "remote_source",
+      sourceKind: "remote:demo.broken-shortcuts",
+      implementationId: "demo.broken-shortcuts",
+    });
+    assert.match(details.resolutionError, /broken listSubscriptionShortcuts/);
+    assert.equal(details.schema.sourceType, "remote_source");
+    assert.equal(details.schema.hostType, "remote_source");
+    assert.equal(details.schema.sourceKind, "remote:demo.broken-shortcuts");
+    assert.equal(details.schema.implementationId, "demo.broken-shortcuts");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("remote_source profile contract rejects non-function optional hooks", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "invalid-hook.mjs"),
+      `export default {
+  id: "demo.invalid-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      args: {},
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listSubscriptionShortcuts: []
+};`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      service.registerSource({
+        sourceType: "remote_source",
+        sourceKey: "invalid-hook-demo",
+        config: {
+          profilePath: "invalid-hook.mjs",
+          profileConfig: {},
+        },
+      }),
+      /listSubscriptionShortcuts must be a function/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("removeSource rejects when source still has subscriptions", async () => {
   const { store, service, dir } = await makeService();
   try {
