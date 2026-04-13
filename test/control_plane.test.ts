@@ -650,7 +650,7 @@ test("cli source schema resolves source ids to instance schema", () => {
   };
 
   try {
-    const sourceAdd = runCli(["source", "add", "github_repo_ci", "holon-run/agentinbox-ci", "--config-json", "{\"owner\":\"holon-run\",\"repo\":\"agentinbox\"}"], env);
+    const sourceAdd = runCli(["source", "add", "local_event", "cli-source-schema-demo"], env);
     assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
     const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
 
@@ -664,10 +664,10 @@ test("cli source schema resolves source ids to instance schema", () => {
       implementationId: string;
     };
     assert.equal(payload.sourceId, source.sourceId);
-    assert.equal(payload.sourceType, "github_repo_ci");
-    assert.equal(payload.hostType, "remote_source");
-    assert.equal(payload.sourceKind, "github_repo_ci");
-    assert.equal(payload.implementationId, "builtin.github_repo_ci");
+    assert.equal(payload.sourceType, "local_event");
+    assert.equal(payload.hostType, "local_event");
+    assert.equal(payload.sourceKind, "local_event");
+    assert.equal(payload.implementationId, "builtin.local_event");
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
