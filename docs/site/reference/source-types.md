@@ -20,6 +20,15 @@ It uses a local profile module to define:
 - raw event mapping (`stream.read` payload -> AgentInbox event)
 - config validation
 
+It may also optionally define capability introspection hooks used by resolved
+instance schema discovery:
+
+- `describeCapabilities`
+- `listSubscriptionShortcuts`
+- `expandSubscriptionShortcut`
+- `deriveTrackedResource`
+- `projectLifecycleSignal`
+
 Configuration fields:
 
 - `profilePath` (required): path under `$AGENTINBOX_HOME/source-profiles`

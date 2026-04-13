@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-daemon-client";
-import { AppendSourceEventInput, SubscriptionSource } from "../model";
+import { AppendSourceEventInput, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
 import {
   GITHUB_ENDPOINT,
   normalizeGithubRepoEvent,
@@ -44,11 +44,54 @@ export interface MappedRemoteEvent {
   deliveryHandle?: AppendSourceEventInput["deliveryHandle"];
 }
 
+export interface RemoteSourceCapabilityDescription {
+  sourceKind?: string;
+  aliases?: string[];
+  configSchema?: SourceSchemaField[];
+  metadataFields?: SourceSchemaField[];
+  eventVariantExamples?: string[];
+  payloadExamples?: Record<string, unknown>[];
+}
+
+export interface SubscriptionShortcutSpec {
+  name: string;
+  description: string;
+  argsSchema?: SourceSchemaField[];
+}
+
+export interface ExpandedSubscriptionInput {
+  filter?: SubscriptionFilter;
+  lifecycleMode?: "standing" | "temporary";
+  expiresAt?: string | null;
+  trackedResourceRef?: string | null;
+  cleanupPolicy?: Record<string, unknown> | null;
+}
+
+export interface ExpandSubscriptionShortcutInput {
+  name: string;
+  args?: Record<string, unknown>;
+  source: SubscriptionSource;
+}
+
+export interface LifecycleSignal {
+  ref: string;
+  terminal: boolean;
+  state?: string | null;
+  result?: string | null;
+  occurredAt?: string;
+}
+
 export interface RemoteSourceProfile {
   id: string;
   validateConfig(source: SubscriptionSource): void;
   buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec;
   mapRawEvent(rawPayload: Record<string, unknown>, source: SubscriptionSource): MappedRemoteEvent | null;
+  // Optional capability hooks used by resolved schema and future subscription ergonomics.
+  describeCapabilities?(source: SubscriptionSource): RemoteSourceCapabilityDescription;
+  listSubscriptionShortcuts?(source: SubscriptionSource): SubscriptionShortcutSpec[];
+  expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | null;
+  deriveTrackedResource?(filter: SubscriptionFilter, source: SubscriptionSource): { ref: string } | null;
+  projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SubscriptionSource): LifecycleSignal | null;
 }
 
 const REMOTE_USER_PROFILE_ROOT_DIR = "source-profiles";
@@ -171,6 +214,35 @@ function asNonEmptyString(value: unknown): string | null {
 
 const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
   id: "builtin.github_repo",
+  describeCapabilities(source: SubscriptionSource): RemoteSourceCapabilityDescription {
+    const config = parseGithubSourceConfig(source);
+    return {
+      sourceKind: "github_repo",
+      aliases: ["github_repo"],
+      configSchema: [
+        { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+        { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+        { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
+        { name: "eventTypes", type: "string[]", required: false, description: "Optional GitHub event type allowlist." },
+        { name: "perPage", type: "number", required: false, description: `Repository events requested per poll. Default ${config.perPage ?? 10}.` },
+        { name: "pollIntervalSecs", type: "number", required: false, description: `Polling interval in seconds. Default ${config.pollIntervalSecs ?? 30}.` },
+      ],
+      metadataFields: [
+        { name: "eventType", type: "string", description: "GitHub event type such as IssueCommentEvent." },
+        { name: "action", type: "string", description: "GitHub event action suffix such as created." },
+        { name: "author", type: "string|null", description: "Actor login for the event." },
+        { name: "isPullRequest", type: "boolean", description: "Whether the event targets a pull request surface." },
+        { name: "labels", type: "string[]", description: "Labels extracted from the issue or pull request." },
+        { name: "mentions", type: "string[]", description: "Mention handles extracted from title/body/comment text." },
+        { name: "number", type: "number|null", description: "Issue or pull request number when present." },
+        { name: "repoFullName", type: "string", description: "Repository full name in owner/repo form." },
+        { name: "title", type: "string|null", description: "Issue, pull request, or comment title." },
+        { name: "body", type: "string|null", description: "Issue, pull request, or comment body text." },
+        { name: "url", type: "string|null", description: "Primary GitHub HTML URL for the event target." },
+      ],
+      eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewCommentEvent.created"],
+    };
+  },
   validateConfig(source: SubscriptionSource): void {
     parseGithubSourceConfig(source);
   },
@@ -216,6 +288,34 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
 
 const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
   id: "builtin.github_repo_ci",
+  describeCapabilities(): RemoteSourceCapabilityDescription {
+    return {
+      sourceKind: "github_repo_ci",
+      aliases: ["github_repo_ci"],
+      configSchema: [
+        { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+        { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+        { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
+        { name: "pollIntervalSecs", type: "number", required: false, description: "Polling interval in seconds." },
+        { name: "perPage", type: "number", required: false, description: "Workflow runs requested per poll." },
+        { name: "eventFilter", type: "string", required: false, description: "Optional GitHub workflow event filter." },
+        { name: "branch", type: "string", required: false, description: "Optional branch filter for workflow runs." },
+        { name: "statusFilter", type: "string", required: false, description: "Optional workflow status filter." },
+      ],
+      metadataFields: [
+        { name: "name", type: "string|null", description: "Workflow run name." },
+        { name: "status", type: "string", description: "Normalized workflow run status." },
+        { name: "conclusion", type: "string|null", description: "Workflow run conclusion when completed." },
+        { name: "event", type: "string|null", description: "GitHub trigger event for the workflow run." },
+        { name: "headBranch", type: "string|null", description: "Head branch for the workflow run." },
+        { name: "headSha", type: "string|null", description: "Head commit SHA for the workflow run." },
+        { name: "actor", type: "string|null", description: "Actor login for the workflow run." },
+        { name: "commitMessage", type: "string|null", description: "Head commit message when present." },
+        { name: "htmlUrl", type: "string|null", description: "GitHub Actions run URL." },
+      ],
+      eventVariantExamples: ["workflow_run.ci.completed.failure", "workflow_run.nightly_checks.observed"],
+    };
+  },
   validateConfig(source: SubscriptionSource): void {
     parseGithubCiSourceConfig(source);
   },
@@ -270,6 +370,36 @@ const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
 
 const FEISHU_BOT_PROFILE: RemoteSourceProfile = {
   id: "builtin.feishu_bot",
+  describeCapabilities(): RemoteSourceCapabilityDescription {
+    return {
+      sourceKind: "feishu_bot",
+      aliases: ["feishu_bot"],
+      configSchema: [
+        { name: "appId", type: "string", required: true, description: "Feishu app ID." },
+        { name: "appSecret", type: "string", required: true, description: "Feishu app secret." },
+        { name: "eventTypes", type: "string[]", required: false, description: "Optional Feishu event type allowlist." },
+        { name: "chatIds", type: "string[]", required: false, description: "Optional Feishu chat allowlist." },
+        { name: "schemaUrl", type: "string", required: false, description: "Optional Feishu OpenAPI schema URL." },
+        { name: "replyInThread", type: "boolean", required: false, description: "Reply in thread when sending outbound messages." },
+        { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
+      ],
+      metadataFields: [
+        { name: "eventType", type: "string", description: "Feishu event type." },
+        { name: "chatId", type: "string", description: "Target chat ID." },
+        { name: "chatType", type: "string|null", description: "Feishu chat type." },
+        { name: "messageId", type: "string", description: "Feishu message ID." },
+        { name: "messageType", type: "string", description: "Feishu message type such as text." },
+        { name: "senderOpenId", type: "string|null", description: "Sender open_id when present." },
+        { name: "senderType", type: "string|null", description: "Sender type." },
+        { name: "mentions", type: "string[]", description: "Mention names extracted from the message." },
+        { name: "mentionOpenIds", type: "string[]", description: "Mention open_ids extracted from the message." },
+        { name: "content", type: "string|null", description: "Normalized message content string." },
+        { name: "threadId", type: "string|null", description: "Thread or root message ID when present." },
+        { name: "parentId", type: "string|null", description: "Parent message ID when present." },
+      ],
+      eventVariantExamples: ["im.message.receive_v1.text"],
+    };
+  },
   validateConfig(source: SubscriptionSource): void {
     parseFeishuSourceConfig(source);
   },
