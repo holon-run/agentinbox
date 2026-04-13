@@ -243,6 +243,7 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
         { name: "action", type: "string", description: "GitHub event action suffix such as created." },
         { name: "author", type: "string|null", description: "Actor login for the event." },
         { name: "isPullRequest", type: "boolean", description: "Whether the event targets a pull request surface." },
+        { name: "reviewState", type: "string|null", description: "Review decision state for PullRequestReviewEvent such as approved or changes_requested." },
         { name: "labels", type: "string[]", description: "Labels extracted from the issue or pull request." },
         { name: "mentions", type: "string[]", description: "Mention handles extracted from title/body/comment text." },
         { name: "number", type: "number|null", description: "Issue or pull request number when present." },
@@ -250,6 +251,16 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
         { name: "title", type: "string|null", description: "Issue, pull request, or comment title." },
         { name: "body", type: "string|null", description: "Issue, pull request, or comment body text." },
         { name: "url", type: "string|null", description: "Primary GitHub HTML URL for the event target." },
+      ],
+      payloadExamples: [
+        {
+          id: "1234567891",
+          type: "PullRequestReviewEvent",
+          action: "created",
+          actor: "Copilot",
+          pull_request: { number: 67, title: "feat: add remote module capability hooks" },
+          review: { state: "commented", body: "review summary" },
+        },
       ],
       eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewEvent.created", "PullRequestReviewCommentEvent.created"],
     };

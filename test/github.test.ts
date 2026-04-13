@@ -94,6 +94,14 @@ test("normalizeGithubRepoEvent includes PullRequestReviewEvent by default", asyn
   assert.equal(normalized.eventVariant, "PullRequestReviewEvent.created");
   assert.equal(normalized.metadata?.number, 67);
   assert.equal(normalized.metadata?.isPullRequest, true);
+  assert.equal(normalized.metadata?.reviewState, "commented");
+  assert.equal(normalized.metadata?.body, "review summary");
+  assert.equal(normalized.metadata?.url, "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1");
+  assert.deepEqual(normalized.rawPayload?.review, {
+    state: "commented",
+    body: "review summary",
+    html_url: "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1",
+  });
   assert.equal(normalized.deliveryHandle?.surface, "issue_comment");
   assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#67");
 });

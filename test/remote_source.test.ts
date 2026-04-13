@@ -342,6 +342,8 @@ test("github_repo source materializes PullRequestReviewEvent items for PR filter
     assert.equal(items[0]?.eventVariant, "PullRequestReviewEvent.created");
     assert.equal(items[0]?.metadata?.number, 67);
     assert.equal(items[0]?.metadata?.isPullRequest, true);
+    assert.equal(items[0]?.metadata?.reviewState, "commented");
+    assert.equal(items[0]?.metadata?.body, "review summary");
   } finally {
     await service.stop();
     store.close();

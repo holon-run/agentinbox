@@ -126,17 +126,20 @@ export function normalizeGithubRepoEvent(
   const repo = asRecord(event.repo);
   const issue = asRecord(payload.issue);
   const pullRequest = asRecord(payload.pull_request);
+  const review = asRecord(payload.review);
   const comment = asRecord(payload.comment);
   const action = asString(payload.action) ?? "observed";
 
   const number = asNumber(issue.number) ?? asNumber(pullRequest.number);
   const isPullRequest = eventType.startsWith("PullRequest");
   const title = asString(issue.title) ?? asString(pullRequest.title) ?? null;
-  const body = asString(comment.body) ?? asString(issue.body) ?? asString(pullRequest.body) ?? null;
+  const reviewState = asString(review.state) ?? null;
+  const body = asString(comment.body) ?? asString(review.body) ?? asString(issue.body) ?? asString(pullRequest.body) ?? null;
   const labels = extractLabels(issue.labels);
   const mentions = extractMentions(title, body);
   const url =
     asString(comment.html_url) ??
+    asString(review.html_url) ??
     asString(issue.html_url) ??
     asString(pullRequest.html_url) ??
     asString(event.url);
@@ -157,6 +160,7 @@ export function normalizeGithubRepoEvent(
       number,
       author: asString(actor.login) ?? null,
       isPullRequest,
+      reviewState,
       labels,
       mentions,
       title,
@@ -170,6 +174,7 @@ export function normalizeGithubRepoEvent(
       actor: actor.login ?? null,
       issue,
       pull_request: pullRequest,
+      review,
       comment,
     },
     deliveryHandle,
