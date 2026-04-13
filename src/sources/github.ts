@@ -12,6 +12,7 @@ export const DEFAULT_GITHUB_EVENT_TYPES = [
   "IssuesEvent",
   "IssueCommentEvent",
   "PullRequestEvent",
+  "PullRequestReviewEvent",
   "PullRequestReviewCommentEvent",
 ];
 

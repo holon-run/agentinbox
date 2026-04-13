@@ -48,7 +48,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
         comment: { body: "@alpha please look" },
       },
     ],
-    eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewCommentEvent.created"],
+    eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewEvent.created", "PullRequestReviewCommentEvent.created"],
     configFields: [
       { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
       { name: "repo", type: "string", required: true, description: "GitHub repository name." },

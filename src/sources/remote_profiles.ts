@@ -251,7 +251,7 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
         { name: "body", type: "string|null", description: "Issue, pull request, or comment body text." },
         { name: "url", type: "string|null", description: "Primary GitHub HTML URL for the event target." },
       ],
-      eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewCommentEvent.created"],
+      eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewEvent.created", "PullRequestReviewCommentEvent.created"],
     };
   },
   validateConfig(source: SubscriptionSource): void {

@@ -289,6 +289,66 @@ test("github_repo source uses remote runtime builtin profile mapping", async () 
   }
 });
 
+test("github_repo source materializes PullRequestReviewEvent items for PR filters", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remote-github-review-thread",
+      tmuxPaneId: "%903",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: { metadata: { number: 67, isPullRequest: true } },
+      startPolicy: "earliest",
+    });
+    fake.push("stream:github_repo:holon-run/agentinbox", {
+      id: "200",
+      type: "PullRequestReviewEvent",
+      created_at: "2026-04-13T10:41:34Z",
+      actor: { login: "Copilot" },
+      repo: { name: "holon-run/agentinbox" },
+      payload: {
+        action: "created",
+        review: {
+          state: "commented",
+          body: "review summary",
+          html_url: "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1",
+        },
+        pull_request: {
+          number: 67,
+          title: "feat: add remote module capability hooks",
+          body: "body",
+          html_url: "https://github.com/holon-run/agentinbox/pull/67",
+        },
+      },
+    });
+
+    const sourcePoll = await service.pollSource(source.sourceId);
+    const subscriptionPoll = await service.pollSubscription(subscription.subscriptionId);
+    const items = service.listInboxItems(agent.agent.agentId);
+
+    assert.equal(sourcePoll.appended, 1);
+    assert.equal(subscriptionPoll.inboxItemsCreated, 1);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.eventVariant, "PullRequestReviewEvent.created");
+    assert.equal(items[0]?.metadata?.number, 67);
+    assert.equal(items[0]?.metadata?.isPullRequest, true);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("github_repo_ci builtin profile emits status transitions for one workflow run id", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
