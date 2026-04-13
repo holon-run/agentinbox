@@ -630,6 +630,28 @@ test("cli resolves current agent, auto-registers session workflows, and warns on
   }
 });
 
+test("cli inbox read rejects unsupported flags like --ack", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-read-flags-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%941",
+    CODEX_THREAD_ID: "thread-read-flags",
+  };
+
+  try {
+    const read = runCli(["inbox", "read", "--ack"], env);
+    assert.notEqual(read.status, 0);
+    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-item ID] \[--include-acked]/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli subscription add accepts filter-file and filter-stdin and echoes normalized filter", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-filter-"));
   const env = {

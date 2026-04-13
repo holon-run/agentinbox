@@ -352,7 +352,8 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
-    if (positionalArgs(args, ["--agent-id", "--after-item"]).length > 0) {
+    const allowedFlags = ["--agent-id", "--after-item", "--include-acked"];
+    if (positionalArgs(args, ["--agent-id", "--after-item"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
       throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-item ID] [--include-acked]");
     }
     const selection = await selectAgentForCommand(client, {
@@ -794,6 +795,11 @@ function positionalArgs(args: string[], flagsWithValues: string[]): string[] {
     positionals.push(token);
   }
   return positionals;
+}
+
+function unexpectedFlags(args: string[], allowedFlags: string[]): string[] {
+  const allowed = new Set(allowedFlags);
+  return args.filter((token) => token.startsWith("--") && !allowed.has(token));
 }
 
 function printHelp(path: string[] = []): void {
