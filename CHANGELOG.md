@@ -12,6 +12,12 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.1.4] - 2026-04-13
+
+### Fixed
+
+- Added `--test-force-exit` to the test runner so release and CI jobs no longer hang after all test cases have already passed.
+
 ## [0.1.3] - 2026-04-13
 
 ### Fixed
