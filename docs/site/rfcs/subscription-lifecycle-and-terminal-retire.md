@@ -160,7 +160,7 @@ Suggested shape:
 
 This signal may be produced by:
 
-- a remote profile hook
+- a remote module hook
 - a builtin native adapter hook in future
 
 The core should only interpret:
@@ -321,4 +321,3 @@ This delivers value early without requiring a full end-to-end redesign first.
   lifecycle queue
 - should lifecycle projection be modeled as a dedicated hook return value or as
   normalized event metadata consumed by a generic lifecycle pass
-

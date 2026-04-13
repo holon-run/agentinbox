@@ -2,7 +2,7 @@
 title: Source Kinds And Resolved Schemas
 date: 2026-04-13
 type: page
-summary: Separate runtime host types from user-facing source kinds, and make source capability discovery profile-backed through resolved per-source schemas.
+summary: Separate runtime host types from user-facing source kinds, and make source capability discovery implementation-backed through resolved per-source schemas.
 ---
 
 # Source Kinds And Resolved Schemas
@@ -19,14 +19,14 @@ The immediate reason is the current `remote_source` model.
 
 `remote_source` is a shared runtime host for external sources, but it is not a
 useful user-facing type on its own. It becomes concrete only after it is bound
-to a builtin or user-defined profile.
+to a builtin or user-defined implementation module.
 
 This RFC proposes:
 
 - keep a small set of internal host/runtime classes
 - make source capability discovery operate on resolved source kind, not just
   static `sourceType`
-- treat builtin and user-defined remote profiles as one capability model
+- treat builtin and user-defined remote implementations as one capability model
 - make per-source resolved schema the primary discovery surface for agents
 - keep old builtin names such as `github_repo` as friendly aliases where useful
 
@@ -39,11 +39,11 @@ surface:
 - product-facing source kind such as `github_repo`
 
 This works for simple builtin sources, but it breaks down once user-defined
-remote profiles enter the picture:
+remote implementation modules enter the picture:
 
-- `remote_source` is not directly useful until a profile is attached
+- `remote_source` is not directly useful until an implementation module is attached
 - builtin remote-backed kinds like `github_repo` behave like first-class types
-- user-defined remote profiles are currently hidden behind a generic
+- user-defined remote implementations are currently hidden behind a generic
   `remote_source` shell
 - capability discovery for subscription shortcuts or lifecycle behaviors cannot
   be accurately expressed by `source schema <sourceType>` alone
@@ -58,16 +58,16 @@ As a result, agents do not have a clear way to ask:
 ## Goals
 
 - separate runtime hosting concerns from user-facing source capability identity
-- make builtin and user-defined remote profiles discoverable through one model
+- make builtin and user-defined remote implementations discoverable through one model
 - keep builtin source kinds easy to use
 - make `sourceId`-scoped resolved schema the primary discovery path
-- define how profile-backed sources expose extension hooks and shortcuts
+- define how remote implementation modules expose extension hooks and shortcuts
 
 ## Non-Goals
 
 - do not remove the shared `remote_source` runtime model
-- do not require every source implementation to use the remote profile contract
-- do not require uploading executable profile code through the `AgentInbox` API
+- do not require every source implementation to use the remote module contract
+- do not require uploading executable remote module code through the `AgentInbox` API
 - do not force an immediate breaking rename of the existing `SourceType` field
 
 ## Terms
@@ -143,7 +143,7 @@ Suggested shape:
 }
 ```
 
-For a user-defined remote profile:
+For a user-defined remote implementation:
 
 ```json
 {
@@ -168,16 +168,17 @@ For `local_event`:
 ### Why `implementationId`
 
 `profile` is too narrow as a global concept because only remote-hosted sources
-use the profile mechanism today.
+use that mechanism today, and the loaded object is actually an executable
+implementation module rather than a declarative profile.
 
 The more general concept is implementation identity:
 
-- remote user-defined source -> implementation id comes from profile module
-- remote builtin source -> implementation id comes from builtin profile
+- remote user-defined source -> implementation id comes from remote module id
+- remote builtin source -> implementation id comes from builtin remote module id
 - local/native source -> implementation id comes from builtin adapter identity
 
 This keeps the model extensible even if future native source types do not use
-the remote profile contract.
+the remote module contract.
 
 ## 3. Resolved Schema Becomes The Main Agent Discovery Surface
 
@@ -250,7 +251,7 @@ separate concepts mixed together forever.
 For remote-hosted sources, builtin and user-defined implementations should use
 one contract.
 
-Current remote profile hooks already include:
+Current remote implementation hooks already include:
 
 - `validateConfig`
 - `buildManagedSourceSpec`
@@ -261,7 +262,7 @@ This RFC extends that capability model with introspection hooks.
 Suggested shape:
 
 ```ts
-interface RemoteSourceProfile {
+interface RemoteSourceModule {
   id: string
   validateConfig(source: SubscriptionSource): void
   buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec
@@ -311,7 +312,7 @@ The important thing is to establish one extensibility surface that:
 
 ## Subscription Shortcuts
 
-Profile-defined subscription shortcuts should be discoverable, but they should
+Remote-module-defined subscription shortcuts should be discoverable, but they should
 not bypass the standard subscription model.
 
 Shortcut expansion should compile down to ordinary fields such as:
@@ -325,13 +326,13 @@ Shortcut expansion should compile down to ordinary fields such as:
 This keeps the product model coherent:
 
 - the CLI remains generic
-- profile-specific ergonomics still exist
+- module-specific ergonomics still exist
 - HTTP API can use the same expansion logic
 - agents can discover shortcut shapes through resolved schema
 
-### Why Not Arbitrary Profile-Owned CLI Flags
+### Why Not Arbitrary Module-Owned CLI Flags
 
-We should not let each profile add custom top-level CLI flags like:
+We should not let each remote module add custom top-level CLI flags like:
 
 - `--pr`
 - `--thread-id`
@@ -342,19 +343,20 @@ That would fragment the product surface and make skills harder to write.
 The extensibility point should be structured shortcut discovery, not ad hoc CLI
 grammar.
 
-## User-Defined Remote Profiles
+## User-Defined Remote Modules
 
-User-defined remote profiles should remain file-based local extensions in the
+User-defined remote modules should remain file-based local extensions in the
 current design.
 
-The profile code should live under:
+The module code should live under:
 
 - `$AGENTINBOX_HOME/source-profiles/`
 
-`AgentInbox` should continue loading them from local disk through
-`config.profilePath`.
+Today `AgentInbox` loads them from local disk through `config.profilePath`.
+That field name is a compatibility detail, not the target architectural term.
+Future API cleanup may rename it to something like `modulePath`.
 
-This RFC does not propose an HTTP API that uploads executable profile code into
+This RFC does not propose an HTTP API that uploads executable remote module code into
 `AgentInbox`.
 
 ### Why
@@ -364,7 +366,7 @@ This RFC does not propose an HTTP API that uploads executable profile code into
 - it keeps code execution and lifecycle management scoped to the local runtime
 
 If remote installation is needed later, it should be designed as a separate
-profile packaging/install story, not as a generic upload-code endpoint.
+module packaging/install story, not as a generic upload-code endpoint.
 
 ## CLI And API Direction
 
@@ -419,5 +421,4 @@ Suggested migration:
 - should builtin kinds remain persisted as current enum values forever, or only
   survive as input aliases
 - should non-remote native sources eventually expose the same introspection hook
-  style through adapters, not just remote profiles
-
+  style through adapters, not just remote modules
