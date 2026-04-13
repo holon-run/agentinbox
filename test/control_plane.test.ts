@@ -98,6 +98,13 @@ test("cli version and help subcommands print text output", () => {
   assert.equal(inboxHelp.status, 0);
   assert.match(helpInbox.stdout, /agentinbox inbox/);
   assert.equal(helpInbox.stdout, inboxHelp.stdout);
+
+  const helpSource = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "help", "source"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(helpSource.status, 0);
+  assert.match(helpSource.stdout, /agentinbox source schema <sourceId\|sourceType>/);
 });
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
@@ -626,6 +633,43 @@ test("cli resolves current agent, auto-registers session workflows, and warns on
     assert.match(oldSyntax.stderr, /usage: agentinbox subscription add <sourceId> \[--agent-id ID]/);
   } finally {
     void runCli(["daemon", "stop"], envBase);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli source schema resolves source ids to instance schema", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-schema-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%936",
+    CODEX_THREAD_ID: "thread-source-schema",
+  };
+
+  try {
+    const sourceAdd = runCli(["source", "add", "local_event", "cli-source-schema-demo"], env);
+    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
+    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+
+    const schema = runCli(["source", "schema", source.sourceId], env);
+    assert.equal(schema.status, 0, schema.stderr);
+    const payload = JSON.parse(schema.stdout) as {
+      sourceId: string;
+      sourceType: string;
+      hostType: string;
+      sourceKind: string;
+      implementationId: string;
+    };
+    assert.equal(payload.sourceId, source.sourceId);
+    assert.equal(payload.sourceType, "local_event");
+    assert.equal(payload.hostType, "local_event");
+    assert.equal(payload.sourceKind, "local_event");
+    assert.equal(payload.implementationId, "builtin.local_event");
+  } finally {
+    void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
@@ -1414,9 +1458,108 @@ test("control plane accepts remote_source registration", async () => {
         ?? (response.data as { source?: { sourceId?: string } }).source?.sourceId;
       assert.equal(typeof sourceId, "string");
 
+      const details = await client.request<{
+        resolvedIdentity: { hostType: string; sourceKind: string; implementationId: string };
+        schema: { sourceId: string; hostType: string; sourceKind: string; implementationId: string };
+      }>(`/sources/${encodeURIComponent(sourceId!)}`, undefined, "GET");
+      assert.equal(details.statusCode, 200);
+      assert.deepEqual(details.data.resolvedIdentity, {
+        hostType: "remote_source",
+        sourceKind: "remote:demo.control",
+        implementationId: "demo.control",
+      });
+      assert.equal(details.data.schema.sourceId, sourceId);
+      assert.equal(details.data.schema.sourceKind, "remote:demo.control");
+
+      const schema = await client.request<{
+        sourceId: string;
+        sourceType: string;
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      }>(`/sources/${encodeURIComponent(sourceId!)}/schema`, undefined, "GET");
+      assert.equal(schema.statusCode, 200);
+      assert.equal(schema.data.sourceId, sourceId);
+      assert.equal(schema.data.sourceType, "remote_source");
+      assert.equal(schema.data.hostType, "remote_source");
+      assert.equal(schema.data.sourceKind, "remote:demo.control");
+      assert.equal(schema.data.implementationId, "demo.control");
+
       const removed = await client.request<{ removed: boolean }>(`/sources/${encodeURIComponent(sourceId!)}`, undefined, "DELETE");
       assert.equal(removed.statusCode, 200);
       assert.equal(removed.data.removed, true);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane source details degrade when remote_source resolution fails but instance schema reports an error", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-resolve-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const sourceId = "src_missing_profile";
+      store.insertSource({
+        sourceId,
+        sourceType: "remote_source",
+        sourceKey: "resolve-demo",
+        configRef: null,
+        config: {
+          profilePath: "missing.mjs",
+          profileConfig: {},
+        },
+        status: "active",
+        checkpoint: null,
+        createdAt: "2026-04-13T00:00:00.000Z",
+        updatedAt: "2026-04-13T00:00:00.000Z",
+      });
+
+      const details = await client.request<{
+        source: { sourceId: string };
+        resolvedIdentity: null;
+        resolutionError: string;
+        schema: { sourceType: string };
+      }>(`/sources/${encodeURIComponent(sourceId)}`, undefined, "GET");
+      assert.equal(details.statusCode, 200);
+      assert.equal(details.data.source.sourceId, sourceId);
+      assert.equal(details.data.resolvedIdentity, null);
+      assert.match(details.data.resolutionError, /remote_source profile not found/);
+      assert.equal(details.data.schema.sourceType, "remote_source");
+
+      const schema = await client.request<{ error: string }>(`/sources/${encodeURIComponent(sourceId)}/schema`, undefined, "GET");
+      assert.equal(schema.statusCode, 400);
+      assert.match(schema.data.error, /remote_source profile not found/);
     } finally {
       await started.close();
     }

@@ -429,6 +429,65 @@ test("remote_source registration succeeds", async () => {
       },
     });
     assert.equal(source.sourceType, "remote_source");
+
+    const details = await service.getSourceDetails(source.sourceId) as {
+      resolvedIdentity: {
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+      schema: {
+        sourceId: string;
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+    };
+    assert.deepEqual(details.resolvedIdentity, {
+      hostType: "remote_source",
+      sourceKind: "remote:demo.profile",
+      implementationId: "demo.profile",
+    });
+    assert.equal(details.schema.sourceId, source.sourceId);
+    assert.equal(details.schema.hostType, "remote_source");
+    assert.equal(details.schema.sourceKind, "remote:demo.profile");
+    assert.equal(details.schema.implementationId, "demo.profile");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("builtin remote-backed source details expose resolved remote identity", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+
+    const details = await service.getSourceDetails(source.sourceId) as {
+      resolvedIdentity: {
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+      schema: {
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      };
+    };
+    assert.deepEqual(details.resolvedIdentity, {
+      hostType: "remote_source",
+      sourceKind: "github_repo",
+      implementationId: "builtin.github_repo",
+    });
+    assert.equal(details.schema.hostType, "remote_source");
+    assert.equal(details.schema.sourceKind, "github_repo");
+    assert.equal(details.schema.implementationId, "builtin.github_repo");
   } finally {
     await service.stop();
     store.close();

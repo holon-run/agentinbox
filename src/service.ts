@@ -16,6 +16,8 @@ import {
   RegisterAgentResult,
   RegisterSourceInput,
   RegisterSubscriptionInput,
+  ResolvedSourceIdentity,
+  ResolvedSourceSchema,
   SourceSchema,
   SourcePollResult,
   Subscription,
@@ -38,6 +40,7 @@ import {
 } from "./backend";
 import { generateId, nowIso } from "./util";
 import { getSourceSchema } from "./source_schema";
+import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
 
@@ -182,11 +185,23 @@ export class AgentInboxService {
     return source;
   }
 
-  getSourceDetails(sourceId: string): Record<string, unknown> {
+  async getSourceDetails(sourceId: string): Promise<Record<string, unknown>> {
     const source = this.getSource(sourceId);
+    const fallbackSchema = getSourceSchema(source.sourceType);
+    let resolvedIdentity: ResolvedSourceIdentity | null = null;
+    let resolutionError: string | null = null;
+    try {
+      resolvedIdentity = await this.adapters.resolveSourceIdentity(source);
+    } catch (error) {
+      resolutionError = error instanceof Error ? error.message : String(error);
+    }
     return {
       source,
-      schema: getSourceSchema(source.sourceType),
+      resolvedIdentity,
+      ...(resolutionError ? { resolutionError } : {}),
+      schema: resolvedIdentity
+        ? withResolvedIdentity(source.sourceId, fallbackSchema, resolvedIdentity)
+        : fallbackSchema,
       stream: this.store.getStreamBySourceId(sourceId),
       subscriptions: this.store.listSubscriptionsForSource(sourceId),
     };
@@ -194,6 +209,11 @@ export class AgentInboxService {
 
   getSourceSchema(sourceType: SubscriptionSource["sourceType"]): SourceSchema {
     return getSourceSchema(sourceType);
+  }
+
+  async getResolvedSourceSchema(sourceId: string): Promise<ResolvedSourceSchema> {
+    const source = this.getSource(sourceId);
+    return this.adapters.resolveSourceSchema(source);
   }
 
   async removeSource(sourceId: string): Promise<{ removed: boolean }> {

@@ -43,7 +43,7 @@ agentinbox source update <source_id> [--config-json ...] [--config-ref ...]
 agentinbox source remove <source_id>
 agentinbox source pause <remote_source_id>
 agentinbox source resume <remote_source_id>
-agentinbox source schema <source_type>
+agentinbox source schema <source_id|source_type>
 agentinbox source poll <source_id>
 agentinbox source event <source_id> --native-id <id> --event <variant>
 ```

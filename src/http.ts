@@ -159,6 +159,27 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.getSourceDetails(decodeURIComponent(params.sourceId));
   });
 
+  app.get("/sources/:sourceId/schema", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.getResolvedSourceSchema(decodeURIComponent(params.sourceId));
+  });
+
   app.delete("/sources/:sourceId", {
     schema: {
       tags: ["sources"],

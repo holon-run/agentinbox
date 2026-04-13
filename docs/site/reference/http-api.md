@@ -20,6 +20,7 @@ going forward.
 - `GET /sources`
 - `POST /sources`
 - `GET /sources/{sourceId}`
+- `GET /sources/{sourceId}/schema`
 - `PATCH /sources/{sourceId}`
 - `DELETE /sources/{sourceId}`
 - `POST /sources/{sourceId}/pause`
