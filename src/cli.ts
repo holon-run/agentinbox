@@ -142,11 +142,15 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "schema") {
-    const sourceType = normalized[2];
-    if (!sourceType) {
-      throw new Error("usage: agentinbox source schema <sourceType>");
+    const sourceRef = normalized[2];
+    if (!sourceRef) {
+      throw new Error("usage: agentinbox source schema <sourceId|sourceType>");
     }
-    await printRemote(client, `/source-types/${encodeURIComponent(sourceType)}/schema`, undefined, "GET");
+    if (sourceRef.startsWith("src_")) {
+      await printRemote(client, `/sources/${encodeURIComponent(sourceRef)}/schema`, undefined, "GET");
+      return;
+    }
+    await printRemote(client, `/source-types/${encodeURIComponent(sourceRef)}/schema`, undefined, "GET");
     return;
   }
 
@@ -848,7 +852,7 @@ Usage:
   agentinbox source remove <sourceId>
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>
-  agentinbox source schema <sourceType>
+  agentinbox source schema <sourceId|sourceType>
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
 `,

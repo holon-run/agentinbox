@@ -232,6 +232,16 @@ export interface SourceSchema {
   configFields: SourceSchemaField[];
 }
 
+export interface ResolvedSourceIdentity {
+  hostType: "local_event" | "remote_source";
+  sourceKind: string;
+  implementationId: string;
+}
+
+export interface ResolvedSourceSchema extends SourceSchema, ResolvedSourceIdentity {
+  sourceId: string;
+}
+
 export interface AppendSourceEventInput {
   sourceId: string;
   sourceNativeId: string;

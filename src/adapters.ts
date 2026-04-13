@@ -2,15 +2,19 @@ import {
   AppendSourceEventInput,
   DeliveryAttempt,
   DeliveryRequest,
+  ResolvedSourceIdentity,
+  ResolvedSourceSchema,
   SourcePollResult,
   SourceType,
   SubscriptionSource,
 } from "./model";
 import { AgentInboxStore } from "./store";
+import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { RemoteSourceProfileRegistry } from "./sources/remote_profiles";
+import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
@@ -64,6 +68,8 @@ export class AdapterRegistry {
   private readonly defaultDelivery = new NoopDeliveryAdapter();
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
+  private readonly homeDir: string;
+  private readonly remoteProfileRegistry: RemoteSourceProfileRegistry;
 
   constructor(
     store: AgentInboxStore,
@@ -74,10 +80,12 @@ export class AdapterRegistry {
       remoteProfileRegistry?: RemoteSourceProfileRegistry;
     },
   ) {
+    this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
+    this.remoteProfileRegistry = options?.remoteProfileRegistry ?? new RemoteSourceProfileRegistry();
     this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
-      homeDir: options?.homeDir,
+      homeDir: this.homeDir,
       client: options?.remoteSourceClient,
-      profileRegistry: options?.remoteProfileRegistry,
+      profileRegistry: this.remoteProfileRegistry,
     });
   }
 
@@ -152,6 +160,20 @@ export class AdapterRegistry {
   async removeSource(source: SubscriptionSource): Promise<void> {
     const adapter = this.sourceAdapterFor(source.sourceType);
     await adapter.removeSource?.(source.sourceId);
+  }
+
+  async resolveSourceIdentity(source: SubscriptionSource): Promise<ResolvedSourceIdentity> {
+    return resolveSourceIdentity(source, {
+      homeDir: this.homeDir,
+      profileRegistry: this.remoteProfileRegistry,
+    });
+  }
+
+  async resolveSourceSchema(source: SubscriptionSource): Promise<ResolvedSourceSchema> {
+    return resolveSourceSchema(source, {
+      homeDir: this.homeDir,
+      profileRegistry: this.remoteProfileRegistry,
+    });
   }
 
   status(): Record<string, unknown> {
