@@ -1,6 +1,6 @@
 {
   "name": "@holon-run/agentinbox",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local event subscription and delivery service for agents.",
   "license": "Apache-2.0",
   "repository": {
@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@fastify/swagger": "^9.5.2",
-    "@holon-run/uxc-daemon-client": "^0.14.0",
+    "@holon-run/uxc-daemon-client": "^0.15.0",
     "fastify": "^5.6.1",
     "jexl": "^2.3.0",
     "sql.js": "^1.13.0"

@@ -66,7 +66,7 @@ gh auth status
 uxc auth credential import github --from gh
 ```
 
-This `gh` import path requires `uxc` 0.14.0 or newer.
+This `gh` import path requires `uxc` 0.15.0 or newer.
 
 Register the current terminal/runtime session:
 

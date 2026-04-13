@@ -12,6 +12,17 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.1.2] - 2026-04-13
+
+### Fixed
+
+- `agentinbox inbox read` now rejects unsupported flags such as `--ack` instead of silently ignoring them.
+
+### Changed
+
+- Upgraded `@holon-run/uxc-daemon-client` to `0.15.0` and raised the documented minimum `uxc` version to `0.15.0`.
+- Refreshed onboarding and release docs to match the current skill-first setup and release workflow.
+
 ## [0.1.1] - 2026-04-10
 
 ### Added

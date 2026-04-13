@@ -69,7 +69,7 @@ manually or relying on the agent runtime to expose its own notification API.
 Requires:
 
 - Node.js 20 or newer
-- `uxc` 0.14.0 or newer if you want to use GitHub or Feishu adapters:
+- `uxc` 0.15.0 or newer if you want to use GitHub or Feishu adapters:
   https://github.com/holon-run/uxc
 
 Install globally:
