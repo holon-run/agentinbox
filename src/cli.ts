@@ -94,8 +94,8 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "remove") {
-    const args = normalized.slice(2);
-    const positionals = positionalArgs(args, ["--with-subscriptions"]);
+    const removeArgs = normalized.slice(2);
+    const positionals = positionalArgs(removeArgs, ["--with-subscriptions"]);
     const sourceId = positionals[0];
     if (!sourceId || positionals[1]) {
       throw new Error("usage: agentinbox source remove <sourceId> [--with-subscriptions]");

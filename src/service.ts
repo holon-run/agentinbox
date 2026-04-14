@@ -234,18 +234,16 @@ export class AgentInboxService {
     }
     const subscriptions = this.store.listSubscriptionsForSource(sourceId);
     if (subscriptions.length > 0 && !options.withSubscriptions) {
-      throw new Error("source remove requires no active subscriptions");
+      throw new Error(
+        "source remove requires no active subscriptions; retry with --with-subscriptions or with_subscriptions=true",
+      );
     }
     let pausedSource = false;
     if (options.withSubscriptions) {
-      try {
+      const sourceAdapter = this.adapters.sourceAdapterFor(source.sourceType);
+      if (sourceAdapter.pauseSource) {
         await this.pauseSource(sourceId);
         pausedSource = true;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes("does not support pause")) {
-          throw error;
-        }
       }
       for (const subscription of subscriptions) {
         await this.removeSubscription(subscription.subscriptionId);
