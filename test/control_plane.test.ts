@@ -674,6 +674,77 @@ test("cli source schema resolves source ids to instance schema", () => {
   }
 });
 
+test("cli source schema preview resolves remote module-backed schemas before registration", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-schema-preview-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%937",
+    CODEX_THREAD_ID: "thread-source-schema-preview",
+  };
+
+  try {
+    const profileDir = path.join(homeDir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview.mjs"),
+      `export default {
+  id: "demo.preview",
+  validateConfig(source) {
+    if (!source.config.token) throw new Error("preview token required");
+  },
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  describeCapabilities() {
+    return {
+      sourceKind: "remote:demo.preview",
+      metadataFields: [{ name: "ticketId", type: "string", description: "Ticket id." }]
+    };
+  }
+};`,
+      "utf8",
+    );
+
+    const schema = runCli([
+      "source",
+      "schema",
+      "preview",
+      "remote:demo.preview",
+      "--config-json",
+      "{\"profilePath\":\"preview.mjs\",\"profileConfig\":{\"token\":\"demo-token\"}}",
+    ], env);
+    assert.equal(schema.status, 0, schema.stderr);
+    const payload = JSON.parse(schema.stdout) as {
+      sourceType: string;
+      hostType: string;
+      sourceKind: string;
+      implementationId: string;
+      metadataFields: Array<{ name: string }>;
+    };
+    assert.equal(payload.sourceType, "remote_source");
+    assert.equal(payload.hostType, "remote_source");
+    assert.equal(payload.sourceKind, "remote:demo.preview");
+    assert.equal(payload.implementationId, "demo.preview");
+    assert.deepEqual(payload.metadataFields, [{ name: "ticketId", type: "string", description: "Ticket id." }]);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli inbox read rejects unsupported flags like --ack", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-read-flags-"));
   const env = {
@@ -1048,6 +1119,150 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
       assert.deepEqual(subscription.data.filter, { metadata: { ticketId: "A-9" } });
       assert.equal(subscription.data.trackedResourceRef, "ticket:A-9");
       assert.deepEqual(subscription.data.cleanupPolicy, { mode: "manual" });
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane source schema preview resolves remote modules without persistence", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "preview.mjs"),
+    `export default {
+  id: "demo.http.preview",
+  validateConfig(source) {
+    if (!source.config.token) throw new Error("preview token required");
+  },
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  describeCapabilities() {
+    return {
+      sourceKind: "remote:demo.http.preview",
+      metadataFields: [{ name: "ticketId", type: "string", description: "Ticket id." }]
+    };
+  }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const preview = await client.request<{
+        sourceType: string;
+        hostType: string;
+        sourceKind: string;
+        implementationId: string;
+      }>("/sources/schema-preview", {
+        sourceRef: "remote:demo.http.preview",
+        config: {
+          profilePath: "preview.mjs",
+          profileConfig: { token: "demo-token" },
+        },
+      }, "POST");
+      assert.equal(preview.statusCode, 200);
+      assert.equal(preview.data.sourceType, "remote_source");
+      assert.equal(preview.data.hostType, "remote_source");
+      assert.equal(preview.data.sourceKind, "remote:demo.http.preview");
+      assert.equal(preview.data.implementationId, "demo.http.preview");
+      assert.equal(store.listSources().length, 0);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane source schema preview returns 400 for invalid preview inputs", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-error-"));
+  const socketPath = path.join(os.tmpdir(), `aix-preview-${process.pid}-${Date.now()}.sock`);
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "preview-error.mjs"),
+    `export default {
+  id: "demo.http.preview.error",
+  validateConfig(source) {
+    if (!source.config.token) throw new Error("preview token required");
+  },
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const preview = await client.request<{ error: string }>("/sources/schema-preview", {
+        sourceRef: "remote:demo.http.preview.error",
+        config: {
+          profilePath: "preview-error.mjs",
+          profileConfig: {},
+        },
+      }, "POST");
+      assert.equal(preview.statusCode, 400);
+      assert.match(preview.data.error, /preview failed: preview token required/);
+      assert.equal(store.listSources().length, 0);
     } finally {
       await started.close();
     }

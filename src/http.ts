@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import swagger from "@fastify/swagger";
 import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
-import { ActivationMode, DeliveryHandle, WatchInboxOptions } from "./model";
+import { ActivationMode, DeliveryHandle, PreviewSourceSchemaInput, WatchInboxOptions } from "./model";
 import { jsonResponse } from "./util";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
@@ -300,6 +300,26 @@ function buildFastifyServer(service: AgentInboxService) {
     const params = request.params as { sourceType: string };
     return service.getSourceSchema(decodeURIComponent(params.sourceType) as never);
   });
+
+  app.post("/sources/schema-preview", {
+    schema: {
+      tags: ["sources"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sourceRef"],
+        properties: {
+          sourceRef: { type: "string", minLength: 1 },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.previewSourceSchema(request.body as PreviewSourceSchemaInput));
 
   app.post("/sources/:sourceId/poll", {
     schema: {
@@ -1125,6 +1145,9 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unsupported terminal") ||
     message.startsWith("cleanupPolicy ") ||
     message.startsWith("trackedResourceRef ") ||
+    message.startsWith("preview failed: ") ||
+    message.startsWith("unknown source kind or type for preview") ||
+    message.startsWith("preview source kind ") ||
     message.startsWith("subscription add shortcut") ||
     message.startsWith("unknown subscription shortcut ") ||
     message.startsWith("expected boolean") ||

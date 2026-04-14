@@ -238,6 +238,12 @@ export interface RegisterSubscriptionInput {
   startTime?: string | null;
 }
 
+export interface PreviewSourceSchemaInput {
+  sourceRef: string;
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+}
+
 export interface SourceSchemaField {
   name: string;
   type: string;
@@ -272,6 +278,8 @@ export interface ResolvedSourceSchema extends SourceSchema, ResolvedSourceIdenti
     }>;
   };
 }
+
+export interface SourceSchemaPreview extends Omit<ResolvedSourceSchema, "sourceId"> {}
 
 export interface AppendSourceEventInput {
   sourceId: string;
