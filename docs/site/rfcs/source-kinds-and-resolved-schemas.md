@@ -319,9 +319,7 @@ Shortcut expansion should compile down to ordinary fields such as:
 
 - `filter`
 - `trackedResourceRef`
-- `lifecycleMode`
-- `expiresAt`
-- cleanup policy fields
+- `cleanupPolicy`
 
 This keeps the product model coherent:
 

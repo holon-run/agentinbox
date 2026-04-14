@@ -2,7 +2,7 @@
 title: Subscription Lifecycle And Terminal Auto-Retire
 date: 2026-04-13
 type: page
-summary: Add explicit temporary subscription lifecycle, source-scoped tracked resources, TTL cleanup, and terminal-state auto-retire for task-scoped subscriptions.
+summary: Replace temporary-subscription semantics with explicit cleanup policies, source-scoped tracked resources, deadline cleanup, and terminal-state auto-retire for task-scoped subscriptions.
 ---
 
 # Subscription Lifecycle And Terminal Auto-Retire
@@ -14,12 +14,13 @@ not permanent configuration.
 
 This RFC proposes:
 
-- make temporary subscriptions a real product path
+- make task-scoped cleanup an explicit policy instead of a temporary mode
 - add explicit tracked resource binding for task-scoped subscriptions
 - allow source implementations to project terminal lifecycle signals
-- automatically retire temporary subscriptions when the tracked resource reaches
-  a terminal state
-- keep TTL/expiry cleanup as a fallback when lifecycle signals are absent or
+- automatically retire subscriptions when the tracked resource reaches a
+  terminal state, when a configured deadline is reached, or whichever happens
+  first
+- keep deadline cleanup as a fallback when lifecycle signals are absent or
   missed
 
 The immediate motivation is PR-scoped or branch-scoped subscriptions that are
@@ -35,7 +36,7 @@ Today `Subscription` already contains:
 
 But the current runtime does not close the loop well enough:
 
-- temporary subscriptions are not a first-class, discoverable workflow
+- cleanup intent is split across ad hoc fields instead of one clear policy
 - expired subscription cleanup is not a complete operator-facing story
 - task-scoped subscriptions such as PR review subscriptions are easy to forget
 - agents must currently remember to remove them manually
@@ -49,7 +50,7 @@ In practice this creates:
 
 ## Goals
 
-- make task-scoped subscriptions explicitly temporary
+- make task-scoped cleanup explicit without relying on a temporary/persistent split
 - make automatic cleanup possible without provider-specific core logic
 - avoid parsing free-form filters to infer lifecycle binding
 - let source implementations describe terminal resource states
@@ -64,12 +65,30 @@ In practice this creates:
 
 ## Core Design
 
-## 1. Temporary Subscriptions Should Be Normal
+## 1. Cleanup Policy Should Be Explicit
 
-Task-scoped subscriptions should commonly be created as:
+Task-scoped subscriptions should not rely on a special `temporary` category.
 
-- `lifecycleMode = temporary`
-- optional `expiresAt`
+Instead, they should carry an explicit cleanup policy.
+
+Suggested shape:
+
+```json
+{
+  "cleanupPolicy": {
+    "mode": "on_terminal_or_at",
+    "at": "2026-04-20T00:00:00Z",
+    "gracePeriodSecs": 86400
+  }
+}
+```
+
+Suggested modes:
+
+- `manual`
+- `at`
+- `on_terminal`
+- `on_terminal_or_at`
 
 Examples:
 
@@ -77,8 +96,12 @@ Examples:
 - follow one CI failure until it is resolved
 - follow one message thread during active triage
 
-Standing subscriptions remain appropriate for long-lived repo-level or
-channel-level agent interests.
+This makes cleanup semantics explicit:
+
+- never auto-clean up
+- clean up at a deadline
+- clean up on terminal state
+- clean up on terminal state or deadline, whichever happens first
 
 ## 2. Tracked Resource Binding Must Be Explicit
 
@@ -115,29 +138,23 @@ Those details belong to the source implementation.
 The only thing core needs is a stable source-scoped opaque ref that identifies
 the tracked resource for that source.
 
-## 3. Cleanup Policy Should Be Explicit
+## 3. Grace Period Is A Modifier On Terminal Cleanup
 
-Tracked resource binding alone is not enough.
+`gracePeriodSecs` is not a separate policy mode.
 
-The subscription should also say what to do when that resource reaches a
-terminal state.
+It only modifies terminal-based cleanup:
 
-Suggested shape:
+- `mode = on_terminal`
+- `mode = on_terminal_or_at`
 
-```json
-{
-  "cleanupPolicy": {
-    "whenTerminal": true,
-    "gracePeriodSecs": 86400
-  }
-}
-```
+Its meaning is:
 
-This allows:
+- resource reached terminal state
+- do not retire immediately
+- retire after `terminalAt + gracePeriodSecs`
 
-- immediate retire on terminal state
-- delayed retire after a grace period
-- no terminal cleanup for subscriptions that only use TTL
+This is useful when a resource often emits trailing events after the main
+terminal transition.
 
 ## 4. Source Implementations Project Lifecycle Signals
 
@@ -170,7 +187,7 @@ The core should only interpret:
 - whether it is terminal
 - when cleanup should run
 
-## 5. TTL Remains The Fallback Safety Net
+## 5. Deadline Cleanup Remains The Fallback Safety Net
 
 Lifecycle signals are useful but not sufficient on their own.
 
@@ -182,8 +199,9 @@ Reasons:
 
 Therefore:
 
-- temporary subscriptions should still support `expiresAt`
-- expired temporary subscriptions should be cleaned by GC regardless of
+- cleanup policies should still support deadline-based cleanup through
+  `mode = at` or `mode = on_terminal_or_at`
+- expired deadline-based subscriptions should be cleaned by GC regardless of
   lifecycle signal support
 
 This makes cleanup robust instead of event-perfect.
@@ -193,7 +211,20 @@ This makes cleanup robust instead of event-perfect.
 For a GitHub PR-scoped subscription:
 
 - `trackedResourceRef = "pr:373"`
-- cleanup policy may request retire on terminal
+- cleanup policy may request retire on terminal, optionally with a deadline
+
+Example:
+
+```json
+{
+  "trackedResourceRef": "pr:373",
+  "cleanupPolicy": {
+    "mode": "on_terminal_or_at",
+    "at": "2026-04-20T00:00:00Z",
+    "gracePeriodSecs": 86400
+  }
+}
+```
 
 The GitHub source implementation would project:
 
@@ -207,15 +238,13 @@ It only consumes a terminal signal for `sourceId + pr:373`.
 
 ## Subscription Shortcuts
 
-Subscription shortcuts are a good place to make temporary task-scoped
+Subscription shortcuts are a good place to make task-scoped
 subscriptions ergonomic.
 
 But shortcut expansion must still compile to standard fields such as:
 
 - `filter`
 - `trackedResourceRef`
-- `lifecycleMode`
-- `expiresAt`
 - `cleanupPolicy`
 
 This keeps shortcut use compatible with:
@@ -229,16 +258,15 @@ This keeps shortcut use compatible with:
 
 ## Registration
 
-When a temporary subscription is added:
+When a subscription with cleanup policy is added:
 
 - it may include `trackedResourceRef`
 - it may include `cleanupPolicy`
-- it may include `expiresAt`
 
 If `trackedResourceRef` is omitted:
 
-- the subscription can still be temporary
-- only TTL-based cleanup applies
+- the subscription can still use deadline-based cleanup
+- only deadline cleanup applies
 
 ## Event Processing
 
@@ -246,9 +274,10 @@ When a source event is read:
 
 1. append the normalized inbox event as usual
 2. if the source implementation projects a lifecycle signal:
-   - find temporary subscriptions on the same `sourceId`
+   - find subscriptions on the same `sourceId`
    - match `trackedResourceRef`
-   - if terminal cleanup is enabled, schedule or perform retire
+   - if terminal cleanup is enabled by `cleanupPolicy.mode`, schedule or perform
+     retire
 
 This should not interfere with ordinary inbox delivery.
 
@@ -256,7 +285,7 @@ This should not interfere with ordinary inbox delivery.
 
 Background lifecycle GC should perform at least two cleanup passes:
 
-1. expired temporary subscriptions
+1. expired deadline-based subscriptions
 2. subscriptions already marked for delayed terminal cleanup whose grace window
    has elapsed
 
@@ -278,8 +307,6 @@ The lifecycle fields should be visible in normal subscription inspection.
 
 Suggested add/update inputs:
 
-- `lifecycleMode`
-- `expiresAt`
 - `trackedResourceRef`
 - `cleanupPolicy`
 
@@ -305,11 +332,11 @@ So the system should store it explicitly.
 
 Suggested incremental rollout:
 
-1. honor `temporary + expiresAt` in background GC
-2. add `trackedResourceRef` and `cleanupPolicy` to the subscription model
+1. add `trackedResourceRef` and `cleanupPolicy` to the subscription model
+2. honor deadline-based cleanup in background GC
 3. expose lifecycle capability in resolved source schema
 4. let source implementations project lifecycle signals
-5. add source-specific shortcut expansion that fills lifecycle fields
+5. add source-specific shortcut expansion that fills cleanup policy fields
 
 This delivers value early without requiring a full end-to-end redesign first.
 
