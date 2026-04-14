@@ -855,8 +855,9 @@ test("cli subscription add accepts filter-file and filter-stdin and echoes norma
   }
 });
 
-test("cli subscription add supports generic shortcut invocation", () => {
+test("cli subscription add supports generic shortcut invocation", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-shortcut-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
   const env = {
     ...process.env,
     AGENTINBOX_HOME: homeDir,
@@ -868,6 +869,7 @@ test("cli subscription add supports generic shortcut invocation", () => {
   };
 
   try {
+    const store = await AgentInboxStore.open(dbPath);
     const profileDir = path.join(homeDir, "source-profiles");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
@@ -901,19 +903,21 @@ test("cli subscription add supports generic shortcut invocation", () => {
 };`,
       "utf8",
     );
-    const sourceAdd = runCli([
-      "source",
-      "add",
-      "remote_source",
-      "cli-shortcut-demo",
-      "--config-json",
-      JSON.stringify({
+    const source = {
+      sourceId: "src_cli_shortcut_demo",
+      sourceType: "remote_source" as const,
+      sourceKey: "cli-shortcut-demo",
+      configRef: null,
+      config: {
         profilePath: "cli-shortcut.mjs",
         profileConfig: {},
-      }),
-    ], env);
-    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
-    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+      },
+      status: "active" as const,
+      checkpoint: null,
+      createdAt: "2026-04-14T00:00:00.000Z",
+      updatedAt: "2026-04-14T00:00:00.000Z",
+    };
+    store.insertSource(source);
 
     const added = runCli([
       "subscription",
