@@ -1536,6 +1536,9 @@ function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
     return { mode: "at", at: input.at };
   }
   if (input.mode === "on_terminal") {
+    if ("at" in input) {
+      throw new Error("cleanupPolicy mode on_terminal does not allow at");
+    }
     return {
       mode: "on_terminal",
       ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
@@ -1561,8 +1564,54 @@ function normalizeGracePeriodSecs(value: number): number {
   return value;
 }
 
-function isValidIsoTimestamp(value: string): boolean {
-  return !Number.isNaN(Date.parse(value));
+function isValidIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.(\d{1,3}))?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fractional = match[8] ?? "";
+  const timezone = match[9];
+  const offsetSign = match[10];
+  const offsetHour = match[11] != null ? Number(match[11]) : 0;
+  const offsetMinute = match[12] != null ? Number(match[12]) : 0;
+  const millisecond = fractional.length === 0 ? 0 : Number((fractional + "000").slice(0, 3));
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    return false;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+
+  const offsetMinutes = timezone === "Z"
+    ? 0
+    : (offsetSign === "+" ? 1 : -1) * ((offsetHour * 60) + offsetMinute);
+  const expectedTime = Date.UTC(year, month - 1, day, hour, minute, second, millisecond)
+    - (offsetMinutes * 60_000);
+
+  return parsed.getTime() === expectedTime;
 }
 
 function retentionCutoffIso(retentionMs: number): string {

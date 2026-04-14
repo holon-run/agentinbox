@@ -1082,6 +1082,24 @@ test("subscription register rejects invalid cleanupPolicy combinations", async (
       }),
       /cleanupPolicy gracePeriodSecs must be a non-negative integer/,
     );
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "on_terminal", at: "2026-05-01T00:00:00.000Z" } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy mode on_terminal does not allow at/,
+    );
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "at", at: "2026-05-01" } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy mode at requires a valid ISO8601 at timestamp/,
+    );
   } finally {
     await service.stop();
     store.close();

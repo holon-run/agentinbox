@@ -625,7 +625,7 @@ function buildFastifyServer(service: AgentInboxService) {
       sourceId: String(body.sourceId),
       filter: (body.filter as Record<string, unknown> | undefined) ?? {},
       trackedResourceRef: optionalString(body.trackedResourceRef) ?? null,
-      cleanupPolicy: ((body.cleanupPolicy as Record<string, unknown> | undefined) ?? null) as never,
+      cleanupPolicy: (body.cleanupPolicy as Record<string, unknown> | undefined) as never,
       startPolicy: optionalString(body.startPolicy) as never,
       startOffset: typeof body.startOffset === "number" ? body.startOffset : undefined,
       startTime: optionalString(body.startTime) ?? undefined,
