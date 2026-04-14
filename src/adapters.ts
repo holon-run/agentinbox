@@ -13,7 +13,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
-import { LifecycleSignal, RemoteSourceProfileRegistry } from "./sources/remote_profiles";
+import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceProfileRegistry } from "./sources/remote_profiles";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -181,6 +181,16 @@ export class AdapterRegistry {
       return null;
     }
     return this.remoteSource.projectLifecycleSignal(source, rawPayload);
+  }
+
+  async expandSubscriptionShortcut(
+    source: SubscriptionSource,
+    input: { name: string; args?: Record<string, unknown> },
+  ): Promise<ExpandedSubscriptionInput | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.expandSubscriptionShortcut(source, input);
   }
 
   status(): Record<string, unknown> {

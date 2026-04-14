@@ -226,6 +226,10 @@ export interface AddWebhookActivationTargetInput {
 export interface RegisterSubscriptionInput {
   agentId: string;
   sourceId: string;
+  shortcut?: {
+    name: string;
+    args?: Record<string, unknown>;
+  };
   filter?: SubscriptionFilter;
   trackedResourceRef?: string | null;
   cleanupPolicy?: CleanupPolicy | null;

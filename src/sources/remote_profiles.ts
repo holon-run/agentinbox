@@ -5,7 +5,9 @@ import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-dae
 import { AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
 import {
   deriveGithubTrackedResource,
+  expandGithubSubscriptionShortcut,
   GITHUB_ENDPOINT,
+  githubSubscriptionShortcutSpec,
   normalizeGithubRepoEvent,
   parseGithubSourceConfig,
   projectGithubLifecycleSignal,
@@ -277,6 +279,12 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
         "PullRequestReviewCommentEvent.created",
       ],
     };
+  },
+  listSubscriptionShortcuts(): SubscriptionShortcutSpec[] {
+    return githubSubscriptionShortcutSpec();
+  },
+  expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | null {
+    return expandGithubSubscriptionShortcut(input);
   },
   deriveTrackedResource(filter: SubscriptionFilter): { ref: string } | null {
     return deriveGithubTrackedResource(filter);

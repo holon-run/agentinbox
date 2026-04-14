@@ -620,6 +620,15 @@ function buildFastifyServer(service: AgentInboxService) {
         properties: {
           agentId: { type: "string", minLength: 1 },
           sourceId: { type: "string", minLength: 1 },
+          shortcut: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name"],
+            properties: {
+              name: { type: "string", minLength: 1 },
+              args: jsonObjectSchema,
+            },
+          },
           filter: jsonObjectSchema,
           trackedResourceRef: { type: "string" },
           cleanupPolicy: jsonObjectSchema,
@@ -638,7 +647,15 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.registerSubscription({
       agentId: String(body.agentId),
       sourceId: String(body.sourceId),
-      filter: (body.filter as Record<string, unknown> | undefined) ?? {},
+      shortcut: body.shortcut && typeof body.shortcut === "object"
+        ? {
+            name: String((body.shortcut as Record<string, unknown>).name),
+            args: ((body.shortcut as Record<string, unknown>).args as Record<string, unknown> | undefined) ?? undefined,
+          }
+        : undefined,
+      filter: body.filter && typeof body.filter === "object"
+        ? (body.filter as Record<string, unknown>)
+        : undefined,
       trackedResourceRef: optionalString(body.trackedResourceRef) ?? null,
       cleanupPolicy: (body.cleanupPolicy as Record<string, unknown> | undefined) as never,
       startPolicy: optionalString(body.startPolicy) as never,
@@ -1108,6 +1125,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unsupported terminal") ||
     message.startsWith("cleanupPolicy ") ||
     message.startsWith("trackedResourceRef ") ||
+    message.startsWith("subscription add shortcut") ||
+    message.startsWith("unknown subscription shortcut ") ||
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||

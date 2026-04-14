@@ -492,6 +492,26 @@ export class AgentInboxService {
   }
 
   async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
+    if (input.shortcut) {
+      const source = this.store.getSource(input.sourceId);
+      if (!source) {
+        throw new Error(`unknown source: ${input.sourceId}`);
+      }
+      if (hasSubscriptionFieldOverride(input)) {
+        throw new Error("subscription add shortcut does not allow filter, trackedResourceRef, or cleanupPolicy overrides");
+      }
+      const expanded = await this.adapters.expandSubscriptionShortcut(source, input.shortcut);
+      if (!expanded) {
+        throw new Error(`unknown subscription shortcut ${input.shortcut.name} for source ${input.sourceId}`);
+      }
+      return this.registerSubscription({
+        ...input,
+        shortcut: undefined,
+        filter: expanded.filter,
+        trackedResourceRef: expanded.trackedResourceRef ?? null,
+        cleanupPolicy: expanded.cleanupPolicy,
+      });
+    }
     this.getAgent(input.agentId);
     const source = this.store.getSource(input.sourceId);
     if (!source) {
@@ -1646,6 +1666,13 @@ export class AgentInboxService {
       console.warn("offline agent gc failed:", error);
     }
   }
+}
+
+function hasSubscriptionFieldOverride(input: RegisterSubscriptionInput): boolean {
+  if (input.trackedResourceRef != null || input.cleanupPolicy != null) {
+    return true;
+  }
+  return input.filter != null && Object.keys(input.filter).length > 0;
 }
 
 function normalizeTrackedResourceRef(value: string | null | undefined): string | null {

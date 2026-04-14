@@ -855,6 +855,303 @@ test("cli subscription add accepts filter-file and filter-stdin and echoes norma
   }
 });
 
+test("cli subscription add supports generic shortcut invocation", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-shortcut-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%932",
+    CODEX_THREAD_ID: "thread-shortcut",
+  };
+
+  try {
+    const store = await AgentInboxStore.open(dbPath);
+    const profileDir = path.join(homeDir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "cli-shortcut.mjs"),
+      `export default {
+  id: "demo.cli.shortcut",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  listSubscriptionShortcuts() {
+    return [{ name: "ticket", description: "Follow one ticket", argsSchema: [{ name: "id", type: "string", required: true, description: "Ticket id." }] }];
+  },
+  expandSubscriptionShortcut(input) {
+    if (input.name !== "ticket") return null;
+    return {
+      filter: { metadata: { ticketId: input.args.id } },
+      trackedResourceRef: "ticket:" + input.args.id,
+      cleanupPolicy: { mode: "manual" }
+    };
+  }
+};`,
+      "utf8",
+    );
+    const source = {
+      sourceId: "src_cli_shortcut_demo",
+      sourceType: "remote_source" as const,
+      sourceKey: "cli-shortcut-demo",
+      configRef: null,
+      config: {
+        profilePath: "cli-shortcut.mjs",
+        profileConfig: {},
+      },
+      status: "active" as const,
+      checkpoint: null,
+      createdAt: "2026-04-14T00:00:00.000Z",
+      updatedAt: "2026-04-14T00:00:00.000Z",
+    };
+    store.insertSource(source);
+
+    const added = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--shortcut",
+      "ticket",
+      "--shortcut-args-json",
+      "{\"id\":\"A-7\"}",
+    ], env);
+    assert.equal(added.status, 0, added.stderr);
+    const payload = JSON.parse(added.stdout) as {
+      filter: Record<string, unknown>;
+      trackedResourceRef: string | null;
+      cleanupPolicy: Record<string, unknown>;
+    };
+    assert.deepEqual(payload.filter, { metadata: { ticketId: "A-7" } });
+    assert.equal(payload.trackedResourceRef, "ticket:A-7");
+    assert.deepEqual(payload.cleanupPolicy, { mode: "manual" });
+
+    const conflicting = runCli([
+      "subscription",
+      "add",
+      source.sourceId,
+      "--shortcut",
+      "ticket",
+      "--shortcut-args-json",
+      "{\"id\":\"A-7\"}",
+      "--filter-json",
+      "{\"metadata\":{\"x\":1}}",
+    ], env);
+    assert.notEqual(conflicting.status, 0);
+    assert.match(conflicting.stderr, /shortcut does not allow filter, trackedResourceRef, or cleanupPolicy flags/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane subscriptions accept generic shortcut invocation", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "http-shortcut.mjs"),
+    `export default {
+  id: "demo.http.shortcut",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  listSubscriptionShortcuts() {
+    return [{ name: "ticket", description: "Follow one ticket", argsSchema: [{ name: "id", type: "string", required: true, description: "Ticket id." }] }];
+  },
+  expandSubscriptionShortcut(input) {
+    if (input.name !== "ticket") return null;
+    return {
+      filter: { metadata: { ticketId: input.args.id } },
+      trackedResourceRef: "ticket:" + input.args.id,
+      cleanupPolicy: { mode: "manual" }
+    };
+  }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const source = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "remote_source",
+        sourceKey: "http-shortcut-demo",
+        config: {
+          profilePath: "http-shortcut.mjs",
+          profileConfig: {},
+        },
+      });
+      const registered = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "http-shortcut-thread",
+        tmuxPaneId: "%950",
+      });
+      const subscription = await client.request<{
+        filter: Record<string, unknown>;
+        trackedResourceRef: string | null;
+        cleanupPolicy: Record<string, unknown>;
+      }>("/subscriptions", {
+        agentId: registered.data.agent.agentId,
+        sourceId: source.data.sourceId,
+        shortcut: {
+          name: "ticket",
+          args: { id: "A-9" },
+        },
+      });
+      assert.equal(subscription.statusCode, 200);
+      assert.deepEqual(subscription.data.filter, { metadata: { ticketId: "A-9" } });
+      assert.equal(subscription.data.trackedResourceRef, "ticket:A-9");
+      assert.deepEqual(subscription.data.cleanupPolicy, { mode: "manual" });
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane shortcut validation errors return 400 instead of 500", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-error-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "http-shortcut-error.mjs"),
+    `export default {
+  id: "demo.http.shortcut.error",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  expandSubscriptionShortcut(input) {
+    if (input.name !== "ticket") return null;
+    return {
+      filter: { metadata: { ticketId: input.args.id } },
+      trackedResourceRef: "ticket:" + input.args.id,
+      cleanupPolicy: { mode: "manual" }
+    };
+  }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+  let started: Awaited<ReturnType<typeof startControlServer>> | null = null;
+
+  try {
+    const source = {
+      sourceId: "src_http_shortcut_error_demo",
+      sourceType: "remote_source" as const,
+      sourceKey: "http-shortcut-error-demo",
+      configRef: null,
+      config: {
+        profilePath: "http-shortcut-error.mjs",
+        profileConfig: {},
+      },
+      status: "active" as const,
+      checkpoint: null,
+      createdAt: "2026-04-14T00:00:00.000Z",
+      updatedAt: "2026-04-14T00:00:00.000Z",
+    };
+    store.insertSource(source);
+    const registered = service.registerAgent({
+      backend: "iterm2",
+      runtimeKind: "codex",
+      runtimeSessionId: "http-shortcut-error-thread",
+      mode: "agent_prompt",
+      termProgram: "iTerm.app",
+      itermSessionId: "http-shortcut-error-session",
+    });
+
+    started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    const client = new AgentInboxClient({
+      kind: "socket",
+      socketPath,
+      source: "flag",
+    });
+
+    const response = await client.request<Record<string, unknown>>("/subscriptions", {
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      shortcut: { name: "ticket", args: { id: "A-9" } },
+      filter: { metadata: { x: 1 } },
+    }, "POST");
+    assert.equal(response.statusCode, 400);
+    assert.match(String(response.data.error), /shortcut does not allow filter, trackedResourceRef, or cleanupPolicy/);
+  } finally {
+    if (started) {
+      await started.close();
+    }
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli source pause rejects unsupported local_event sources", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-pause-"));
   const env = {

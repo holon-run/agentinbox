@@ -542,7 +542,11 @@ test("builtin remote-backed source details expose resolved remote identity", asy
     assert.deepEqual(details.schema.subscriptionSchema, {
       supportsTrackedResourceRef: true,
       supportsLifecycleSignals: true,
-      shortcuts: [],
+      shortcuts: [{
+        name: "pr",
+        description: "Follow one pull request and auto-retire when it closes.",
+        argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+      }],
     });
   } finally {
     await service.stop();
@@ -730,6 +734,84 @@ test("source details keep a wrapped fallback schema when non-identity capability
     assert.equal(details.schema.hostType, "remote_source");
     assert.equal(details.schema.sourceKind, "remote:demo.broken-shortcuts");
     assert.equal(details.schema.implementationId, "demo.broken-shortcuts");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription add can expand a remote profile shortcut into standard subscription fields", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "shortcut-expand.mjs"),
+      `export default {
+  id: "demo.shortcut.expand",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listSubscriptionShortcuts() {
+    return [{
+      name: "ticket",
+      description: "Follow one ticket",
+      argsSchema: [{ name: "id", type: "string", required: true, description: "Ticket id." }]
+    }];
+  },
+  expandSubscriptionShortcut(input) {
+    if (input.name !== "ticket") return null;
+    return {
+      filter: { metadata: { ticketId: input.args.id } },
+      trackedResourceRef: "ticket:" + input.args.id,
+      cleanupPolicy: { mode: "manual" }
+    };
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "shortcut-expand-demo",
+      config: {
+        profilePath: "shortcut-expand.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "shortcut-expand-thread",
+      tmuxPaneId: "%944",
+    });
+
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      shortcut: {
+        name: "ticket",
+        args: { id: "A-42" },
+      },
+      startPolicy: "earliest",
+    });
+
+    assert.deepEqual(subscription.filter, { metadata: { ticketId: "A-42" } });
+    assert.equal(subscription.trackedResourceRef, "ticket:A-42");
+    assert.deepEqual(subscription.cleanupPolicy, { mode: "manual" });
+    assert.equal(subscription.startPolicy, "earliest");
   } finally {
     await service.stop();
     store.close();
