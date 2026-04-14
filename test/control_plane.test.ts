@@ -1588,6 +1588,78 @@ test("control plane source details degrade when remote_source resolution fails b
   }
 });
 
+test("control plane source remove accepts with_subscriptions for explicit cascade cleanup", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-control-plane-remove-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const source = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "local_event",
+        sourceKey: "control-plane-remove-cascade",
+        config: {},
+      });
+      const registered = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "control-plane-remove-cascade-thread",
+        tmuxPaneId: "%320",
+      });
+      const subscription = await client.request<{ subscriptionId: string }>("/subscriptions", {
+        agentId: registered.data.agent.agentId,
+        sourceId: source.data.sourceId,
+      });
+
+      const removed = await client.request<{
+        removed: boolean;
+        sourceId: string;
+        removedSubscriptions: number;
+        pausedSource: boolean;
+      }>(`/sources/${encodeURIComponent(source.data.sourceId)}?with_subscriptions=true`, undefined, "DELETE");
+
+      assert.equal(removed.statusCode, 200);
+      assert.equal(removed.data.removed, true);
+      assert.equal(removed.data.sourceId, source.data.sourceId);
+      assert.equal(removed.data.removedSubscriptions, 1);
+      assert.equal(removed.data.pausedSource, false);
+
+      const missingSubscription = await client.request(
+        `/subscriptions/${encodeURIComponent(subscription.data.subscriptionId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(missingSubscription.statusCode, 404);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<never>((_, reject) => {

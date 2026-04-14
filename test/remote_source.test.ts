@@ -533,6 +533,72 @@ test("removeSource deletes managed source binding when no subscriptions remain",
   }
 });
 
+test("remote_source remove --with-subscriptions stops remote binding and deletes dependent subscriptions", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "demo-remove-cascade.mjs"),
+      `export default {
+  id: "demo.remove.cascade",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: "demo:" + raw.id, eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "remove-cascade-key",
+      config: {
+        profilePath: "demo-remove-cascade.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remote-remove-cascade-thread",
+      tmuxPaneId: "%905",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    const removed = await service.removeSource(source.sourceId, { withSubscriptions: true });
+    assert.equal(removed.removed, true);
+    assert.equal(removed.removedSubscriptions, 1);
+    assert.equal(removed.pausedSource, true);
+    assert.equal(store.getSource(source.sourceId), null);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(fake.stoppedSources.length, 1);
+    assert.equal(fake.stoppedSources[0]?.sourceKey, "remote_source:remove-cascade-key");
+    assert.equal(fake.deletedSources.length, 1);
+    assert.equal(fake.deletedSources[0]?.sourceKey, "remote_source:remove-cascade-key");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function checkpointKeyForPayload(
   payload: unknown,
   strategy: NonNullable<ManagedSourceSpec["poll_config"]>["checkpoint_strategy"],

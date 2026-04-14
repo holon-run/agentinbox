@@ -817,6 +817,42 @@ test("removeSource rejects when source still has subscriptions", async () => {
   }
 });
 
+test("removeSource --with-subscriptions removes source together with dependent subscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "remove-with-subscriptions-demo",
+      config: {},
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remove-with-subscriptions-thread",
+      tmuxPaneId: "%902",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    const removed = await service.removeSource(source.sourceId, { withSubscriptions: true });
+
+    assert.equal(removed.removed, true);
+    assert.equal(removed.sourceId, source.sourceId);
+    assert.equal(removed.removedSubscriptions, 1);
+    assert.equal(removed.pausedSource, false);
+    assert.equal(store.getSource(source.sourceId), null);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("updateSource preserves source identity and existing subscriptions", async () => {
   const { store, service, dir } = await makeService();
   try {
