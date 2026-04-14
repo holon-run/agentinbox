@@ -12,6 +12,18 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.2.0] - 2026-04-14
+
+### Added
+
+- Added cleanup-policy-driven subscription lifecycle management, including tracked resource refs, terminal retirement, and GitHub PR lifecycle projection.
+- Added generic subscription shortcuts plus source schema preview for implementation-backed sources.
+- Added explicit `source remove --with-subscriptions` cleanup and idle source auto-pause after the last subscription is removed.
+
+### Changed
+
+- Expanded source schema resolution so instance details expose resolved source identity and implementation-backed capabilities.
+
 ## [0.1.4] - 2026-04-13
 
 ### Fixed
