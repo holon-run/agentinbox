@@ -72,6 +72,18 @@ export interface Subscription {
   createdAt: string;
 }
 
+export interface SubscriptionLifecycleRetirement {
+  subscriptionId: string;
+  sourceId: string;
+  trackedResourceRef: string;
+  retireAt: string;
+  terminalState?: string | null;
+  terminalResult?: string | null;
+  terminalOccurredAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface ActivationTargetBase {
   targetId: string;
   agentId: string;

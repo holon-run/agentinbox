@@ -48,6 +48,18 @@ export const subscriptions = sqliteTable("subscriptions", {
   createdAt: text("created_at").notNull(),
 });
 
+export const subscriptionLifecycleRetirements = sqliteTable("subscription_lifecycle_retirements", {
+  subscriptionId: text("subscription_id").primaryKey(),
+  sourceId: text("source_id").notNull(),
+  trackedResourceRef: text("tracked_resource_ref").notNull(),
+  retireAt: text("retire_at").notNull(),
+  terminalState: text("terminal_state"),
+  terminalResult: text("terminal_result"),
+  terminalOccurredAt: text("terminal_occurred_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
 export const activationTargets = sqliteTable("activation_targets", {
   targetId: text("target_id").primaryKey(),
   agentId: text("agent_id").notNull(),
