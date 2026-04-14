@@ -48,10 +48,10 @@ Builtin `github_repo` also exposes pull-request lifecycle hooks for the generic
 cleanup-policy pipeline:
 
 - `deriveTrackedResource` can derive `pr:<number>` from pull-request filters
-- `projectLifecycleSignal` treats `PullRequestEvent.closed` and
-  `PullRequestEvent.merged` as terminal PR lifecycle signals
-- merged PRs project `result = "merged"`; plain closes project
-  `result = "closed"`
+- `projectLifecycleSignal` treats `PullRequestEvent.closed` as the terminal PR
+  lifecycle signal
+- `terminalResult` is derived from the pull request `merged` flag:
+  merged PRs project `"merged"`; plain closes project `"closed"`
 
 ## `github_repo_ci`
 

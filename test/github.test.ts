@@ -159,6 +159,7 @@ test("github pull request helpers derive tracked resources and terminal lifecycl
     },
   };
   assert.deepEqual(deriveGithubTrackedResource(filter), { ref: "pr:72" });
+  assert.equal(deriveGithubTrackedResource({ metadata: { number: 72 } }), null);
   assert.equal(deriveGithubTrackedResource({ metadata: { number: 72, isPullRequest: false } }), null);
 
   assert.deepEqual(projectGithubLifecycleSignal({

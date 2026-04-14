@@ -188,7 +188,7 @@ export function deriveGithubTrackedResource(filter: SubscriptionFilter): { ref: 
   const payload = asRecord(filter.payload);
   const number = asNumber(metadata.number) ?? asNumber(payload.number) ?? asNumber(payload.ref);
   const isPullRequest = asBoolean(metadata.isPullRequest);
-  if (!number || isPullRequest === false) {
+  if (!number || isPullRequest !== true) {
     return null;
   }
   return { ref: `pr:${number}` };

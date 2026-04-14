@@ -264,7 +264,7 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
         {
           id: "1234567892",
           type: "PullRequestEvent",
-          action: "merged",
+          action: "closed",
           actor: "jolestar",
           pull_request: { number: 72, title: "feat: add cleanup policy lifecycle engine", merged: true },
         },
@@ -273,7 +273,6 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
         "IssueCommentEvent.created",
         "PullRequestEvent.opened",
         "PullRequestEvent.closed",
-        "PullRequestEvent.merged",
         "PullRequestReviewEvent.created",
         "PullRequestReviewCommentEvent.created",
       ],
