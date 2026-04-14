@@ -1660,6 +1660,55 @@ test("control plane source remove accepts with_subscriptions for explicit cascad
   }
 });
 
+test("control plane source remove rejects invalid with_subscriptions query values", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-rm-invalid-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const source = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "local_event",
+        sourceKey: "control-plane-remove-invalid",
+        config: {},
+      });
+
+      const invalid = await client.request(
+        `/sources/${encodeURIComponent(source.data.sourceId)}?with_subscriptions=yes`,
+        undefined,
+        "DELETE",
+      );
+      assert.equal(invalid.statusCode, 400);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<never>((_, reject) => {

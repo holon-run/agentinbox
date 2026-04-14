@@ -194,7 +194,12 @@ function buildFastifyServer(service: AgentInboxService) {
         type: "object",
         additionalProperties: false,
         properties: {
-          with_subscriptions: { anyOf: [{ type: "boolean" }, { type: "string" }] },
+          with_subscriptions: {
+            anyOf: [
+              { type: "boolean" },
+              { type: "string", enum: ["true", "false", "1", "0"] },
+            ],
+          },
         },
       },
       response: {
