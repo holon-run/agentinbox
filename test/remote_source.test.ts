@@ -10,6 +10,7 @@ import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { ManagedSourceSpec } from "../src/sources/remote_profiles";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
+import { nowIso } from "../src/util";
 
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   private readonly streams = new Map<string, Array<{ offset: number; raw_payload: unknown }>>();
@@ -821,6 +822,90 @@ test("updateSource re-ensures active remote sources but does not resume paused o
     );
     assert.equal(service.getSource(source.sourceId).status, "paused");
     assert.equal(fake.ensuredSources.length, ensureCountBeforePausedUpdate);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("idle remote sources auto-pause after the last subscription is removed and resume on new subscription", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "demo-idle.mjs"),
+      `export default {
+  id: "demo.idle",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    if (!raw.id) return null;
+    return { sourceNativeId: "demo:" + raw.id, eventVariant: "demo.event", metadata: {}, rawPayload: raw };
+  }
+};`,
+      "utf8",
+    );
+
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "idle-key",
+      config: {
+        profilePath: "demo-idle.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "idle-thread",
+      tmuxPaneId: "%970",
+    });
+    const first = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.removeSubscription(first.subscriptionId);
+
+    const idleState = store.getSourceIdleState(source.sourceId);
+    assert.ok(idleState);
+    assert.equal(idleState?.autoPausedAt, null);
+    store.upsertSourceIdleState({
+      ...idleState!,
+      autoPauseAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+
+    await (service as unknown as { runIdleSourceCleanupPass(nowMs: number): Promise<void> }).runIdleSourceCleanupPass(Date.now());
+    assert.equal(service.getSource(source.sourceId).status, "paused");
+    assert.equal(fake.stoppedSources.length, 1);
+    assert.ok(store.getSourceIdleState(source.sourceId)?.autoPausedAt);
+
+    const ensureCountBeforeResume = fake.ensuredSources.length;
+    const second = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    assert.equal(service.getSource(source.sourceId).status, "active");
+    assert.equal(store.getSourceIdleState(source.sourceId), null);
+    assert.equal(fake.ensuredSources.length, ensureCountBeforeResume + 1);
+    assert.ok(store.getSubscription(second.subscriptionId));
   } finally {
     await service.stop();
     store.close();

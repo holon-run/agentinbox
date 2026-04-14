@@ -115,3 +115,6 @@ going forward.
   deleting its binding or stream state. Resume re-enters the normal ensure
   path. `POST /sources/{sourceId}/poll` does not implicitly resume a paused
   source.
+- `GET /sources/{sourceId}` may include `idleState` for managed remote sources
+  that are waiting for auto-pause or were auto-paused after their last
+  subscription was removed.

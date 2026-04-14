@@ -58,6 +58,7 @@ const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;
+const DEFAULT_IDLE_SOURCE_GRACE_MS = 5 * 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 interface ActivationPolicy {
@@ -214,6 +215,7 @@ export class AgentInboxService {
       schema: resolvedSchema,
       stream: this.store.getStreamBySourceId(sourceId),
       subscriptions: this.store.listSubscriptionsForSource(sourceId),
+      idleState: this.store.getSourceIdleState(sourceId),
     };
   }
 
@@ -341,6 +343,7 @@ export class AgentInboxService {
     if (this.store.getSource(sourceId)?.status !== "paused") {
       this.store.updateSourceRuntime(sourceId, { status: "paused" });
     }
+    this.store.deleteSourceIdleState(sourceId);
     return {
       paused: true,
       source: this.getSource(sourceId),
@@ -356,6 +359,7 @@ export class AgentInboxService {
     if (this.store.getSource(sourceId)?.status === "paused") {
       this.store.updateSourceRuntime(sourceId, { status: "active" });
     }
+    this.store.deleteSourceIdleState(sourceId);
     return {
       resumed: true,
       source: this.getSource(sourceId),
@@ -452,7 +456,13 @@ export class AgentInboxService {
 
   removeAgent(agentId: string): { removed: boolean } {
     this.getAgent(agentId);
+    const affectedSourceIds = Array.from(
+      new Set(this.store.listSubscriptionsForAgent(agentId).map((subscription) => subscription.sourceId)),
+    );
     this.store.deleteAgent(agentId);
+    for (const sourceId of affectedSourceIds) {
+      this.refreshSourceIdleState(sourceId);
+    }
     this.notificationBuffers.forEach((buffer, key) => {
       if (key.startsWith(`${agentId}:`)) {
         if (buffer.timer) {
@@ -543,6 +553,12 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
+    const idleState = this.store.getSourceIdleState(source.sourceId);
+    if (idleState?.autoPausedAt) {
+      await this.resumeSource(source.sourceId);
+    } else if (idleState) {
+      this.store.deleteSourceIdleState(source.sourceId);
+    }
     await validateSubscriptionFilter(input.filter ?? {});
     const cleanupPolicy = normalizeCleanupPolicy(input.cleanupPolicy ?? null);
     const subscription: Subscription = {
@@ -569,6 +585,7 @@ export class AgentInboxService {
       startOffset: subscription.startOffset ?? null,
       startTime: subscription.startTime ?? null,
     });
+    this.store.deleteSourceIdleState(source.sourceId);
     return subscription;
   }
 
@@ -577,6 +594,7 @@ export class AgentInboxService {
     await this.backend.deleteConsumer({ subscriptionId });
     this.store.deleteSubscription(subscriptionId);
     this.clearSubscriptionRuntimeState(subscription);
+    this.refreshSourceIdleState(subscription.sourceId);
     return { removed: true, subscriptionId };
   }
 
@@ -1621,10 +1639,54 @@ export class AgentInboxService {
     return { removedSubscriptions: removed.size };
   }
 
+  private async runIdleSourceCleanupPass(nowMs: number): Promise<void> {
+    const now = new Date(nowMs).toISOString();
+    const due = this.store.listSourceIdleStatesDue(now);
+    for (const idleState of due) {
+      const source = this.store.getSource(idleState.sourceId);
+      if (!source) {
+        this.store.deleteSourceIdleState(idleState.sourceId);
+        continue;
+      }
+      if (this.store.listSubscriptionsForSource(source.sourceId).length > 0) {
+        this.store.deleteSourceIdleState(source.sourceId);
+        continue;
+      }
+      const sourceAdapter = this.adapters.sourceAdapterFor(source.sourceType);
+      if (!sourceAdapter.pauseSource) {
+        this.store.deleteSourceIdleState(source.sourceId);
+        continue;
+      }
+      if (source.status === "paused") {
+        if (!idleState.autoPausedAt) {
+          this.store.upsertSourceIdleState({
+            ...idleState,
+            autoPausedAt: now,
+            updatedAt: now,
+          });
+        }
+        continue;
+      }
+      await this.adapters.pauseSource(source);
+      if (this.store.getSource(source.sourceId)?.status !== "paused") {
+        this.store.updateSourceRuntime(source.sourceId, { status: "paused" });
+      }
+      this.store.upsertSourceIdleState({
+        ...idleState,
+        autoPausedAt: now,
+        updatedAt: now,
+      });
+    }
+  }
+
   private gcOfflineAgents(now = Date.now()): { removedAgents: number } {
     const cutoffIso = new Date(now - DEFAULT_OFFLINE_AGENT_TTL_MS).toISOString();
     const agents = this.store.listOfflineAgentsOlderThan(cutoffIso);
+    const affectedSourceIds = new Set<string>();
     for (const agent of agents) {
+      for (const subscription of this.store.listSubscriptionsForAgent(agent.agentId)) {
+        affectedSourceIds.add(subscription.sourceId);
+      }
       this.store.deleteAgent(agent.agentId, { persist: false });
       this.notificationBuffers.forEach((buffer, key) => {
         if (key.startsWith(`${agent.agentId}:`)) {
@@ -1635,6 +1697,9 @@ export class AgentInboxService {
         }
       });
       this.inboxWatchers.delete(agent.agentId);
+    }
+    for (const sourceId of affectedSourceIds) {
+      this.refreshSourceIdleState(sourceId);
     }
     if (agents.length > 0) {
       this.store.save();
@@ -1677,6 +1742,7 @@ export class AgentInboxService {
     if (now - this.lastLifecycleCleanupAt >= DEFAULT_GC_INTERVAL_MS) {
       try {
         this.runLifecycleCleanupPass(now);
+        await this.runIdleSourceCleanupPass(now);
       } catch (error) {
         console.warn("subscription lifecycle gc failed:", error);
       }
@@ -1691,6 +1757,32 @@ export class AgentInboxService {
     } catch (error) {
       console.warn("offline agent gc failed:", error);
     }
+  }
+
+  private refreshSourceIdleState(sourceId: string): void {
+    const source = this.store.getSource(sourceId);
+    if (!source) {
+      this.store.deleteSourceIdleState(sourceId);
+      return;
+    }
+    const sourceAdapter = this.adapters.sourceAdapterFor(source.sourceType);
+    if (!sourceAdapter.pauseSource) {
+      this.store.deleteSourceIdleState(sourceId);
+      return;
+    }
+    const remainingSubscriptions = this.store.listSubscriptionsForSource(sourceId).length;
+    if (remainingSubscriptions > 0) {
+      this.store.deleteSourceIdleState(sourceId);
+      return;
+    }
+    const now = nowIso();
+    this.store.upsertSourceIdleState({
+      sourceId,
+      idleSince: now,
+      autoPauseAt: new Date(Date.parse(now) + DEFAULT_IDLE_SOURCE_GRACE_MS).toISOString(),
+      autoPausedAt: null,
+      updatedAt: now,
+    });
   }
 }
 

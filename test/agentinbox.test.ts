@@ -162,7 +162,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 4);
+    assert.equal(state.appliedCount, 5);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -179,7 +179,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 4);
+    assert.equal(state.appliedCount, 5);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
@@ -1061,6 +1061,85 @@ test("updateSource preserves source identity and existing subscriptions", async 
     });
     assert.equal(clearedRef.updated, true);
     assert.equal(clearedRef.source?.configRef, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("source details expose idle auto-pause state for operators", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { store, service, dir } = await makeService({
+    dispatcher: undefined,
+    terminalDispatcher: undefined,
+  });
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "idle-details.mjs"),
+      `export default {
+  id: "demo.idle.details",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "idle-details-demo",
+      config: {
+        profilePath: "idle-details.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "idle-details-thread",
+      tmuxPaneId: "%971",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.removeSubscription(subscription.subscriptionId);
+    const idleState = store.getSourceIdleState(source.sourceId);
+    store.upsertSourceIdleState({
+      ...idleState!,
+      autoPauseAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+    await (service as unknown as { runIdleSourceCleanupPass(nowMs: number): Promise<void> }).runIdleSourceCleanupPass(Date.now());
+
+    const details = await service.getSourceDetails(source.sourceId) as {
+      source: { status: string };
+      idleState: {
+        sourceId: string;
+        idleSince: string;
+        autoPauseAt: string;
+        autoPausedAt: string | null;
+      };
+    };
+    assert.equal(details.source.status, "paused");
+    assert.equal(details.idleState.sourceId, source.sourceId);
+    assert.ok(details.idleState.idleSince);
+    assert.ok(details.idleState.autoPauseAt);
+    assert.ok(details.idleState.autoPausedAt);
   } finally {
     await service.stop();
     store.close();
