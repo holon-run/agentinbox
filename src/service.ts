@@ -594,9 +594,6 @@ export class AgentInboxService {
       streamId: stream.streamId,
       events: [input],
     });
-    void this.maybeScheduleLifecycleFromAppendedEvent(source, input).catch((error) => {
-      console.warn(`lifecycle scheduling failed for ${source.sourceId}/${input.sourceNativeId}:`, error);
-    });
     return toAppendResult(result);
   }
 
@@ -1000,17 +997,6 @@ export class AgentInboxService {
       streamKey: streamKeyForSource(source.sourceType, source.sourceKey),
       backend: "sqlite",
     });
-  }
-
-  private async maybeScheduleLifecycleFromAppendedEvent(
-    source: SubscriptionSource,
-    input: Pick<AppendSourceEventInput, "rawPayload" | "occurredAt">,
-  ): Promise<void> {
-    const signals = new Map<string, LifecycleSignal>();
-    await this.collectLifecycleSignal(source, input.rawPayload ?? {}, signals, input.occurredAt ?? undefined);
-    for (const signal of signals.values()) {
-      this.scheduleLifecycleRetirements(source, signal);
-    }
   }
 
   private async collectLifecycleSignal(

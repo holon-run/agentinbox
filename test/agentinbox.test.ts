@@ -1674,6 +1674,81 @@ test("terminal target goes offline when dispatch fails and probe confirms disapp
   }
 });
 
+test("gc does not retire subscriptions before they consume a terminal event", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "lifecycle-race.mjs"),
+      `export default {
+  id: "demo.lifecycle.race",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.lifecycle", metadata: {}, rawPayload: raw };
+  },
+  projectLifecycleSignal(raw) {
+    return raw.state === "closed" ? { ref: String(raw.ref), terminal: true, state: "closed" } : null;
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "lifecycle-race-demo",
+      config: {
+        profilePath: "lifecycle-race.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = await registerTmuxAgent(service, "lifecycle-race");
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:77",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:77" } },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-terminal-race",
+      eventVariant: "demo.lifecycle",
+      metadata: {},
+      rawPayload: { id: "evt-terminal-race", ref: "pr:77", state: "closed" },
+      occurredAt: "2020-06-01T00:00:00.000Z",
+    });
+
+    const firstGc = service.gc();
+    assert.equal(firstGc.removedSubscriptions, 0);
+    assert.ok(store.getSubscription(subscription.subscriptionId));
+    assert.equal(store.getSubscriptionLifecycleRetirement(subscription.subscriptionId), null);
+
+    await service.pollSubscription(subscription.subscriptionId);
+    assert.ok(store.getSubscriptionLifecycleRetirement(subscription.subscriptionId));
+
+    const secondGc = service.gc();
+    assert.equal(secondGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent remove cascades local runtime state but keeps shared sources", async () => {
   const { store, service, dir } = await makeService();
   try {
