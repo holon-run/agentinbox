@@ -1038,13 +1038,29 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(schemaResponse.data.sourceType, "github_repo_ci");
       assert.ok(schemaResponse.data.metadataFields.length > 0);
 
-      const subscriptionResponse = await client.request<{ subscriptionId: string }>("/subscriptions", {
+      const subscriptionResponse = await client.request<{
+        subscriptionId: string;
+        trackedResourceRef: string | null;
+        cleanupPolicy: Record<string, unknown>;
+      }>("/subscriptions", {
         agentId,
         sourceId: sourceResponse.data.sourceId,
         filter: { metadata: { channel: "engineering" } },
+        trackedResourceRef: "pr:69",
+        cleanupPolicy: {
+          mode: "on_terminal_or_at",
+          at: "2026-05-01T00:00:00.000Z",
+          gracePeriodSecs: 120,
+        },
         startPolicy: "earliest",
       });
       assert.equal(subscriptionResponse.statusCode, 200);
+      assert.equal(subscriptionResponse.data.trackedResourceRef, "pr:69");
+      assert.deepEqual(subscriptionResponse.data.cleanupPolicy, {
+        mode: "on_terminal_or_at",
+        at: "2026-05-01T00:00:00.000Z",
+        gracePeriodSecs: 120,
+      });
 
       const appendResponse = await client.request<{ appended: number }>(`/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/events`, {
         sourceNativeId: "evt-e2e-1",
@@ -1115,13 +1131,15 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(subscriptionsAfterDelete.statusCode, 200);
       assert.equal(subscriptionsAfterDelete.data.subscriptions.length, 0);
 
-      const invalidLifecycleResponse = await client.request<{ error: string }>("/subscriptions", {
+      const invalidCleanupPolicyResponse = await client.request<{ error: string }>("/subscriptions", {
         agentId,
         sourceId: sourceResponse.data.sourceId,
-        lifecycleMode: "ephemeral",
+        cleanupPolicy: {
+          mode: "ephemeral",
+        },
       });
-      assert.equal(invalidLifecycleResponse.statusCode, 400);
-      assert.match(invalidLifecycleResponse.data.error, /unsupported lifecycle mode/);
+      assert.equal(invalidCleanupPolicyResponse.statusCode, 400);
+      assert.match(invalidCleanupPolicyResponse.data.error, /unsupported cleanup policy mode/);
 
     } finally {
       await started.close();

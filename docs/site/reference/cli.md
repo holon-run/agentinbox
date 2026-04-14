@@ -59,9 +59,9 @@ preserving the existing `sourceId` and attached subscriptions.
 ## Subscriptions
 
 ```bash
-agentinbox subscription add <source_id> [--agent-id <agent_id>] [--filter-json ...]
-agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-file <path>
-agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-stdin
+agentinbox subscription add <source_id> [--agent-id <agent_id>] [--filter-json ...] [--tracked-resource-ref <ref>] [--cleanup-policy-json <json>]
+agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-file <path> [--tracked-resource-ref <ref>] [--cleanup-policy-json <json>]
+agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-stdin [--tracked-resource-ref <ref>] [--cleanup-policy-json <json>]
 agentinbox subscription list [--agent-id <agent_id>] [--source-id <source_id>]
 agentinbox subscription show <subscription_id>
 agentinbox subscription remove <subscription_id>
@@ -75,6 +75,11 @@ agentinbox subscription reset <subscription_id> --start-policy latest
 persisted `filter`. When any explicit filter input mode is selected
 (`--filter-json`, `--filter-file`, or `--filter-stdin`), the supplied payload
 must be a non-empty JSON object.
+
+`--tracked-resource-ref` persists a source-scoped opaque resource identity such
+as `pr:373`. `--cleanup-policy-json` accepts the structured cleanup policy
+object persisted with the subscription, for example `{"mode":"manual"}` or
+`{"mode":"on_terminal_or_at","at":"2026-05-01T00:00:00.000Z","gracePeriodSecs":300}`.
 
 ## Inbox
 

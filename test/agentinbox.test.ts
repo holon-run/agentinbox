@@ -162,7 +162,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 2);
+    assert.equal(state.appliedCount, 3);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -179,10 +179,44 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 2);
+    assert.equal(state.appliedCount, 3);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
+  } finally {
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store migrates legacy subscription lifecycle fields into cleanupPolicy", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-subscriptions-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  await createLegacyDb(dbPath);
+  const SQL = await initSqlJs({
+    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
+  });
+  const legacyDb = new SQL.Database(fs.readFileSync(dbPath));
+  legacyDb.exec(`
+    insert into subscriptions (
+      subscription_id, agent_id, source_id, filter_json, lifecycle_mode, expires_at, start_policy, start_offset, start_time, created_at
+    ) values
+      ('sub_standing', 'agent_1', 'src_1', '{}', 'standing', null, 'latest', null, null, '2026-01-01T00:00:00.000Z'),
+      ('sub_deadline', 'agent_1', 'src_1', '{}', 'standing', '2026-02-01T00:00:00.000Z', 'latest', null, null, '2026-01-01T00:00:00.000Z'),
+      ('sub_temporary', 'agent_1', 'src_1', '{}', 'temporary', null, 'latest', null, null, '2026-01-01T00:00:00.000Z');
+  `);
+  fs.writeFileSync(dbPath, Buffer.from(legacyDb.export()));
+  legacyDb.close();
+
+  const store = await AgentInboxStore.open(dbPath);
+  try {
+    assert.deepEqual(store.getSubscription("sub_standing")?.cleanupPolicy, { mode: "manual" });
+    assert.equal(store.getSubscription("sub_standing")?.trackedResourceRef, null);
+    assert.deepEqual(store.getSubscription("sub_deadline")?.cleanupPolicy, {
+      mode: "at",
+      at: "2026-02-01T00:00:00.000Z",
+    });
+    assert.deepEqual(store.getSubscription("sub_temporary")?.cleanupPolicy, { mode: "manual" });
   } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -859,11 +893,13 @@ test("subscription remove deletes the subscription, its consumer, and transient 
     const subscription = await service.registerSubscription({
       agentId: registered.agent.agentId,
       sourceId: source.sourceId,
-      lifecycleMode: "temporary",
+      trackedResourceRef: "thread:remove-sub-demo",
+      cleanupPolicy: { mode: "on_terminal", gracePeriodSecs: 30 },
       startPolicy: "earliest",
     });
 
-    assert.equal(subscription.lifecycleMode, "temporary");
+    assert.equal(subscription.trackedResourceRef, "thread:remove-sub-demo");
+    assert.deepEqual(subscription.cleanupPolicy, { mode: "on_terminal", gracePeriodSecs: 30 });
     assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId)?.subscriptionId, subscription.subscriptionId);
 
     await service.appendSourceEventByCaller(source.sourceId, {
@@ -911,13 +947,13 @@ test("subscription remove preserves unrelated activation dispatch state", async 
     const first = await service.registerSubscription({
       agentId: registered.agent.agentId,
       sourceId: source.sourceId,
-      lifecycleMode: "standing",
+      cleanupPolicy: { mode: "manual" },
       startPolicy: "earliest",
     });
     const second = await service.registerSubscription({
       agentId: registered.agent.agentId,
       sourceId: source.sourceId,
-      lifecycleMode: "temporary",
+      cleanupPolicy: { mode: "on_terminal" },
       startPolicy: "earliest",
     });
 
@@ -942,6 +978,128 @@ test("subscription remove preserves unrelated activation dispatch state", async 
     );
     assert.ok(state);
     assert.deepEqual(state.pendingSubscriptionIds, [first.subscriptionId]);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription register persists trackedResourceRef and cleanupPolicy", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const agent = await registerTmuxAgent(service, "cleanup-policy");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "cleanup-policy-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:373",
+      cleanupPolicy: {
+        mode: "on_terminal_or_at",
+        at: "2026-05-01T00:00:00.000Z",
+        gracePeriodSecs: 300,
+      },
+      startPolicy: "latest",
+    });
+
+    assert.equal(subscription.trackedResourceRef, "pr:373");
+    assert.deepEqual(subscription.cleanupPolicy, {
+      mode: "on_terminal_or_at",
+      at: "2026-05-01T00:00:00.000Z",
+      gracePeriodSecs: 300,
+    });
+    assert.deepEqual(store.getSubscription(subscription.subscriptionId)?.cleanupPolicy, subscription.cleanupPolicy);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription register defaults cleanupPolicy to manual", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const agent = await registerTmuxAgent(service, "cleanup-default");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "cleanup-default-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "latest",
+    });
+
+    assert.equal(subscription.trackedResourceRef, null);
+    assert.deepEqual(subscription.cleanupPolicy, { mode: "manual" });
+    assert.deepEqual(store.getSubscription(subscription.subscriptionId)?.cleanupPolicy, { mode: "manual" });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription register rejects invalid cleanupPolicy combinations", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const agent = await registerTmuxAgent(service, "cleanup-invalid");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "cleanup-invalid-demo",
+      config: {},
+    });
+
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "manual", at: "2026-05-01T00:00:00.000Z" } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy mode manual does not allow at or gracePeriodSecs/,
+    );
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "at" } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy mode at requires a valid ISO8601 at timestamp/,
+    );
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "on_terminal", gracePeriodSecs: -1 } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy gracePeriodSecs must be a non-negative integer/,
+    );
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "on_terminal", at: "2026-05-01T00:00:00.000Z" } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy mode on_terminal does not allow at/,
+    );
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        cleanupPolicy: { mode: "at", at: "2026-05-01" } as never,
+        startPolicy: "latest",
+      }),
+      /cleanupPolicy mode at requires a valid ISO8601 at timestamp/,
+    );
   } finally {
     await service.stop();
     store.close();

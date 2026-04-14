@@ -21,6 +21,7 @@ import {
   SourceSchema,
   SourcePollResult,
   Subscription,
+  CleanupPolicy,
   SubscriptionPollResult,
   SubscriptionSource,
   TerminalActivationTarget,
@@ -54,8 +55,6 @@ const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
-const SUBSCRIPTION_LIFECYCLE_MODES = new Set<Subscription["lifecycleMode"]>(["standing", "temporary"]);
-
 interface ActivationPolicy {
   windowMs?: number;
   maxItems?: number;
@@ -474,17 +473,14 @@ export class AgentInboxService {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
     await validateSubscriptionFilter(input.filter ?? {});
-    const lifecycleMode = input.lifecycleMode ?? "standing";
-    if (!SUBSCRIPTION_LIFECYCLE_MODES.has(lifecycleMode)) {
-      throw new Error(`unsupported lifecycle mode: ${lifecycleMode}`);
-    }
+    const cleanupPolicy = normalizeCleanupPolicy(input.cleanupPolicy ?? null);
     const subscription: Subscription = {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
       filter: input.filter ?? {},
-      lifecycleMode,
-      expiresAt: input.expiresAt ?? null,
+      trackedResourceRef: normalizeTrackedResourceRef(input.trackedResourceRef),
+      cleanupPolicy,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
@@ -1510,6 +1506,112 @@ export class AgentInboxService {
       console.warn("offline agent gc failed:", error);
     }
   }
+}
+
+function normalizeTrackedResourceRef(value: string | null | undefined): string | null {
+  if (value == null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
+  if (!input) {
+    return { mode: "manual" };
+  }
+  if (input.mode === "manual") {
+    if ("at" in input || "gracePeriodSecs" in input) {
+      throw new Error("cleanupPolicy mode manual does not allow at or gracePeriodSecs");
+    }
+    return { mode: "manual" };
+  }
+  if (input.mode === "at") {
+    if (!isValidIsoTimestamp(input.at)) {
+      throw new Error("cleanupPolicy mode at requires a valid ISO8601 at timestamp");
+    }
+    if ("gracePeriodSecs" in input) {
+      throw new Error("cleanupPolicy mode at does not allow gracePeriodSecs");
+    }
+    return { mode: "at", at: input.at };
+  }
+  if (input.mode === "on_terminal") {
+    if ("at" in input) {
+      throw new Error("cleanupPolicy mode on_terminal does not allow at");
+    }
+    return {
+      mode: "on_terminal",
+      ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
+    };
+  }
+  if (input.mode === "on_terminal_or_at") {
+    if (!isValidIsoTimestamp(input.at)) {
+      throw new Error("cleanupPolicy mode on_terminal_or_at requires a valid ISO8601 at timestamp");
+    }
+    return {
+      mode: "on_terminal_or_at",
+      at: input.at,
+      ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
+    };
+  }
+  throw new Error(`unsupported cleanup policy mode: ${(input as { mode?: string }).mode ?? "unknown"}`);
+}
+
+function normalizeGracePeriodSecs(value: number): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("cleanupPolicy gracePeriodSecs must be a non-negative integer");
+  }
+  return value;
+}
+
+function isValidIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.(\d{1,3}))?(Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) {
+    return false;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const fractional = match[8] ?? "";
+  const timezone = match[9];
+  const offsetSign = match[10];
+  const offsetHour = match[11] != null ? Number(match[11]) : 0;
+  const offsetMinute = match[12] != null ? Number(match[12]) : 0;
+  const millisecond = fractional.length === 0 ? 0 : Number((fractional + "000").slice(0, 3));
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    return false;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return false;
+  }
+
+  const offsetMinutes = timezone === "Z"
+    ? 0
+    : (offsetSign === "+" ? 1 : -1) * ((offsetHour * 60) + offsetMinute);
+  const expectedTime = Date.UTC(year, month - 1, day, hour, minute, second, millisecond)
+    - (offsetMinutes * 60_000);
+
+  return parsed.getTime() === expectedTime;
 }
 
 function retentionCutoffIso(retentionMs: number): string {
