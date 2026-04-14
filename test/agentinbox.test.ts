@@ -1126,6 +1126,7 @@ test("gc removes subscriptions whose cleanupPolicy deadline has passed", async (
     const result = service.gc();
     assert.equal(result.removedSubscriptions, 1);
     assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
   } finally {
     await service.stop();
     store.close();
@@ -1220,6 +1221,8 @@ test("terminal lifecycle signals schedule retirements and gc removes matching su
     assert.equal(gc.removedSubscriptions, 2);
     assert.equal(store.getSubscription(subA.subscriptionId), null);
     assert.equal(store.getSubscription(subB.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subA.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subB.subscriptionId), null);
     assert.ok(store.getSubscription(subOther.subscriptionId));
   } finally {
     await service.stop();
@@ -1302,6 +1305,7 @@ test("terminal lifecycle retirements honor gracePeriodSecs until gc reaches reti
     const secondGc = service.gc();
     assert.equal(secondGc.removedSubscriptions, 1);
     assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
   } finally {
     await service.stop();
     store.close();

@@ -493,6 +493,11 @@ export class AgentInboxStore {
       return null;
     }
     this.inTransaction(() => {
+      this.db.run(
+        "delete from consumer_commits where consumer_id in (select consumer_id from consumers where subscription_id = ?)",
+        [subscriptionId],
+      );
+      this.db.run("delete from consumers where subscription_id = ?", [subscriptionId]);
       this.db.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
       this.db.run("delete from subscriptions where subscription_id = ?", [subscriptionId]);
     });

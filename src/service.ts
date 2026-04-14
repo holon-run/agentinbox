@@ -55,7 +55,7 @@ const DEFAULT_NOTIFY_RETRY_MS = 5_000;
 const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
-const DEFAULT_LIFECYCLE_SYNC_INTERVAL_MS = 2_000;
+const DEFAULT_SYNC_INTERVAL_MS = 2_000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 interface ActivationPolicy {
@@ -99,6 +99,7 @@ export class AgentInboxService {
   private syncInterval: NodeJS.Timeout | null = null;
   private stopping = false;
   private lastAckedInboxGcAt = 0;
+  private lastLifecycleCleanupAt = 0;
   private lastOfflineAgentGcAt = 0;
 
   constructor(
@@ -130,7 +131,7 @@ export class AgentInboxService {
       void this.syncActivationDispatchStates();
       void this.runAckedInboxGcIfDue();
       void this.syncLifecycleGc();
-    }, DEFAULT_LIFECYCLE_SYNC_INTERVAL_MS);
+    }, DEFAULT_SYNC_INTERVAL_MS);
     await this.syncAllSubscriptions();
     await this.syncActivationDispatchStates();
     await this.runAckedInboxGcIfDue(true);
@@ -1525,7 +1526,7 @@ export class AgentInboxService {
   }
 
   private runLifecycleCleanupPass(nowMs: number): { removedSubscriptions: number } {
-    const now = new Date(nowMs).toISOString();
+    this.lastLifecycleCleanupAt = nowMs;
     const removed = new Set<string>();
 
     for (const subscription of this.store.listSubscriptions()) {
@@ -1533,7 +1534,11 @@ export class AgentInboxService {
         continue;
       }
       const deadline = lifecycleDeadlineAt(subscription.cleanupPolicy);
-      if (!deadline || deadline > now) {
+      if (!deadline) {
+        continue;
+      }
+      const deadlineMs = Date.parse(deadline);
+      if (Number.isNaN(deadlineMs) || deadlineMs > nowMs) {
         continue;
       }
       if (this.store.deleteSubscription(subscription.subscriptionId)) {
@@ -1542,7 +1547,7 @@ export class AgentInboxService {
       }
     }
 
-    const dueRetirements = this.store.listSubscriptionLifecycleRetirementsDue(now);
+    const dueRetirements = this.store.listSubscriptionLifecycleRetirementsDue(new Date(nowMs).toISOString());
     for (const retirement of dueRetirements) {
       if (removed.has(retirement.subscriptionId)) {
         this.store.deleteSubscriptionLifecycleRetirement(retirement.subscriptionId);
@@ -1592,7 +1597,6 @@ export class AgentInboxService {
         console.warn(`subscription poll failed for ${subscription.subscriptionId}:`, error);
       }
     }
-    this.runLifecycleCleanupPass(Date.now());
   }
 
   private async syncActivationDispatchStates(): Promise<void> {
@@ -1615,13 +1619,15 @@ export class AgentInboxService {
   }
 
   private async syncLifecycleGc(): Promise<void> {
-    try {
-      this.runLifecycleCleanupPass(Date.now());
-    } catch (error) {
-      console.warn("subscription lifecycle gc failed:", error);
+    const now = Date.now();
+    if (now - this.lastLifecycleCleanupAt >= DEFAULT_GC_INTERVAL_MS) {
+      try {
+        this.runLifecycleCleanupPass(now);
+      } catch (error) {
+        console.warn("subscription lifecycle gc failed:", error);
+      }
     }
 
-    const now = Date.now();
     if (now - this.lastOfflineAgentGcAt < DEFAULT_GC_INTERVAL_MS) {
       return;
     }
@@ -1659,7 +1665,7 @@ function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
     if ("gracePeriodSecs" in input) {
       throw new Error("cleanupPolicy mode at does not allow gracePeriodSecs");
     }
-    return { mode: "at", at: input.at };
+    return { mode: "at", at: canonicalIsoTimestamp(input.at) };
   }
   if (input.mode === "on_terminal") {
     if ("at" in input) {
@@ -1676,7 +1682,7 @@ function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
     }
     return {
       mode: "on_terminal_or_at",
-      at: input.at,
+      at: canonicalIsoTimestamp(input.at),
       ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
     };
   }
@@ -1740,7 +1746,11 @@ function lifecycleDeadlineAt(cleanupPolicy: CleanupPolicy): string | null {
 }
 
 function minIsoTimestamps(left: string, right: string): string {
-  return Date.parse(left) <= Date.parse(right) ? left : right;
+  return new Date(Math.min(Date.parse(left), Date.parse(right))).toISOString();
+}
+
+function canonicalIsoTimestamp(value: string): string {
+  return new Date(value).toISOString();
 }
 
 function isValidIsoTimestamp(value: unknown): value is string {
