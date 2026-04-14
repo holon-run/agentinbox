@@ -1100,14 +1100,21 @@ test("control plane shortcut validation errors return 400 instead of 500", async
   let started: Awaited<ReturnType<typeof startControlServer>> | null = null;
 
   try {
-    const source = await service.registerSource({
-      sourceType: "remote_source",
+    const source = {
+      sourceId: "src_http_shortcut_error_demo",
+      sourceType: "remote_source" as const,
       sourceKey: "http-shortcut-error-demo",
+      configRef: null,
       config: {
         profilePath: "http-shortcut-error.mjs",
         profileConfig: {},
       },
-    });
+      status: "active" as const,
+      checkpoint: null,
+      createdAt: "2026-04-14T00:00:00.000Z",
+      updatedAt: "2026-04-14T00:00:00.000Z",
+    };
+    store.insertSource(source);
     const registered = service.registerAgent({
       backend: "iterm2",
       runtimeKind: "codex",
