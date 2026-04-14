@@ -15,6 +15,7 @@ import {
   Agent,
   AppendSourceEventInput,
   AppendSourceEventResult,
+  CleanupPolicy,
   DeliveryAttempt,
   Inbox,
   InboxItem,
@@ -430,7 +431,7 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into subscriptions (
-        subscription_id, agent_id, source_id, filter_json, lifecycle_mode, expires_at, start_policy, start_offset, start_time, created_at
+        subscription_id, agent_id, source_id, filter_json, tracked_resource_ref, cleanup_policy_json, start_policy, start_offset, start_time, created_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
@@ -438,8 +439,8 @@ export class AgentInboxStore {
         subscription.agentId,
         subscription.sourceId,
         JSON.stringify(subscription.filter),
-        subscription.lifecycleMode,
-        subscription.expiresAt ?? null,
+        subscription.trackedResourceRef ?? null,
+        JSON.stringify(subscription.cleanupPolicy),
         subscription.startPolicy,
         subscription.startOffset ?? null,
         subscription.startTime ?? null,
@@ -1301,8 +1302,8 @@ export class AgentInboxStore {
       agentId: String(row.agent_id),
       sourceId: String(row.source_id),
       filter: parseJson<SubscriptionFilter>(row.filter_json as string),
-      lifecycleMode: row.lifecycle_mode as Subscription["lifecycleMode"],
-      expiresAt: row.expires_at ? String(row.expires_at) : null,
+      trackedResourceRef: row.tracked_resource_ref ? String(row.tracked_resource_ref) : null,
+      cleanupPolicy: parseJson<CleanupPolicy>(row.cleanup_policy_json as string),
       startPolicy: row.start_policy as SubscriptionStartPolicy,
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
       startTime: row.start_time ? String(row.start_time) : null,

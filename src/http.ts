@@ -606,8 +606,8 @@ function buildFastifyServer(service: AgentInboxService) {
           agentId: { type: "string", minLength: 1 },
           sourceId: { type: "string", minLength: 1 },
           filter: jsonObjectSchema,
-          lifecycleMode: { type: "string" },
-          expiresAt: { type: "string" },
+          trackedResourceRef: { type: "string" },
+          cleanupPolicy: jsonObjectSchema,
           startPolicy: { type: "string" },
           startOffset: { type: "integer" },
           startTime: { type: "string" },
@@ -624,8 +624,8 @@ function buildFastifyServer(service: AgentInboxService) {
       agentId: String(body.agentId),
       sourceId: String(body.sourceId),
       filter: (body.filter as Record<string, unknown> | undefined) ?? {},
-      lifecycleMode: optionalString(body.lifecycleMode) as never,
-      expiresAt: optionalString(body.expiresAt) ?? null,
+      trackedResourceRef: optionalString(body.trackedResourceRef) ?? null,
+      cleanupPolicy: ((body.cleanupPolicy as Record<string, unknown> | undefined) ?? null) as never,
       startPolicy: optionalString(body.startPolicy) as never,
       startOffset: typeof body.startOffset === "number" ? body.startOffset : undefined,
       startTime: optionalString(body.startTime) ?? undefined,
@@ -1088,9 +1088,11 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("subscriptions requires") ||
     message.startsWith("agent register conflict") ||
     message.startsWith("unsupported activation target kind") ||
-    message.startsWith("unsupported lifecycle mode") ||
+    message.startsWith("unsupported cleanup policy mode") ||
     message.startsWith("unsupported start policy") ||
     message.startsWith("unsupported terminal") ||
+    message.startsWith("cleanupPolicy ") ||
+    message.startsWith("trackedResourceRef ") ||
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||

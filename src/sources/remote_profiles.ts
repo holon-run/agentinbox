@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-daemon-client";
-import { AppendSourceEventInput, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
+import { AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
 import {
   GITHUB_ENDPOINT,
   normalizeGithubRepoEvent,
@@ -61,10 +61,8 @@ export interface SubscriptionShortcutSpec {
 
 export interface ExpandedSubscriptionInput {
   filter?: SubscriptionFilter;
-  lifecycleMode?: "standing" | "temporary";
-  expiresAt?: string | null;
   trackedResourceRef?: string | null;
-  cleanupPolicy?: Record<string, unknown> | null;
+  cleanupPolicy?: CleanupPolicy | null;
 }
 
 export interface ExpandSubscriptionShortcutInput {

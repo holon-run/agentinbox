@@ -52,6 +52,24 @@ going forward.
 - `GET /subscriptions/{subscriptionId}/lag`
 - `POST /subscriptions/{subscriptionId}/reset`
 
+`POST /subscriptions` accepts:
+
+```json
+{
+  "agentId": "agent_...",
+  "sourceId": "src_...",
+  "filter": {},
+  "trackedResourceRef": "pr:373",
+  "cleanupPolicy": {
+    "mode": "on_terminal_or_at",
+    "at": "2026-05-01T00:00:00.000Z",
+    "gracePeriodSecs": 300
+  }
+}
+```
+
+`cleanupPolicy` defaults to `{"mode":"manual"}` when omitted.
+
 ## Inbox
 
 - `GET /agents/{agentId}/inbox`

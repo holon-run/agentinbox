@@ -21,6 +21,7 @@ import {
   SourceSchema,
   SourcePollResult,
   Subscription,
+  CleanupPolicy,
   SubscriptionPollResult,
   SubscriptionSource,
   TerminalActivationTarget,
@@ -54,8 +55,6 @@ const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
-const SUBSCRIPTION_LIFECYCLE_MODES = new Set<Subscription["lifecycleMode"]>(["standing", "temporary"]);
-
 interface ActivationPolicy {
   windowMs?: number;
   maxItems?: number;
@@ -474,17 +473,14 @@ export class AgentInboxService {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
     await validateSubscriptionFilter(input.filter ?? {});
-    const lifecycleMode = input.lifecycleMode ?? "standing";
-    if (!SUBSCRIPTION_LIFECYCLE_MODES.has(lifecycleMode)) {
-      throw new Error(`unsupported lifecycle mode: ${lifecycleMode}`);
-    }
+    const cleanupPolicy = normalizeCleanupPolicy(input.cleanupPolicy ?? null);
     const subscription: Subscription = {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
       filter: input.filter ?? {},
-      lifecycleMode,
-      expiresAt: input.expiresAt ?? null,
+      trackedResourceRef: normalizeTrackedResourceRef(input.trackedResourceRef),
+      cleanupPolicy,
       startPolicy: input.startPolicy ?? "latest",
       startOffset: input.startOffset ?? null,
       startTime: input.startTime ?? null,
@@ -1510,6 +1506,63 @@ export class AgentInboxService {
       console.warn("offline agent gc failed:", error);
     }
   }
+}
+
+function normalizeTrackedResourceRef(value: string | null | undefined): string | null {
+  if (value == null) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
+  if (!input) {
+    return { mode: "manual" };
+  }
+  if (input.mode === "manual") {
+    if ("at" in input || "gracePeriodSecs" in input) {
+      throw new Error("cleanupPolicy mode manual does not allow at or gracePeriodSecs");
+    }
+    return { mode: "manual" };
+  }
+  if (input.mode === "at") {
+    if (!isValidIsoTimestamp(input.at)) {
+      throw new Error("cleanupPolicy mode at requires a valid ISO8601 at timestamp");
+    }
+    if ("gracePeriodSecs" in input) {
+      throw new Error("cleanupPolicy mode at does not allow gracePeriodSecs");
+    }
+    return { mode: "at", at: input.at };
+  }
+  if (input.mode === "on_terminal") {
+    return {
+      mode: "on_terminal",
+      ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
+    };
+  }
+  if (input.mode === "on_terminal_or_at") {
+    if (!isValidIsoTimestamp(input.at)) {
+      throw new Error("cleanupPolicy mode on_terminal_or_at requires a valid ISO8601 at timestamp");
+    }
+    return {
+      mode: "on_terminal_or_at",
+      at: input.at,
+      ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
+    };
+  }
+  throw new Error(`unsupported cleanup policy mode: ${(input as { mode?: string }).mode ?? "unknown"}`);
+}
+
+function normalizeGracePeriodSecs(value: number): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error("cleanupPolicy gracePeriodSecs must be a non-negative integer");
+  }
+  return value;
+}
+
+function isValidIsoTimestamp(value: string): boolean {
+  return !Number.isNaN(Date.parse(value));
 }
 
 function retentionCutoffIso(retentionMs: number): string {

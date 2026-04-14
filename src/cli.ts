@@ -260,19 +260,33 @@ async function main(): Promise<void> {
 
   if (command === "subscription" && normalized[1] === "add") {
     const args = normalized.slice(2);
-    const positionals = positionalArgs(args, ["--agent-id", "--filter-json", "--filter-file", "--start-policy", "--start-offset", "--start-time"]);
+    const positionals = positionalArgs(args, [
+      "--agent-id",
+      "--filter-json",
+      "--filter-file",
+      "--tracked-resource-ref",
+      "--cleanup-policy-json",
+      "--start-policy",
+      "--start-offset",
+      "--start-time",
+    ]);
     const sourceId = positionals[0];
     if (!sourceId || positionals[1]) {
-      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
       autoRegister: true,
     });
+    const cleanupPolicyJson = takeFlagValue(normalized, "--cleanup-policy-json");
     const response = await requestRemote<Record<string, unknown>>(client, "/subscriptions", {
       agentId: selection.agentId,
       sourceId,
       filter: readSubscriptionFilter(normalized),
+      trackedResourceRef: takeFlagValue(normalized, "--tracked-resource-ref") ?? undefined,
+      cleanupPolicy: cleanupPolicyJson != null
+        ? parseJsonArg(cleanupPolicyJson, "--cleanup-policy-json")
+        : undefined,
       startPolicy: takeFlagValue(normalized, "--start-policy") ?? undefined,
       startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
       startTime: takeFlagValue(normalized, "--start-time") ?? undefined,
@@ -871,7 +885,7 @@ Usage:
     subscription: `agentinbox subscription
 
 Usage:
-  agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription remove <subscriptionId>
