@@ -4,6 +4,7 @@ import {
   ActivationTarget,
   AddWebhookActivationTargetInput,
   Agent,
+  AgentTimer,
   DirectInboxTextMessageInput,
   DirectInboxTextMessageResult,
   AppendSourceEventInput,
@@ -19,6 +20,7 @@ import {
   RegisterAgentResult,
   RegisterSourceInput,
   RegisterSubscriptionInput,
+  RegisterTimerInput,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
   SourceSchema,
@@ -30,6 +32,7 @@ import {
   SubscriptionPollResult,
   SubscriptionSource,
   TerminalActivationTarget,
+  UpdateTimerStatusResult,
   UpdateSourceInput,
   WatchInboxOptions,
   WebhookActivationTarget,
@@ -63,6 +66,10 @@ const DEFAULT_SYNC_INTERVAL_MS = 2_000;
 const DEFAULT_IDLE_SOURCE_GRACE_MS = 5 * 60 * 1000;
 const DIRECT_INBOX_SOURCE_ID = "__agentinbox_direct_text__";
 const DIRECT_INBOX_EVENT_VARIANT = "agentinbox.direct_text_message";
+const TIMER_INBOX_SOURCE_ID = "__agentinbox_timer__";
+const TIMER_INBOX_EVENT_VARIANT = "agentinbox.timer_fired";
+const DEFAULT_TIMER_SENDER = "timer";
+const MIN_TIMER_INTERVAL_MS = 60 * 1000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 interface ActivationPolicy {
@@ -104,6 +111,7 @@ export class AgentInboxService {
   private readonly notificationBuffers = new Map<string, BufferedNotification>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private syncInterval: NodeJS.Timeout | null = null;
+  private timerSyncTimeout: NodeJS.Timeout | null = null;
   private stopping = false;
   private lastAckedInboxGcAt = 0;
   private lastLifecycleCleanupAt = 0;
@@ -139,10 +147,12 @@ export class AgentInboxService {
       void this.runAckedInboxGcIfDue();
       void this.syncLifecycleGc();
     }, DEFAULT_SYNC_INTERVAL_MS);
+    this.refreshTimersOnStart();
     await this.syncAllSubscriptions();
     await this.syncActivationDispatchStates();
     await this.runAckedInboxGcIfDue(true);
     await this.syncLifecycleGc();
+    await this.syncTimers();
   }
 
   async stop(): Promise<void> {
@@ -156,6 +166,10 @@ export class AgentInboxService {
     if (this.syncInterval) {
       clearInterval(this.syncInterval);
       this.syncInterval = null;
+    }
+    if (this.timerSyncTimeout) {
+      clearTimeout(this.timerSyncTimeout);
+      this.timerSyncTimeout = null;
     }
     await this.flushAllPendingNotifications();
   }
@@ -476,7 +490,110 @@ export class AgentInboxService {
       }
     });
     this.inboxWatchers.delete(agentId);
+    this.rescheduleTimerSync();
     return { removed: true };
+  }
+
+  registerTimer(input: RegisterTimerInput): AgentTimer {
+    this.getAgent(input.agentId);
+    const normalized = normalizeTimerInput(input);
+    const timezone = normalized.timezone ?? detectHostTimezone();
+    assertValidTimeZone(timezone);
+    const now = nowIso();
+    const nextFireAt = computeNextTimerFire({
+      mode: normalized.mode,
+      at: normalized.at ?? null,
+      intervalMs: normalized.every ?? null,
+      cronExpr: normalized.cron ?? null,
+      timezone,
+      fromIso: now,
+      lastFiredAt: null,
+      restartRecovery: false,
+    });
+    const timer: AgentTimer = {
+      scheduleId: generateId("sched"),
+      agentId: input.agentId,
+      status: "active",
+      mode: normalized.mode,
+      at: normalized.at ?? null,
+      intervalMs: normalized.every ?? null,
+      cronExpr: normalized.cron ?? null,
+      timezone,
+      message: normalizeDirectInboxMessage(input.message),
+      sender: normalizeDirectInboxSender(input.sender) ?? DEFAULT_TIMER_SENDER,
+      nextFireAt,
+      lastFiredAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.insertTimer(timer);
+    this.rescheduleTimerSync();
+    return timer;
+  }
+
+  listTimers(agentId?: string): AgentTimer[] {
+    if (agentId) {
+      this.getAgent(agentId);
+      return this.store.listTimersForAgent(agentId);
+    }
+    return this.store.listTimers();
+  }
+
+  getTimer(scheduleId: string): AgentTimer {
+    const timer = this.store.getTimer(scheduleId);
+    if (!timer) {
+      throw new Error(`unknown timer: ${scheduleId}`);
+    }
+    return timer;
+  }
+
+  pauseTimer(scheduleId: string): UpdateTimerStatusResult {
+    const timer = this.getTimer(scheduleId);
+    const updated = this.store.updateTimer(scheduleId, {
+      status: "paused",
+      nextFireAt: null,
+      updatedAt: nowIso(),
+    });
+    this.rescheduleTimerSync();
+    return {
+      updated: timer.status !== "paused",
+      timer: updated,
+    };
+  }
+
+  resumeTimer(scheduleId: string): UpdateTimerStatusResult {
+    const timer = this.getTimer(scheduleId);
+    if (timer.mode === "at" && timer.lastFiredAt) {
+      throw new Error(`timer ${scheduleId} already fired`);
+    }
+    const now = nowIso();
+    const nextFireAt = computeNextTimerFire({
+      mode: timer.mode,
+      at: timer.at ?? null,
+      intervalMs: timer.intervalMs ?? null,
+      cronExpr: timer.cronExpr ?? null,
+      timezone: timer.timezone,
+      fromIso: now,
+      lastFiredAt: timer.lastFiredAt ?? null,
+      restartRecovery: false,
+    });
+    const updated = this.store.updateTimer(scheduleId, {
+      status: "active",
+      nextFireAt,
+      updatedAt: now,
+    });
+    this.rescheduleTimerSync();
+    return {
+      updated: timer.status !== "active",
+      timer: updated,
+    };
+  }
+
+  removeTimer(scheduleId: string): { removed: boolean; scheduleId: string } {
+    this.getTimer(scheduleId);
+    this.store.deleteTimer(scheduleId);
+    this.rescheduleTimerSync();
+    return { removed: true, scheduleId };
   }
 
   addWebhookActivationTarget(agentId: string, input: AddWebhookActivationTargetInput): WebhookActivationTarget {
@@ -722,21 +839,74 @@ export class AgentInboxService {
     this.getAgent(agentId);
     const message = normalizeDirectInboxMessage(input.message);
     const sender = normalizeDirectInboxSender(input.sender) ?? this.detectDirectInboxSender(env);
-    const inbox = this.ensureInboxForAgent(agentId);
-    const occurredAt = nowIso();
-    const item: InboxItem = {
-      itemId: generateId("item"),
+    return this.materializeAgentInboxItem(agentId, {
       sourceId: DIRECT_INBOX_SOURCE_ID,
       sourceNativeId: generateId("direct"),
       eventVariant: DIRECT_INBOX_EVENT_VARIANT,
-      inboxId: inbox.inboxId,
-      occurredAt,
-      metadata: {},
+      summary: summarizeDirectInboxMessage(sender),
       rawPayload: {
         type: "direct_text_message",
         message,
         sender,
       },
+    });
+  }
+
+  private async fireTimer(timer: AgentTimer, now: string): Promise<void> {
+    await this.materializeAgentInboxItem(timer.agentId, {
+      sourceId: TIMER_INBOX_SOURCE_ID,
+      sourceNativeId: `${timer.scheduleId}:${now}`,
+      eventVariant: TIMER_INBOX_EVENT_VARIANT,
+      summary: summarizeTimerMessage(timer.scheduleId),
+      rawPayload: {
+        type: "timer_fired",
+        scheduleId: timer.scheduleId,
+        message: timer.message,
+        sender: timer.sender ?? DEFAULT_TIMER_SENDER,
+      },
+      occurredAt: now,
+    });
+
+    const nextFireAt = computeNextTimerFire({
+      mode: timer.mode,
+      at: timer.at ?? null,
+      intervalMs: timer.intervalMs ?? null,
+      cronExpr: timer.cronExpr ?? null,
+      timezone: timer.timezone,
+      fromIso: now,
+      lastFiredAt: now,
+      restartRecovery: false,
+    });
+    this.store.updateTimer(timer.scheduleId, {
+      status: nextFireAt ? "active" : "paused",
+      nextFireAt,
+      lastFiredAt: now,
+      updatedAt: now,
+    });
+  }
+
+  private materializeAgentInboxItem(
+    agentId: string,
+    input: {
+      sourceId: string;
+      sourceNativeId: string;
+      eventVariant: string;
+      summary: string;
+      rawPayload: Record<string, unknown>;
+      occurredAt?: string;
+    },
+  ): DirectInboxTextMessageResult {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const occurredAt = input.occurredAt ?? nowIso();
+    const item: InboxItem = {
+      itemId: generateId("item"),
+      sourceId: input.sourceId,
+      sourceNativeId: input.sourceNativeId,
+      eventVariant: input.eventVariant,
+      inboxId: inbox.inboxId,
+      occurredAt,
+      metadata: {},
+      rawPayload: input.rawPayload,
       deliveryHandle: null,
       ackedAt: null,
     };
@@ -762,8 +932,8 @@ export class AgentInboxService {
       this.enqueueActivationTarget(target, {
         agentId,
         subscriptionId: null,
-        sourceId: DIRECT_INBOX_SOURCE_ID,
-        summary: summarizeDirectInboxMessage(sender),
+        sourceId: input.sourceId,
+        summary: input.summary,
         item: activationItem,
       });
     }
@@ -1800,6 +1970,9 @@ export class AgentInboxService {
     if (agents.length > 0) {
       this.store.save();
     }
+    if (agents.length > 0) {
+      this.rescheduleTimerSync();
+    }
     return { removedAgents: agents.length };
   }
 
@@ -1856,6 +2029,66 @@ export class AgentInboxService {
     } catch (error) {
       console.warn("offline agent gc failed:", error);
     }
+  }
+
+  private async syncTimers(): Promise<void> {
+    const now = nowIso();
+    const due = this.store.listDueTimers(now);
+    for (const timer of due) {
+      try {
+        await this.fireTimer(timer, now);
+      } catch (error) {
+        console.warn(`timer fire failed for ${timer.scheduleId}:`, error);
+      }
+    }
+    this.rescheduleTimerSync();
+  }
+
+  private refreshTimersOnStart(): void {
+    const now = nowIso();
+    for (const timer of this.store.listTimers()) {
+      if (timer.status !== "active") {
+        continue;
+      }
+      const nextFireAt = computeNextTimerFire({
+        mode: timer.mode,
+        at: timer.at ?? null,
+        intervalMs: timer.intervalMs ?? null,
+        cronExpr: timer.cronExpr ?? null,
+        timezone: timer.timezone,
+        fromIso: now,
+        lastFiredAt: timer.lastFiredAt ?? null,
+        restartRecovery: true,
+      });
+      this.store.updateTimer(timer.scheduleId, {
+        nextFireAt,
+        status: nextFireAt ? "active" : "paused",
+        updatedAt: now,
+      });
+    }
+  }
+
+  private rescheduleTimerSync(): void {
+    if (this.timerSyncTimeout) {
+      clearTimeout(this.timerSyncTimeout);
+      this.timerSyncTimeout = null;
+    }
+    if (this.stopping) {
+      return;
+    }
+    const nearest = this.store.getNearestActiveTimer();
+    if (!nearest?.nextFireAt) {
+      return;
+    }
+    const dueAt = Date.parse(nearest.nextFireAt);
+    if (Number.isNaN(dueAt)) {
+      return;
+    }
+    const delay = Math.max(0, dueAt - Date.now());
+    this.timerSyncTimeout = setTimeout(() => {
+      this.timerSyncTimeout = null;
+      void this.syncTimers();
+    }, delay);
   }
 
   private refreshSourceIdleState(sourceId: string): void {
@@ -2245,6 +2478,10 @@ function summarizeDirectInboxMessage(sender: string | null): string {
   return "direct_text_message";
 }
 
+function summarizeTimerMessage(scheduleId: string): string {
+  return `timer:${scheduleId}`;
+}
+
 function normalizeDirectInboxMessage(message: string): string {
   if (typeof message !== "string") {
     throw new Error("direct inbox message must be a string");
@@ -2268,4 +2505,242 @@ function normalizeDirectInboxSender(sender: string | null | undefined): string |
     throw new Error("direct inbox sender must not be empty");
   }
   return trimmed;
+}
+
+function normalizeTimerInput(input: RegisterTimerInput): {
+  mode: "at" | "every" | "cron";
+  at?: string | null;
+  every?: number | null;
+  cron?: string | null;
+  timezone?: string | null;
+} {
+  const modes = [input.at != null, input.every != null, input.cron != null].filter(Boolean).length;
+  if (modes !== 1) {
+    throw new Error("timers require exactly one of at, every, or cron");
+  }
+  if (input.at != null) {
+    const at = normalizeIsoTimestamp(input.at, "timer at");
+    return { mode: "at", at, timezone: input.timezone ?? null };
+  }
+  if (input.every != null) {
+    if (!Number.isInteger(input.every) || input.every < MIN_TIMER_INTERVAL_MS) {
+      throw new Error("timer every interval must be an integer number of milliseconds and at least 60000");
+    }
+    return { mode: "every", every: input.every, timezone: input.timezone ?? null };
+  }
+  const cron = normalizeCronExpression(input.cron!);
+  return { mode: "cron", cron, timezone: input.timezone ?? null };
+}
+
+function normalizeIsoTimestamp(value: string, label: string): string {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`${label} must be a valid ISO8601 timestamp`);
+  }
+  return new Date(parsed).toISOString();
+}
+
+function normalizeCronExpression(value: string): string {
+  if (typeof value !== "string") {
+    throw new Error("timer cron must be a string");
+  }
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  const fields = trimmed.split(" ");
+  if (fields.length !== 5) {
+    throw new Error("timer cron must use standard 5-field syntax");
+  }
+  for (const field of fields) {
+    if (/[LW#@]/.test(field)) {
+      throw new Error("timer cron does not support extensions like L, W, #, or @reboot");
+    }
+  }
+  parseCronExpression(trimmed);
+  return trimmed;
+}
+
+function detectHostTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function assertValidTimeZone(timezone: string): void {
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
+  } catch {
+    throw new Error(`invalid timezone: ${timezone}`);
+  }
+}
+
+function computeNextTimerFire(input: {
+  mode: "at" | "every" | "cron";
+  at: string | null;
+  intervalMs: number | null;
+  cronExpr: string | null;
+  timezone: string;
+  fromIso: string;
+  lastFiredAt: string | null;
+  restartRecovery: boolean;
+}): string | null {
+  const fromMs = Date.parse(input.fromIso);
+  if (Number.isNaN(fromMs)) {
+    return null;
+  }
+  if (input.mode === "at") {
+    if (!input.at) {
+      return null;
+    }
+    const atMs = Date.parse(input.at);
+    if (Number.isNaN(atMs)) {
+      return null;
+    }
+    if (input.lastFiredAt) {
+      return null;
+    }
+    if (atMs <= fromMs) {
+      return input.restartRecovery ? input.at : input.at;
+    }
+    return input.at;
+  }
+  if (input.mode === "every") {
+    if (!input.intervalMs) {
+      return null;
+    }
+    if (!input.lastFiredAt) {
+      return new Date(fromMs + input.intervalMs).toISOString();
+    }
+    const lastFiredMs = Date.parse(input.lastFiredAt);
+    if (Number.isNaN(lastFiredMs)) {
+      return new Date(fromMs + input.intervalMs).toISOString();
+    }
+    const base = input.restartRecovery ? fromMs : Math.max(fromMs, lastFiredMs);
+    return new Date(base + input.intervalMs).toISOString();
+  }
+  if (!input.cronExpr) {
+    return null;
+  }
+  return nextCronOccurrence(input.cronExpr, input.timezone, new Date(fromMs));
+}
+
+type ParsedCronField = {
+  any: boolean;
+  values: Set<number>;
+};
+
+type ParsedCron = {
+  minute: ParsedCronField;
+  hour: ParsedCronField;
+  dayOfMonth: ParsedCronField;
+  month: ParsedCronField;
+  dayOfWeek: ParsedCronField;
+};
+
+function parseCronExpression(expr: string): ParsedCron {
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = expr.split(" ");
+  return {
+    minute: parseCronField(minute, 0, 59),
+    hour: parseCronField(hour, 0, 23),
+    dayOfMonth: parseCronField(dayOfMonth, 1, 31),
+    month: parseCronField(month, 1, 12),
+    dayOfWeek: parseCronField(dayOfWeek, 0, 6, true),
+  };
+}
+
+function parseCronField(field: string, min: number, max: number, normalizeSunday = false): ParsedCronField {
+  if (field === "*") {
+    return { any: true, values: new Set() };
+  }
+  const values = new Set<number>();
+  for (const part of field.split(",")) {
+    const [rangePart, stepPart] = part.split("/");
+    const step = stepPart ? Number(stepPart) : 1;
+    if (!Number.isInteger(step) || step <= 0) {
+      throw new Error(`invalid cron field: ${field}`);
+    }
+    const [startRaw, endRaw] = rangePart === "*" ? [String(min), String(max)] : rangePart.split("-");
+    const start = Number(startRaw);
+    const end = endRaw != null ? Number(endRaw) : start;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < min || end > max || start > end) {
+      throw new Error(`invalid cron field: ${field}`);
+    }
+    for (let value = start; value <= end; value += step) {
+      values.add(normalizeSunday && value === 7 ? 0 : value);
+    }
+  }
+  return { any: false, values };
+}
+
+function nextCronOccurrence(expr: string, timezone: string, after: Date): string | null {
+  const parsed = parseCronExpression(expr);
+  const candidate = new Date(after.getTime());
+  candidate.setUTCSeconds(0, 0);
+  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  for (let index = 0; index < 366 * 24 * 60; index += 1) {
+    const zoned = zonedDateParts(candidate, timezone);
+    if (matchesCron(parsed, zoned)) {
+      return candidate.toISOString();
+    }
+    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  }
+  return null;
+}
+
+function matchesCron(parsed: ParsedCron, parts: ReturnType<typeof zonedDateParts>): boolean {
+  const monthMatches = parsed.month.any || parsed.month.values.has(parts.month);
+  const hourMatches = parsed.hour.any || parsed.hour.values.has(parts.hour);
+  const minuteMatches = parsed.minute.any || parsed.minute.values.has(parts.minute);
+  if (!monthMatches || !hourMatches || !minuteMatches) {
+    return false;
+  }
+  const dayOfMonthMatches = parsed.dayOfMonth.any || parsed.dayOfMonth.values.has(parts.day);
+  const dayOfWeekMatches = parsed.dayOfWeek.any || parsed.dayOfWeek.values.has(parts.dayOfWeek);
+  if (!parsed.dayOfMonth.any && !parsed.dayOfWeek.any) {
+    return dayOfMonthMatches || dayOfWeekMatches;
+  }
+  return dayOfMonthMatches && dayOfWeekMatches;
+}
+
+function zonedDateParts(date: Date, timezone: string): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  dayOfWeek: number;
+} {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    weekday: "short",
+  });
+  const entries = Object.fromEntries(
+    formatter.formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value]),
+  ) as Record<string, string>;
+  return {
+    year: Number(entries.year),
+    month: Number(entries.month),
+    day: Number(entries.day),
+    hour: Number(entries.hour),
+    minute: Number(entries.minute),
+    dayOfWeek: weekdayToNumber(entries.weekday),
+  };
+}
+
+function weekdayToNumber(value: string): number {
+  switch (value) {
+    case "Sun": return 0;
+    case "Mon": return 1;
+    case "Tue": return 2;
+    case "Wed": return 3;
+    case "Thu": return 4;
+    case "Fri": return 5;
+    case "Sat": return 6;
+    default:
+      throw new Error(`unsupported weekday: ${value}`);
+  }
 }

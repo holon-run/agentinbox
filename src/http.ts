@@ -599,6 +599,128 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.removeActivationTarget(decodeURIComponent(params.agentId), decodeURIComponent(params.targetId));
   });
 
+  app.get("/timers", {
+    schema: {
+      tags: ["timers"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          agent_id: { type: "string" },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["timers"],
+          properties: {
+            timers: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const query = request.query as { agent_id?: string };
+    return { timers: service.listTimers(query.agent_id) };
+  });
+
+  app.post("/timers", {
+    schema: {
+      tags: ["timers"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["agentId", "message"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          at: { type: "string", minLength: 1 },
+          every: { type: "integer", minimum: 60000 },
+          cron: { type: "string", minLength: 1 },
+          timezone: { type: "string", minLength: 1 },
+          message: { type: "string", minLength: 1 },
+          sender: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const body = request.body as Record<string, unknown>;
+    return service.registerTimer({
+      agentId: String(body.agentId),
+      at: optionalString(body.at) ?? null,
+      every: typeof body.every === "number" ? body.every : null,
+      cron: optionalString(body.cron) ?? null,
+      timezone: optionalString(body.timezone) ?? null,
+      message: String(body.message),
+      sender: optionalString(body.sender) ?? null,
+    });
+  });
+
+  app.post("/timers/:scheduleId/pause", {
+    schema: {
+      tags: ["timers"],
+      params: {
+        type: "object",
+        required: ["scheduleId"],
+        properties: {
+          scheduleId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { scheduleId: string };
+    return service.pauseTimer(decodeURIComponent(params.scheduleId));
+  });
+
+  app.post("/timers/:scheduleId/resume", {
+    schema: {
+      tags: ["timers"],
+      params: {
+        type: "object",
+        required: ["scheduleId"],
+        properties: {
+          scheduleId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { scheduleId: string };
+    return service.resumeTimer(decodeURIComponent(params.scheduleId));
+  });
+
+  app.delete("/timers/:scheduleId", {
+    schema: {
+      tags: ["timers"],
+      params: {
+        type: "object",
+        required: ["scheduleId"],
+        properties: {
+          scheduleId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { scheduleId: string };
+    return service.removeTimer(decodeURIComponent(params.scheduleId));
+  });
+
   app.get("/subscriptions", {
     schema: {
       tags: ["subscriptions"],
@@ -1165,6 +1287,9 @@ function normalizeValidationMessage(message: string): string {
 function isBadRequestError(message: string): boolean {
   return (
     message.startsWith("direct inbox ") ||
+    message.startsWith("timers require ") ||
+    message.startsWith("timer ") ||
+    message.startsWith("invalid timezone: ") ||
     message.startsWith("manual append is not supported") ||
     message.startsWith("sources/events requires") ||
     message.startsWith("source remove requires") ||

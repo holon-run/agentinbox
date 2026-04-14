@@ -384,6 +384,67 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "timer" && normalized[1] === "add") {
+    const args = normalized.slice(2);
+    const allowedFlags = ["--agent-id", "--at", "--every", "--cron", "--timezone", "--message", "--sender"];
+    if (positionalArgs(args, ["--agent-id", "--at", "--every", "--cron", "--timezone", "--message", "--sender"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
+      throw new Error("usage: agentinbox timer add --agent-id ID (--at ISO8601 | --every DURATION | --cron EXPR) --message TEXT [--timezone TZ] [--sender SENDER]");
+    }
+    const agentId = takeFlagValue(normalized, "--agent-id");
+    const message = takeFlagValue(normalized, "--message");
+    const at = takeFlagValue(normalized, "--at");
+    const every = takeFlagValue(normalized, "--every");
+    const cron = takeFlagValue(normalized, "--cron");
+    if (!agentId || !message || [at, every, cron].filter(Boolean).length !== 1) {
+      throw new Error("usage: agentinbox timer add --agent-id ID (--at ISO8601 | --every DURATION | --cron EXPR) --message TEXT [--timezone TZ] [--sender SENDER]");
+    }
+    await printRemote(client, "/timers", {
+      agentId,
+      at: at ?? undefined,
+      every: every ? parseDurationMs(every) : undefined,
+      cron: cron ?? undefined,
+      timezone: takeFlagValue(normalized, "--timezone") ?? undefined,
+      message,
+      sender: takeFlagValue(normalized, "--sender") ?? undefined,
+    });
+    return;
+  }
+
+  if (command === "timer" && normalized[1] === "list") {
+    const query = buildQuery({
+      agent_id: takeFlagValue(normalized, "--agent-id"),
+    });
+    await printRemote(client, `/timers${query}`, undefined, "GET");
+    return;
+  }
+
+  if (command === "timer" && normalized[1] === "pause") {
+    const scheduleId = normalized[2];
+    if (!scheduleId) {
+      throw new Error("usage: agentinbox timer pause <scheduleId>");
+    }
+    await printRemote(client, `/timers/${encodeURIComponent(scheduleId)}/pause`, {});
+    return;
+  }
+
+  if (command === "timer" && normalized[1] === "resume") {
+    const scheduleId = normalized[2];
+    if (!scheduleId) {
+      throw new Error("usage: agentinbox timer resume <scheduleId>");
+    }
+    await printRemote(client, `/timers/${encodeURIComponent(scheduleId)}/resume`, {});
+    return;
+  }
+
+  if (command === "timer" && normalized[1] === "remove") {
+    const scheduleId = normalized[2];
+    if (!scheduleId) {
+      throw new Error("usage: agentinbox timer remove <scheduleId>");
+    }
+    await printRemote(client, `/timers/${encodeURIComponent(scheduleId)}`, undefined, "DELETE");
+    return;
+  }
+
   if (command === "inbox" && normalized[1] === "list") {
     await printRemote(client, "/agents", undefined, "GET");
     return;
@@ -758,6 +819,31 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
   return parsed;
 }
 
+function parseDurationMs(value: string): number {
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
+  if (!match) {
+    throw new Error(`invalid duration: ${value}`);
+  }
+  const amount = Number(match[1]);
+  switch (match[2]) {
+    case "ms":
+      return amount;
+    case "s":
+      return amount * 1_000;
+    case "m":
+      return amount * 60_000;
+    case "h":
+      return amount * 60 * 60_000;
+    case "d":
+      return amount * 24 * 60 * 60_000;
+    default:
+      throw new Error(`invalid duration: ${value}`);
+  }
+}
+
 function normalizeHelpArgs(args: string[]): string[] {
   if (args[0] !== "help") {
     return args;
@@ -884,6 +970,7 @@ Commands:
   daemon
   source
   agent
+  timer
   subscription
   inbox
   gc
@@ -930,6 +1017,15 @@ Usage:
   agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N]
   agentinbox agent target list <agentId>
   agentinbox agent target remove <agentId> <targetId>
+`,
+    timer: `agentinbox timer
+
+Usage:
+  agentinbox timer add --agent-id ID (--at ISO8601 | --every DURATION | --cron EXPR) --message TEXT [--timezone TZ] [--sender SENDER]
+  agentinbox timer list [--agent-id ID]
+  agentinbox timer pause <scheduleId>
+  agentinbox timer resume <scheduleId>
+  agentinbox timer remove <scheduleId>
 `,
     subscription: `agentinbox subscription
 

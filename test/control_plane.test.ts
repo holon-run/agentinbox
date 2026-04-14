@@ -814,6 +814,50 @@ test("cli inbox send writes a direct text message into the target inbox", () => 
   }
 });
 
+test("cli timer add and list manage agent-bound reminder timers", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-timer-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%962",
+    CODEX_THREAD_ID: "thread-timer-cli",
+  };
+
+  try {
+    const register = runCli(["agent", "register"], env);
+    assert.equal(register.status, 0, register.stderr);
+    const registered = JSON.parse(register.stdout) as { agent: { agentId: string } };
+
+    const add = runCli([
+      "timer",
+      "add",
+      "--agent-id",
+      registered.agent.agentId,
+      "--every",
+      "60m",
+      "--message",
+      "Daily review reminder",
+    ], env);
+    assert.equal(add.status, 0, add.stderr);
+    const timer = JSON.parse(add.stdout) as { scheduleId: string; mode: string; intervalMs: number };
+    assert.equal(timer.mode, "every");
+    assert.equal(timer.intervalMs, 3_600_000);
+
+    const listed = runCli(["timer", "list", "--agent-id", registered.agent.agentId], env);
+    assert.equal(listed.status, 0, listed.stderr);
+    const payload = JSON.parse(listed.stdout) as { timers: Array<{ scheduleId: string; agentId: string }> };
+    assert.equal(payload.timers.length, 1);
+    assert.equal(payload.timers[0].scheduleId, timer.scheduleId);
+    assert.equal(payload.timers[0].agentId, registered.agent.agentId);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli subscription add accepts filter-file and filter-stdin and echoes normalized filter", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-filter-"));
   const env = {
@@ -1821,6 +1865,104 @@ test("control plane accepts direct inbox text messages and rejects blank payload
   } finally {
     await adapters.stop();
     webhookServer.close();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane exposes timer lifecycle endpoints and timer firing writes inbox items", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-timer-http-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, {
+    windowMs: 10,
+    maxItems: 1,
+  }, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const agentResponse = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-timer-http",
+        tmuxPaneId: "%165",
+        notifyLeaseMs: 200,
+      });
+      assert.equal(agentResponse.statusCode, 200);
+      const agentId = agentResponse.data.agent.agentId;
+
+      const addResponse = await client.request<{ scheduleId: string; mode: string; status: string }>(
+        "/timers",
+        {
+          agentId,
+          at: "2020-01-01T00:00:00.000Z",
+          message: "Prepare today's task plan.",
+        },
+      );
+      assert.equal(addResponse.statusCode, 200);
+      assert.equal(addResponse.data.mode, "at");
+      const scheduleId = addResponse.data.scheduleId;
+
+      const listResponse = await client.request<{ timers: Array<{ scheduleId: string }> }>(
+        `/timers?agent_id=${encodeURIComponent(agentId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(listResponse.statusCode, 200);
+      assert.equal(listResponse.data.timers.length, 1);
+
+      await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+      const inboxResponse = await client.request<{ items: InboxItem[] }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        undefined,
+        "GET",
+      );
+      assert.equal(inboxResponse.statusCode, 200);
+      assert.equal(inboxResponse.data.items.length, 1);
+      assert.deepEqual(inboxResponse.data.items[0].rawPayload, {
+        type: "timer_fired",
+        scheduleId,
+        message: "Prepare today's task plan.",
+        sender: "timer",
+      });
+
+      const resumeResponse = await client.request<{ error: string }>(
+        `/timers/${encodeURIComponent(scheduleId)}/resume`,
+        {},
+      );
+      assert.equal(resumeResponse.statusCode, 400);
+
+      const removeResponse = await client.request<{ removed: boolean; scheduleId: string }>(
+        `/timers/${encodeURIComponent(scheduleId)}`,
+        undefined,
+        "DELETE",
+      );
+      assert.equal(removeResponse.statusCode, 200);
+      assert.equal(removeResponse.data.removed, true);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
