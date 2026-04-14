@@ -2036,6 +2036,36 @@ test("direct inbox text messages create inbox items and trigger activation", asy
     assert.equal(dispatcher.calls[0].activation.agentId, alpha.agentId);
     assert.equal(dispatcher.calls[0].activation.newItemCount, 1);
     assert.equal(dispatcher.calls[0].activation.items?.[0]?.itemId, delivered.itemId);
+    assert.match(dispatcher.calls[0].activation.summary, /from direct_text_message:/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("direct inbox text messages fail cleanly if the inbox item cannot be persisted", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const alpha = await registerTmuxAgent(service, "64");
+    const originalInsert = store.insertInboxItem.bind(store);
+    store.insertInboxItem = () => false;
+
+    await assert.rejects(
+      service.addDirectInboxTextMessage(alpha.agentId, {
+        message: "This should fail",
+      }),
+      /failed to persist direct inbox message item/,
+    );
+    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 0);
+    assert.equal(dispatcher.calls.length, 0);
+
+    store.insertInboxItem = originalInsert;
   } finally {
     await service.stop();
     store.close();

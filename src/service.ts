@@ -740,7 +740,10 @@ export class AgentInboxService {
       deliveryHandle: null,
       ackedAt: null,
     };
-    this.store.insertInboxItem(item);
+    const inserted = this.store.insertInboxItem(item);
+    if (!inserted) {
+      throw new Error(`failed to persist direct inbox message item: ${item.itemId}`);
+    }
     this.notifyInboxWatchers(agentId, [item]);
 
     const activationItem: ActivationItem = {
@@ -2237,9 +2240,9 @@ function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVarian
 
 function summarizeDirectInboxMessage(sender: string | null): string {
   if (sender) {
-    return `direct message from ${sender}`;
+    return `direct_text_message:${sender}`;
   }
-  return "direct message";
+  return "direct_text_message";
 }
 
 function normalizeDirectInboxMessage(message: string): string {
