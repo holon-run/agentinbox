@@ -285,7 +285,7 @@ export class AgentInboxStore {
 
   listSourceIdleStatesDue(cutoffIso: string): SourceIdleState[] {
     const rows = this.getAll(
-      "select * from source_idle_states where auto_pause_at <= ? order by auto_pause_at asc",
+      "select * from source_idle_states where auto_pause_at <= ? and auto_paused_at is null order by auto_pause_at asc",
       [cutoffIso],
     );
     return rows.map((row) => this.mapSourceIdleState(row));

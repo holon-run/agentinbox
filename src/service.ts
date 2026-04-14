@@ -553,14 +553,14 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
+    await validateSubscriptionFilter(input.filter ?? {});
+    const cleanupPolicy = normalizeCleanupPolicy(input.cleanupPolicy ?? null);
     const idleState = this.store.getSourceIdleState(source.sourceId);
     if (idleState?.autoPausedAt) {
       await this.resumeSource(source.sourceId);
     } else if (idleState) {
       this.store.deleteSourceIdleState(source.sourceId);
     }
-    await validateSubscriptionFilter(input.filter ?? {});
-    const cleanupPolicy = normalizeCleanupPolicy(input.cleanupPolicy ?? null);
     const subscription: Subscription = {
       subscriptionId: generateId("sub"),
       agentId: input.agentId,
@@ -1597,9 +1597,10 @@ export class AgentInboxService {
     });
   }
 
-  private runLifecycleCleanupPass(nowMs: number): { removedSubscriptions: number } {
+  private runLifecycleCleanupPass(nowMs: number): { removedSubscriptions: number; affectedSourceIds: string[] } {
     this.lastLifecycleCleanupAt = nowMs;
     const removed = new Set<string>();
+    const affectedSourceIds = new Set<string>();
 
     for (const subscription of this.store.listSubscriptions()) {
       if (removed.has(subscription.subscriptionId)) {
@@ -1615,6 +1616,7 @@ export class AgentInboxService {
       }
       if (this.store.deleteSubscription(subscription.subscriptionId)) {
         removed.add(subscription.subscriptionId);
+        affectedSourceIds.add(subscription.sourceId);
         this.clearSubscriptionRuntimeState(subscription);
       }
     }
@@ -1632,11 +1634,15 @@ export class AgentInboxService {
       }
       if (this.store.deleteSubscription(retirement.subscriptionId)) {
         removed.add(retirement.subscriptionId);
+        affectedSourceIds.add(subscription.sourceId);
         this.clearSubscriptionRuntimeState(subscription);
       }
     }
 
-    return { removedSubscriptions: removed.size };
+    return {
+      removedSubscriptions: removed.size,
+      affectedSourceIds: [...affectedSourceIds],
+    };
   }
 
   private async runIdleSourceCleanupPass(nowMs: number): Promise<void> {
@@ -1741,7 +1747,10 @@ export class AgentInboxService {
     const now = Date.now();
     if (now - this.lastLifecycleCleanupAt >= DEFAULT_GC_INTERVAL_MS) {
       try {
-        this.runLifecycleCleanupPass(now);
+        const lifecycle = this.runLifecycleCleanupPass(now);
+        for (const sourceId of lifecycle.affectedSourceIds) {
+          this.refreshSourceIdleState(sourceId);
+        }
         await this.runIdleSourceCleanupPass(now);
       } catch (error) {
         console.warn("subscription lifecycle gc failed:", error);
@@ -1767,6 +1776,10 @@ export class AgentInboxService {
     }
     const sourceAdapter = this.adapters.sourceAdapterFor(source.sourceType);
     if (!sourceAdapter.pauseSource) {
+      this.store.deleteSourceIdleState(sourceId);
+      return;
+    }
+    if (source.status === "paused") {
       this.store.deleteSourceIdleState(sourceId);
       return;
     }
