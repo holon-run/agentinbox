@@ -1145,6 +1145,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unsupported terminal") ||
     message.startsWith("cleanupPolicy ") ||
     message.startsWith("trackedResourceRef ") ||
+    message.startsWith("preview failed: ") ||
     message.startsWith("unknown source kind or type for preview") ||
     message.startsWith("preview source kind ") ||
     message.startsWith("subscription add shortcut") ||

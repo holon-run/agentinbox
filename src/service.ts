@@ -227,19 +227,27 @@ export class AgentInboxService {
   }
 
   async previewSourceSchema(input: PreviewSourceSchemaInput): Promise<SourceSchemaPreview> {
-    const source = buildPreviewSource(input);
-    await this.adapters.sourceAdapterFor(source.sourceType).validateSource?.(source);
-    const schema = await this.adapters.resolveSourceSchema(source);
-    if (input.sourceRef.startsWith("remote:")) {
-      const expectedImplementationId = input.sourceRef.slice("remote:".length);
-      if (schema.implementationId !== expectedImplementationId) {
-        throw new Error(
-          `preview source kind ${input.sourceRef} resolved to implementation ${schema.implementationId}`,
-        );
+    try {
+      const source = buildPreviewSource(input);
+      await this.adapters.sourceAdapterFor(source.sourceType).validateSource?.(source);
+      const schema = await this.adapters.resolveSourceSchema(source);
+      if (input.sourceRef.startsWith("remote:")) {
+        const expectedImplementationId = input.sourceRef.slice("remote:".length);
+        if (schema.implementationId !== expectedImplementationId) {
+          throw new Error(
+            `preview source kind ${input.sourceRef} resolved to implementation ${schema.implementationId}`,
+          );
+        }
       }
+      const { sourceId: _sourceId, ...preview } = schema;
+      return preview;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("preview failed: ") || message.startsWith("preview source kind ")) {
+        throw error;
+      }
+      throw new Error(`preview failed: ${message}`);
     }
-    const { sourceId: _sourceId, ...preview } = schema;
-    return preview;
   }
 
   async removeSource(

@@ -1208,6 +1208,71 @@ test("control plane source schema preview resolves remote modules without persis
   }
 });
 
+test("control plane source schema preview returns 400 for invalid preview inputs", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-error-"));
+  const socketPath = path.join(os.tmpdir(), `aix-preview-${process.pid}-${Date.now()}.sock`);
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "preview-error.mjs"),
+    `export default {
+  id: "demo.http.preview.error",
+  validateConfig(source) {
+    if (!source.config.token) throw new Error("preview token required");
+  },
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const preview = await client.request<{ error: string }>("/sources/schema-preview", {
+        sourceRef: "remote:demo.http.preview.error",
+        config: {
+          profilePath: "preview-error.mjs",
+          profileConfig: {},
+        },
+      }, "POST");
+      assert.equal(preview.statusCode, 400);
+      assert.match(preview.data.error, /preview failed: preview token required/);
+      assert.equal(store.listSources().length, 0);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("control plane shortcut validation errors return 400 instead of 500", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-error-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
