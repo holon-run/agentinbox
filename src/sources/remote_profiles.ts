@@ -4,9 +4,11 @@ import { pathToFileURL } from "node:url";
 import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-daemon-client";
 import { AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
 import {
+  deriveGithubTrackedResource,
   GITHUB_ENDPOINT,
   normalizeGithubRepoEvent,
   parseGithubSourceConfig,
+  projectGithubLifecycleSignal,
 } from "./github";
 import {
   DEFAULT_GITHUB_CI_PER_PAGE,
@@ -259,9 +261,29 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
           pull_request: { number: 67, title: "feat: add remote module capability hooks" },
           review: { state: "commented", body: "review summary" },
         },
+        {
+          id: "1234567892",
+          type: "PullRequestEvent",
+          action: "merged",
+          actor: "jolestar",
+          pull_request: { number: 72, title: "feat: add cleanup policy lifecycle engine", merged: true },
+        },
       ],
-      eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewEvent.created", "PullRequestReviewCommentEvent.created"],
+      eventVariantExamples: [
+        "IssueCommentEvent.created",
+        "PullRequestEvent.opened",
+        "PullRequestEvent.closed",
+        "PullRequestEvent.merged",
+        "PullRequestReviewEvent.created",
+        "PullRequestReviewCommentEvent.created",
+      ],
     };
+  },
+  deriveTrackedResource(filter: SubscriptionFilter): { ref: string } | null {
+    return deriveGithubTrackedResource(filter);
+  },
+  projectLifecycleSignal(rawPayload: Record<string, unknown>) {
+    return projectGithubLifecycleSignal(rawPayload);
   },
   validateConfig(source: SubscriptionSource): void {
     parseGithubSourceConfig(source);

@@ -540,8 +540,8 @@ test("builtin remote-backed source details expose resolved remote identity", asy
     assert.equal(details.schema.implementationId, "builtin.github_repo");
     assert.deepEqual(details.schema.aliases, ["github_repo"]);
     assert.deepEqual(details.schema.subscriptionSchema, {
-      supportsTrackedResourceRef: false,
-      supportsLifecycleSignals: false,
+      supportsTrackedResourceRef: true,
+      supportsLifecycleSignals: true,
       shortcuts: [],
     });
   } finally {

@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GithubDeliveryAdapter, GithubUxcClient, normalizeGithubRepoEvent, type GithubCallClient } from "../src/sources/github";
-import { DeliveryAttempt, SubscriptionSource } from "../src/model";
+import {
+  deriveGithubTrackedResource,
+  GithubDeliveryAdapter,
+  GithubUxcClient,
+  normalizeGithubRepoEvent,
+  projectGithubLifecycleSignal,
+  type GithubCallClient,
+} from "../src/sources/github";
+import { DeliveryAttempt, SubscriptionSource, SubscriptionFilter } from "../src/model";
 
 class FakeUxcClient implements GithubCallClient {
   public calls: Array<Record<string, unknown>> = [];
@@ -104,6 +111,81 @@ test("normalizeGithubRepoEvent includes PullRequestReviewEvent by default", asyn
   });
   assert.equal(normalized.deliveryHandle?.surface, "issue_comment");
   assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#67");
+});
+
+test("normalizeGithubRepoEvent preserves pull request merged state for lifecycle hooks", async () => {
+  const source: SubscriptionSource = {
+    sourceId: "src_pr",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const normalized = normalizeGithubRepoEvent(source, { owner: "holon-run", repo: "agentinbox" }, {
+    id: "300",
+    type: "PullRequestEvent",
+    created_at: "2026-04-14T04:39:12Z",
+    actor: { login: "jolestar" },
+    repo: { name: "holon-run/agentinbox" },
+    payload: {
+      action: "closed",
+      pull_request: {
+        number: 72,
+        title: "feat: add cleanup policy lifecycle engine",
+        merged: true,
+      },
+    },
+  });
+
+  assert.ok(normalized);
+  assert.equal(normalized.eventVariant, "PullRequestEvent.closed");
+  assert.equal(normalized.rawPayload?.merged, true);
+  assert.deepEqual(normalized.rawPayload?.pull_request, {
+    number: 72,
+    title: "feat: add cleanup policy lifecycle engine",
+    merged: true,
+  });
+});
+
+test("github pull request helpers derive tracked resources and terminal lifecycle results", async () => {
+  const filter: SubscriptionFilter = {
+    metadata: {
+      number: 72,
+      isPullRequest: true,
+    },
+  };
+  assert.deepEqual(deriveGithubTrackedResource(filter), { ref: "pr:72" });
+  assert.equal(deriveGithubTrackedResource({ metadata: { number: 72, isPullRequest: false } }), null);
+
+  assert.deepEqual(projectGithubLifecycleSignal({
+    type: "PullRequestEvent",
+    action: "closed",
+    pull_request: { number: 72, merged: true },
+  }), {
+    ref: "pr:72",
+    terminal: true,
+    state: "closed",
+    result: "merged",
+  });
+  assert.deepEqual(projectGithubLifecycleSignal({
+    type: "PullRequestEvent",
+    action: "closed",
+    pull_request: { number: 73, merged: false },
+  }), {
+    ref: "pr:73",
+    terminal: true,
+    state: "closed",
+    result: "closed",
+  });
+  assert.equal(projectGithubLifecycleSignal({
+    type: "PullRequestEvent",
+    action: "opened",
+    pull_request: { number: 74 },
+  }), null);
 });
 
 test("github delivery adapter maps issue comments and review replies to uxc calls", async () => {

@@ -44,6 +44,15 @@ Configuration fields:
 - review comments
 - collaboration activity
 
+Builtin `github_repo` also exposes pull-request lifecycle hooks for the generic
+cleanup-policy pipeline:
+
+- `deriveTrackedResource` can derive `pr:<number>` from pull-request filters
+- `projectLifecycleSignal` treats `PullRequestEvent.closed` and
+  `PullRequestEvent.merged` as terminal PR lifecycle signals
+- merged PRs project `result = "merged"`; plain closes project
+  `result = "closed"`
+
 ## `github_repo_ci`
 
 `github_repo_ci` polls GitHub Actions workflow runs and is best suited for CI
