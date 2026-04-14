@@ -190,6 +190,18 @@ function buildFastifyServer(service: AgentInboxService) {
           sourceId: { type: "string", minLength: 1 },
         },
       },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          with_subscriptions: {
+            anyOf: [
+              { type: "boolean" },
+              { type: "string", enum: ["true", "false", "1", "0"] },
+            ],
+          },
+        },
+      },
       response: {
         200: jsonObjectSchema,
         400: errorResponseSchema,
@@ -197,7 +209,10 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const params = request.params as { sourceId: string };
-    return service.removeSource(decodeURIComponent(params.sourceId));
+    const query = request.query as { with_subscriptions?: boolean | string };
+    return service.removeSource(decodeURIComponent(params.sourceId), {
+      withSubscriptions: query.with_subscriptions === true || query.with_subscriptions === "true" || query.with_subscriptions === "1",
+    });
   });
 
   app.patch("/sources/:sourceId", {

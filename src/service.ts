@@ -224,18 +224,39 @@ export class AgentInboxService {
     return this.adapters.resolveSourceSchema(source);
   }
 
-  async removeSource(sourceId: string): Promise<{ removed: boolean }> {
+  async removeSource(
+    sourceId: string,
+    options: { withSubscriptions?: boolean } = {},
+  ): Promise<{ removed: boolean; sourceId: string; removedSubscriptions: number; pausedSource: boolean }> {
     const source = this.store.getSource(sourceId);
     if (!source) {
-      return { removed: false };
+      return { removed: false, sourceId, removedSubscriptions: 0, pausedSource: false };
     }
     const subscriptions = this.store.listSubscriptionsForSource(sourceId);
-    if (subscriptions.length > 0) {
-      throw new Error("source remove requires no active subscriptions");
+    if (subscriptions.length > 0 && !options.withSubscriptions) {
+      throw new Error(
+        "source remove requires no active subscriptions; retry with --with-subscriptions or with_subscriptions=true",
+      );
+    }
+    let pausedSource = false;
+    if (options.withSubscriptions) {
+      const sourceAdapter = this.adapters.sourceAdapterFor(source.sourceType);
+      if (sourceAdapter.pauseSource) {
+        await this.pauseSource(sourceId);
+        pausedSource = true;
+      }
+      for (const subscription of subscriptions) {
+        await this.removeSubscription(subscription.subscriptionId);
+      }
     }
     await this.adapters.removeSource(source);
     this.store.deleteSource(sourceId);
-    return { removed: true };
+    return {
+      removed: true,
+      sourceId,
+      removedSubscriptions: subscriptions.length,
+      pausedSource,
+    };
   }
 
   async updateSource(sourceId: string, input: UpdateSourceInput): Promise<{ updated: boolean; source: SubscriptionSource | null }> {

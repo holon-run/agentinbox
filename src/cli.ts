@@ -94,11 +94,16 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "remove") {
-    const sourceId = normalized[2];
-    if (!sourceId) {
-      throw new Error("usage: agentinbox source remove <sourceId>");
+    const removeArgs = normalized.slice(2);
+    const positionals = positionalArgs(removeArgs, ["--with-subscriptions"]);
+    const sourceId = positionals[0];
+    if (!sourceId || positionals[1]) {
+      throw new Error("usage: agentinbox source remove <sourceId> [--with-subscriptions]");
     }
-    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}`, undefined, "DELETE");
+    const query = buildQuery({
+      with_subscriptions: hasFlag(normalized, "--with-subscriptions") ? "true" : undefined,
+    });
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}${query}`, undefined, "DELETE");
     return;
   }
 
@@ -863,7 +868,7 @@ Usage:
   agentinbox source list
   agentinbox source show <sourceId>
   agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
-  agentinbox source remove <sourceId>
+  agentinbox source remove <sourceId> [--with-subscriptions]
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>
   agentinbox source schema <sourceId|sourceType>
