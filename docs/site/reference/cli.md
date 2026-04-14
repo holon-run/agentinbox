@@ -62,6 +62,10 @@ remote-backed kinds can be previewed directly, for example `github_repo`.
 User-defined remote modules can be previewed with either `remote_source` or
 `remote:<moduleId>` plus `--config-json '{"profilePath":"...","profileConfig":{}}'`.
 
+Managed remote sources now auto-pause after a grace period once their last
+subscription is removed. `source show <sourceId>` includes `idleState` when a
+source is idle or was auto-paused for idleness.
+
 ## Subscriptions
 
 ```bash

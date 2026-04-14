@@ -21,6 +21,7 @@ import {
   InboxItem,
   ListInboxItemsOptions,
   RegisterAgentInput,
+  SourceIdleState,
   Subscription,
   SubscriptionLifecycleRetirement,
   SubscriptionFilter,
@@ -277,6 +278,48 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapSource(row));
   }
 
+  getSourceIdleState(sourceId: string): SourceIdleState | null {
+    const row = this.getOne("select * from source_idle_states where source_id = ?", [sourceId]);
+    return row ? this.mapSourceIdleState(row) : null;
+  }
+
+  listSourceIdleStatesDue(cutoffIso: string): SourceIdleState[] {
+    const rows = this.getAll(
+      "select * from source_idle_states where auto_pause_at <= ? and auto_paused_at is null order by auto_pause_at asc",
+      [cutoffIso],
+    );
+    return rows.map((row) => this.mapSourceIdleState(row));
+  }
+
+  upsertSourceIdleState(idleState: SourceIdleState): SourceIdleState {
+    this.db.run(
+      `
+      insert into source_idle_states (
+        source_id, idle_since, auto_pause_at, auto_paused_at, updated_at
+      ) values (?, ?, ?, ?, ?)
+      on conflict(source_id) do update set
+        idle_since = excluded.idle_since,
+        auto_pause_at = excluded.auto_pause_at,
+        auto_paused_at = excluded.auto_paused_at,
+        updated_at = excluded.updated_at
+    `,
+      [
+        idleState.sourceId,
+        idleState.idleSince,
+        idleState.autoPauseAt,
+        idleState.autoPausedAt ?? null,
+        idleState.updatedAt,
+      ],
+    );
+    this.persist();
+    return this.getSourceIdleState(idleState.sourceId)!;
+  }
+
+  deleteSourceIdleState(sourceId: string): void {
+    this.db.run("delete from source_idle_states where source_id = ?", [sourceId]);
+    this.persist();
+  }
+
   updateSourceDefinition(
     sourceId: string,
     input: { configRef?: string | null; config?: Record<string, unknown> },
@@ -346,6 +389,7 @@ export class AgentInboxStore {
         this.db.run("delete from stream_events where stream_id = ?", [stream.streamId]);
         this.db.run("delete from streams where stream_id = ?", [stream.streamId]);
       }
+      this.db.run("delete from source_idle_states where source_id = ?", [sourceId]);
       this.db.run("delete from sources where source_id = ?", [sourceId]);
     });
     this.persist();
@@ -780,6 +824,10 @@ export class AgentInboxStore {
       }
       this.db.run(
         "delete from subscription_lifecycle_retirements where subscription_id in (select subscription_id from subscriptions where agent_id = ?)",
+        [agentId],
+      );
+      this.db.run(
+        "delete from source_idle_states where source_id in (select distinct source_id from subscriptions where agent_id = ?)",
         [agentId],
       );
       this.db.run("delete from subscriptions where agent_id = ?", [agentId]);
@@ -1297,6 +1345,7 @@ export class AgentInboxStore {
       offlineAgents: this.count("agents where status = 'offline'"),
       subscriptions: this.count("subscriptions"),
       subscriptionLifecycleRetirements: this.count("subscription_lifecycle_retirements"),
+      sourceIdleStates: this.count("source_idle_states"),
       inboxes: this.count("inboxes"),
       activationTargets: this.count("activation_targets"),
       offlineActivationTargets: this.count("activation_targets where status = 'offline'"),
@@ -1362,6 +1411,16 @@ export class AgentInboxStore {
       status: row.status as SubscriptionSource["status"],
       checkpoint: row.checkpoint ? String(row.checkpoint) : null,
       createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapSourceIdleState(row: Record<string, unknown>): SourceIdleState {
+    return {
+      sourceId: String(row.source_id),
+      idleSince: String(row.idle_since),
+      autoPauseAt: String(row.auto_pause_at),
+      autoPausedAt: row.auto_paused_at ? String(row.auto_paused_at) : null,
       updatedAt: String(row.updated_at),
     };
   }

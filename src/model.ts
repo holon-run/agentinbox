@@ -30,6 +30,14 @@ export interface SubscriptionSource {
   updatedAt: string;
 }
 
+export interface SourceIdleState {
+  sourceId: string;
+  idleSince: string;
+  autoPauseAt: string;
+  autoPausedAt?: string | null;
+  updatedAt: string;
+}
+
 export interface SubscriptionFilter {
   metadata?: Record<string, unknown>;
   payload?: Record<string, unknown>;

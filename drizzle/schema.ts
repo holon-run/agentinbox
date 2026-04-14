@@ -14,6 +14,16 @@ export const sources = sqliteTable("sources", {
   sourceTypeKey: uniqueIndex("idx_sources_type_key").on(table.sourceType, table.sourceKey),
 }));
 
+export const sourceIdleStates = sqliteTable("source_idle_states", {
+  sourceId: text("source_id").primaryKey(),
+  idleSince: text("idle_since").notNull(),
+  autoPauseAt: text("auto_pause_at").notNull(),
+  autoPausedAt: text("auto_paused_at"),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  autoPauseAtIdx: index("idx_source_idle_states_auto_pause_at").on(table.autoPauseAt),
+}));
+
 export const agents = sqliteTable("agents", {
   agentId: text("agent_id").primaryKey(),
   status: text("status").notNull(),
