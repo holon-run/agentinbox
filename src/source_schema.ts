@@ -56,8 +56,21 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
         pull_request: { number: 67, title: "feat: add remote module capability hooks" },
         review: { state: "commented", body: "review summary" },
       },
+      {
+        id: "1234567892",
+        type: "PullRequestEvent",
+        action: "closed",
+        actor: "jolestar",
+        pull_request: { number: 72, title: "feat: add cleanup policy lifecycle engine", merged: true },
+      },
     ],
-    eventVariantExamples: ["IssueCommentEvent.created", "PullRequestEvent.opened", "PullRequestReviewEvent.created", "PullRequestReviewCommentEvent.created"],
+    eventVariantExamples: [
+      "IssueCommentEvent.created",
+      "PullRequestEvent.opened",
+      "PullRequestEvent.closed",
+      "PullRequestReviewEvent.created",
+      "PullRequestReviewCommentEvent.created",
+    ],
     configFields: [
       { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
       { name: "repo", type: "string", required: true, description: "GitHub repository name." },

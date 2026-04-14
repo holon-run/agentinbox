@@ -351,6 +351,71 @@ test("github_repo source materializes PullRequestReviewEvent items for PR filter
   }
 });
 
+test("github_repo pull request subscriptions retire through the generic lifecycle engine", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remote-github-lifecycle-thread",
+      tmuxPaneId: "%904",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:72",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { metadata: { number: 72, isPullRequest: true } },
+      startPolicy: "earliest",
+    });
+    fake.push("stream:github_repo:holon-run/agentinbox", {
+      id: "300",
+      type: "PullRequestEvent",
+      created_at: "2020-04-14T04:39:12Z",
+      actor: { login: "jolestar" },
+      repo: { name: "holon-run/agentinbox" },
+      payload: {
+        action: "closed",
+        pull_request: {
+          number: 72,
+          title: "feat: add cleanup policy lifecycle engine",
+          merged: true,
+          html_url: "https://github.com/holon-run/agentinbox/pull/72",
+        },
+      },
+    });
+
+    const sourcePoll = await service.pollSource(source.sourceId);
+    const subscriptionPoll = await service.pollSubscription(subscription.subscriptionId);
+    const items = service.listInboxItems(agent.agent.agentId);
+    const retirement = store.getSubscriptionLifecycleRetirement(subscription.subscriptionId);
+
+    assert.equal(sourcePoll.appended, 1);
+    assert.equal(subscriptionPoll.inboxItemsCreated, 1);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.eventVariant, "PullRequestEvent.closed");
+    assert.equal(items[0]?.metadata?.number, 72);
+    assert.ok(retirement);
+    assert.equal(retirement?.trackedResourceRef, "pr:72");
+    assert.equal(retirement?.terminalState, "closed");
+    assert.equal(retirement?.terminalResult, "merged");
+
+    const gc = service.gc();
+    assert.equal(gc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("github_repo_ci builtin profile emits status transitions for one workflow run id", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);

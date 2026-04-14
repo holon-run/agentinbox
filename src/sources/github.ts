@@ -4,6 +4,7 @@ import {
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryRequest,
+  SubscriptionFilter,
   SubscriptionSource,
 } from "../model";
 
@@ -176,8 +177,48 @@ export function normalizeGithubRepoEvent(
       pull_request: pullRequest,
       review,
       comment,
+      merged: asBoolean(pullRequest.merged),
     },
     deliveryHandle,
+  };
+}
+
+export function deriveGithubTrackedResource(filter: SubscriptionFilter): { ref: string } | null {
+  const metadata = asRecord(filter.metadata);
+  const payload = asRecord(filter.payload);
+  const number = asNumber(metadata.number) ?? asNumber(payload.number) ?? asNumber(payload.ref);
+  const isPullRequest = asBoolean(metadata.isPullRequest);
+  if (!number || isPullRequest !== true) {
+    return null;
+  }
+  return { ref: `pr:${number}` };
+}
+
+export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>): {
+  ref: string;
+  terminal: boolean;
+  state: string;
+  result: string;
+} | null {
+  const eventType = asString(rawPayload.type);
+  if (eventType !== "PullRequestEvent") {
+    return null;
+  }
+  const action = asString(rawPayload.action);
+  if (action !== "closed" && action !== "merged") {
+    return null;
+  }
+  const pullRequest = asRecord(rawPayload.pull_request);
+  const number = asNumber(pullRequest.number);
+  if (!number) {
+    return null;
+  }
+  const merged = action === "merged" || asBoolean(rawPayload.merged) === true || asBoolean(pullRequest.merged) === true;
+  return {
+    ref: `pr:${number}`,
+    terminal: true,
+    state: "closed",
+    result: merged ? "merged" : "closed",
   };
 }
 
@@ -293,6 +334,10 @@ function asString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" ? value : null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function asStringArray(value: unknown): string[] | null {
