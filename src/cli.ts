@@ -417,6 +417,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "inbox" && normalized[1] === "send") {
+    const args = normalized.slice(2);
+    const allowedFlags = ["--agent-id", "--message", "--sender"];
+    if (positionalArgs(args, ["--agent-id", "--message", "--sender"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
+      throw new Error("usage: agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]");
+    }
+    const agentId = takeFlagValue(normalized, "--agent-id");
+    const message = takeFlagValue(normalized, "--message");
+    if (!agentId || !message) {
+      throw new Error("usage: agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]");
+    }
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/inbox/items`, {
+      message,
+      sender: takeFlagValue(normalized, "--sender") ?? undefined,
+    });
+    return;
+  }
+
   if (command === "inbox" && normalized[1] === "watch") {
     const args = normalized.slice(2);
     if (positionalArgs(args, ["--agent-id", "--after-item", "--heartbeat-ms"]).length > 0) {
@@ -930,6 +948,7 @@ Usage:
   agentinbox inbox list
   agentinbox inbox show <agentId>
   agentinbox inbox read [--agent-id ID] [--after-item ID] [--include-acked]
+  agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-item ID] [--include-acked] [--heartbeat-ms N]
   agentinbox inbox ack [--agent-id ID] (--through <itemId> | --item <itemId> | --all)
   agentinbox inbox compact <agentId>

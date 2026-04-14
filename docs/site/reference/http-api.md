@@ -75,9 +75,21 @@ going forward.
 
 - `GET /agents/{agentId}/inbox`
 - `GET /agents/{agentId}/inbox/items`
+- `POST /agents/{agentId}/inbox/items`
 - `GET /agents/{agentId}/inbox/watch`
 - `POST /agents/{agentId}/inbox/ack`
 - `POST /agents/{agentId}/inbox/compact`
+
+`POST /agents/{agentId}/inbox/items` accepts a narrow direct-text ingress body:
+
+```json
+{
+  "message": "Review PR #51 CI failure and push a fix.",
+  "sender": "local-script"
+}
+```
+
+`message` is required. `sender` is optional.
 
 `POST /agents/{agentId}/inbox/ack` accepts exactly one of:
 

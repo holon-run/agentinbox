@@ -99,6 +99,7 @@ Inbox commands use `agentId`, not `inboxId`.
 agentinbox inbox list
 agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
+agentinbox inbox send --agent-id <agent_id> --message "..." [--sender <sender>]
 agentinbox inbox watch [--agent-id <agent_id>]
 agentinbox inbox ack [--agent-id <agent_id>] --through <item_id>
 agentinbox inbox ack [--agent-id <agent_id>] --item <item_id>

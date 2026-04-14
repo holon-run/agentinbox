@@ -767,6 +767,53 @@ test("cli inbox read rejects unsupported flags like --ack", () => {
   }
 });
 
+test("cli inbox send writes a direct text message into the target inbox", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-send-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%963",
+    CODEX_THREAD_ID: "thread-send",
+  };
+
+  try {
+    const register = runCli(["agent", "register"], env);
+    assert.equal(register.status, 0, register.stderr);
+    const registered = JSON.parse(register.stdout) as { agent: { agentId: string } };
+
+    const send = runCli([
+      "inbox",
+      "send",
+      "--agent-id",
+      registered.agent.agentId,
+      "--message",
+      "Review PR #51 CI failure and push a fix.",
+      "--sender",
+      "local-script",
+    ], env);
+    assert.equal(send.status, 0, send.stderr);
+    const delivered = JSON.parse(send.stdout) as { itemId: string; inboxId: string; activated: boolean };
+    assert.equal(delivered.activated, true);
+
+    const read = runCli(["inbox", "read", "--agent-id", registered.agent.agentId, "--include-acked"], env);
+    assert.equal(read.status, 0, read.stderr);
+    const payload = JSON.parse(read.stdout) as { items: Array<{ itemId: string; rawPayload: Record<string, unknown> }> };
+    assert.equal(payload.items.length, 1);
+    assert.equal(payload.items[0].itemId, delivered.itemId);
+    assert.deepEqual(payload.items[0].rawPayload, {
+      type: "direct_text_message",
+      message: "Review PR #51 CI failure and push a fix.",
+      sender: "local-script",
+    });
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli subscription add accepts filter-file and filter-stdin and echoes normalized filter", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-filter-"));
   const env = {
@@ -1653,6 +1700,121 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(invalidCleanupPolicyResponse.statusCode, 400);
       assert.match(invalidCleanupPolicyResponse.data.error, /unsupported cleanup policy mode/);
 
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    webhookServer.close();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane accepts direct inbox text messages and rejects blank payloads", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-direct-http-home-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, {
+    windowMs: 10,
+    maxItems: 1,
+  }, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  let resolveWebhook: ((activation: Activation) => void) | null = null;
+  const webhookReceived = new Promise<Activation>((resolve) => {
+    resolveWebhook = resolve;
+  });
+  const webhookServer = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Activation;
+    res.statusCode = 204;
+    res.end(() => {
+      resolveWebhook?.(payload);
+    });
+  });
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      await new Promise<void>((resolve) => {
+        webhookServer.listen(0, "127.0.0.1", () => resolve());
+      });
+      const address = webhookServer.address();
+      assert.ok(address && typeof address === "object");
+      const webhookUrl = `http://127.0.0.1:${address.port}/activate`;
+
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const agentResponse = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-direct-http",
+        tmuxPaneId: "%164",
+        notifyLeaseMs: 200,
+      });
+      assert.equal(agentResponse.statusCode, 200);
+      const agentId = agentResponse.data.agent.agentId;
+
+      const targetResponse = await client.request<{ targetId: string }>(`/agents/${encodeURIComponent(agentId)}/targets`, {
+        kind: "webhook",
+        url: webhookUrl,
+        activationMode: "activation_with_items",
+      });
+      assert.equal(targetResponse.statusCode, 200);
+
+      const sendResponse = await client.request<{ itemId: string; inboxId: string; activated: boolean }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items`,
+        {
+          message: "Review PR #51 CI failure and push a fix.",
+          sender: "local-script",
+        },
+      );
+      assert.equal(sendResponse.statusCode, 200);
+      assert.equal(sendResponse.data.activated, true);
+
+      const activation = await waitFor(webhookReceived, 1_000, "timed out waiting for direct inbox activation");
+      assert.equal(activation.agentId, agentId);
+      assert.equal(activation.newItemCount, 1);
+      assert.equal(activation.items?.[0]?.eventVariant, "agentinbox.direct_text_message");
+
+      const inboxResponse = await client.request<{ items: InboxItem[] }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        undefined,
+        "GET",
+      );
+      assert.equal(inboxResponse.statusCode, 200);
+      assert.equal(inboxResponse.data.items.length, 1);
+      assert.deepEqual(inboxResponse.data.items[0].rawPayload, {
+        type: "direct_text_message",
+        message: "Review PR #51 CI failure and push a fix.",
+        sender: "local-script",
+      });
+
+      const invalidResponse = await client.request<{ error: string }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/items`,
+        { message: "   " },
+      );
+      assert.equal(invalidResponse.statusCode, 400);
+      assert.match(invalidResponse.data.error, /direct inbox message must not be empty/);
     } finally {
       await started.close();
     }

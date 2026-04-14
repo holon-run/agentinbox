@@ -4,6 +4,8 @@ import {
   ActivationTarget,
   AddWebhookActivationTargetInput,
   Agent,
+  DirectInboxTextMessageInput,
+  DirectInboxTextMessageResult,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
@@ -59,6 +61,8 @@ const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;
 const DEFAULT_IDLE_SOURCE_GRACE_MS = 5 * 60 * 1000;
+const DIRECT_INBOX_SOURCE_ID = "__agentinbox_direct_text__";
+const DIRECT_INBOX_EVENT_VARIANT = "agentinbox.direct_text_message";
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 interface ActivationPolicy {
@@ -70,7 +74,7 @@ interface BufferedNotification {
   agentId: string;
   targetId: string;
   pending: Array<{
-    subscriptionId: string;
+    subscriptionId: string | null;
     sourceId: string;
     summary: string;
     item: ActivationItem;
@@ -710,6 +714,64 @@ export class AgentInboxService {
     return this.store.listInboxItems(this.ensureInboxForAgent(agentId).inboxId, options);
   }
 
+  async addDirectInboxTextMessage(
+    agentId: string,
+    input: DirectInboxTextMessageInput,
+    env: NodeJS.ProcessEnv = process.env,
+  ): Promise<DirectInboxTextMessageResult> {
+    this.getAgent(agentId);
+    const message = normalizeDirectInboxMessage(input.message);
+    const sender = normalizeDirectInboxSender(input.sender) ?? this.detectDirectInboxSender(env);
+    const inbox = this.ensureInboxForAgent(agentId);
+    const occurredAt = nowIso();
+    const item: InboxItem = {
+      itemId: generateId("item"),
+      sourceId: DIRECT_INBOX_SOURCE_ID,
+      sourceNativeId: generateId("direct"),
+      eventVariant: DIRECT_INBOX_EVENT_VARIANT,
+      inboxId: inbox.inboxId,
+      occurredAt,
+      metadata: {},
+      rawPayload: {
+        type: "direct_text_message",
+        message,
+        sender,
+      },
+      deliveryHandle: null,
+      ackedAt: null,
+    };
+    this.store.insertInboxItem(item);
+    this.notifyInboxWatchers(agentId, [item]);
+
+    const activationItem: ActivationItem = {
+      itemId: item.itemId,
+      sourceId: item.sourceId,
+      sourceNativeId: item.sourceNativeId,
+      eventVariant: item.eventVariant,
+      inboxId: item.inboxId,
+      occurredAt: item.occurredAt,
+      metadata: item.metadata,
+      rawPayload: item.rawPayload,
+      deliveryHandle: item.deliveryHandle,
+    };
+    const targets = this.store.listActivationTargetsForAgent(agentId).filter((target) => target.status === "active");
+    for (const target of targets) {
+      this.enqueueActivationTarget(target, {
+        agentId,
+        subscriptionId: null,
+        sourceId: DIRECT_INBOX_SOURCE_ID,
+        summary: summarizeDirectInboxMessage(sender),
+        item: activationItem,
+      });
+    }
+
+    return {
+      itemId: item.itemId,
+      inboxId: inbox.inboxId,
+      activated: targets.length > 0,
+    };
+  }
+
   watchInbox(
     agentId: string,
     options: WatchInboxOptions,
@@ -1232,7 +1294,7 @@ export class AgentInboxService {
     target: ActivationTarget,
     input: {
       agentId: string;
-      subscriptionId: string;
+      subscriptionId: string | null;
       sourceId: string;
       summary: string;
       item: ActivationItem;
@@ -1332,7 +1394,7 @@ export class AgentInboxService {
           targetId: buffer.targetId,
           newItemCount: entries.length,
           summary: entries[0]?.summary ?? null,
-          subscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
+          subscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
           sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
           items: entries.map((entry) => entry.item),
         });
@@ -1347,7 +1409,7 @@ export class AgentInboxService {
           leaseExpiresAt: state.leaseExpiresAt,
           pendingNewItemCount: state.pendingNewItemCount + entries.length,
           pendingSummary: state.pendingSummary ?? entries[0]?.summary ?? null,
-          pendingSubscriptionIds: uniqueSorted([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
+          pendingSubscriptionIds: uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
           pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
           updatedAt: nowIso(),
         });
@@ -1513,7 +1575,7 @@ export class AgentInboxService {
   private upsertDirtyDispatchState(
     agentId: string,
     targetId: string,
-    entries: Array<{ subscriptionId: string; sourceId: string; summary: string }>,
+    entries: Array<{ subscriptionId: string | null; sourceId: string; summary: string }>,
   ): void {
     this.store.upsertActivationDispatchState({
       agentId,
@@ -1522,10 +1584,35 @@ export class AgentInboxService {
       leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
       pendingNewItemCount: entries.length,
       pendingSummary: entries[0]?.summary ?? null,
-      pendingSubscriptionIds: uniqueSorted(entries.map((entry) => entry.subscriptionId)),
+      pendingSubscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
       pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
       updatedAt: nowIso(),
     });
+  }
+
+  private detectDirectInboxSender(env: NodeJS.ProcessEnv): string | null {
+    try {
+      const detected = detectTerminalContext(env);
+      const target = findExistingTerminalActivationTarget(this.store, {
+        runtimeKind: detected.runtimeKind,
+        runtimeSessionId: detected.runtimeSessionId ?? null,
+        backend: detected.backend,
+        tmuxPaneId: detected.tmuxPaneId ?? null,
+        tty: detected.tty ?? null,
+        termProgram: detected.termProgram ?? null,
+        itermSessionId: detected.itermSessionId ?? null,
+      });
+      if (target) {
+        return target.agentId;
+      }
+      return detected.runtimeSessionId
+        ?? detected.tmuxPaneId
+        ?? detected.itermSessionId
+        ?? detected.tty
+        ?? null;
+    } catch {
+      return null;
+    }
   }
 
   private markActivationTargetDelivered(targetId: string): void {
@@ -2109,6 +2196,10 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values)).sort();
 }
 
+function uniqueSortedNullable(values: Array<string | null | undefined>): string[] {
+  return uniqueSorted(values.filter((value): value is string => typeof value === "string" && value.length > 0));
+}
+
 function notificationBufferKey(agentId: string, targetId: string): string {
   return `${agentId}::${targetId}`;
 }
@@ -2142,4 +2233,36 @@ function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVarian
     return summaryParts.join(":");
   }
   return `${sourceType}:${sourceKey}:${eventVariant}`;
+}
+
+function summarizeDirectInboxMessage(sender: string | null): string {
+  if (sender) {
+    return `direct message from ${sender}`;
+  }
+  return "direct message";
+}
+
+function normalizeDirectInboxMessage(message: string): string {
+  if (typeof message !== "string") {
+    throw new Error("direct inbox message must be a string");
+  }
+  const trimmed = message.trim();
+  if (trimmed.length === 0) {
+    throw new Error("direct inbox message must not be empty");
+  }
+  return trimmed;
+}
+
+function normalizeDirectInboxSender(sender: string | null | undefined): string | null {
+  if (sender == null) {
+    return null;
+  }
+  if (typeof sender !== "string") {
+    throw new Error("direct inbox sender must be a string");
+  }
+  const trimmed = sender.trim();
+  if (trimmed.length === 0) {
+    throw new Error("direct inbox sender must not be empty");
+  }
+  return trimmed;
 }
