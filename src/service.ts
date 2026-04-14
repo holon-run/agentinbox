@@ -892,7 +892,7 @@ export class AgentInboxService {
         });
       }
       for (const signal of lifecycleSignals.values()) {
-        this.scheduleLifecycleRetirements(source, signal);
+        this.scheduleLifecycleRetirements(source, subscription, signal);
       }
 
       return {
@@ -1025,34 +1025,35 @@ export class AgentInboxService {
     }
   }
 
-  private scheduleLifecycleRetirements(source: SubscriptionSource, signal: LifecycleSignal): void {
+  private scheduleLifecycleRetirements(
+    source: SubscriptionSource,
+    subscription: Subscription,
+    signal: LifecycleSignal,
+  ): void {
     if (!signal.terminal) {
+      return;
+    }
+    if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
       return;
     }
     const signalOccurredAt = signal.occurredAt ?? nowIso();
     const signalOccurredAtMs = Date.parse(signalOccurredAt);
-    const subscriptions = this.store.listSubscriptionsForSource(source.sourceId);
-    for (const subscription of subscriptions) {
-      if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
-        continue;
-      }
-      const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
-      if (!retireAt) {
-        continue;
-      }
-      const now = nowIso();
-      this.store.upsertSubscriptionLifecycleRetirement({
-        subscriptionId: subscription.subscriptionId,
-        sourceId: source.sourceId,
-        trackedResourceRef: signal.ref,
-        retireAt,
-        terminalState: signal.state ?? null,
-        terminalResult: signal.result ?? null,
-        terminalOccurredAt: signalOccurredAt,
-        createdAt: now,
-        updatedAt: now,
-      });
+    const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
+    if (!retireAt) {
+      return;
     }
+    const now = nowIso();
+    this.store.upsertSubscriptionLifecycleRetirement({
+      subscriptionId: subscription.subscriptionId,
+      sourceId: source.sourceId,
+      trackedResourceRef: signal.ref,
+      retireAt,
+      terminalState: signal.state ?? null,
+      terminalResult: signal.result ?? null,
+      terminalOccurredAt: signalOccurredAt,
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   private notifyInboxWatchers(agentId: string, items: InboxItem[]): void {

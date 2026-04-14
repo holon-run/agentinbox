@@ -1749,6 +1749,94 @@ test("gc does not retire subscriptions before they consume a terminal event", as
   }
 });
 
+test("gc does not retire sibling subscriptions sharing a trackedResourceRef before they consume the terminal event", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "lifecycle-shared-ref.mjs"),
+      `export default {
+  id: "demo.lifecycle.shared-ref",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.lifecycle", metadata: {}, rawPayload: raw };
+  },
+  projectLifecycleSignal(raw) {
+    return raw.state === "closed" ? { ref: String(raw.ref), terminal: true, state: "closed" } : null;
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "lifecycle-shared-ref-demo",
+      config: {
+        profilePath: "lifecycle-shared-ref.mjs",
+        profileConfig: {},
+      },
+    });
+    const agentA = await registerTmuxAgent(service, "lifecycle-shared-ref-a");
+    const agentB = await registerTmuxAgent(service, "lifecycle-shared-ref-b");
+    const subscriptionA = await service.registerSubscription({
+      agentId: agentA.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:77",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:77" } },
+      startPolicy: "earliest",
+    });
+    const subscriptionB = await service.registerSubscription({
+      agentId: agentB.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:77",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:77" } },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-terminal-shared",
+      eventVariant: "demo.lifecycle",
+      metadata: {},
+      rawPayload: { id: "evt-terminal-shared", ref: "pr:77", state: "closed" },
+      occurredAt: "2020-06-01T00:00:00.000Z",
+    });
+
+    await service.pollSubscription(subscriptionA.subscriptionId);
+    assert.ok(store.getSubscriptionLifecycleRetirement(subscriptionA.subscriptionId));
+    assert.equal(store.getSubscriptionLifecycleRetirement(subscriptionB.subscriptionId), null);
+
+    const firstGc = service.gc();
+    assert.equal(firstGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscriptionA.subscriptionId), null);
+    assert.ok(store.getSubscription(subscriptionB.subscriptionId));
+
+    await service.pollSubscription(subscriptionB.subscriptionId);
+    assert.ok(store.getSubscriptionLifecycleRetirement(subscriptionB.subscriptionId));
+
+    const secondGc = service.gc();
+    assert.equal(secondGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscriptionB.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent remove cascades local runtime state but keeps shared sources", async () => {
   const { store, service, dir } = await makeService();
   try {
