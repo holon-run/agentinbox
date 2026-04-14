@@ -70,6 +70,31 @@ As a result, agents do not have a clear way to ask:
 - do not require uploading executable remote module code through the `AgentInbox` API
 - do not force an immediate breaking rename of the existing `SourceType` field
 
+## Boundary With UXC
+
+The recommended split remains:
+
+### `uxc` owns
+
+- external provider auth and transport
+- polling, long-connection, or protocol execution
+- provider-side checkpointing
+- managed source identity
+- durable append-only raw streams
+
+### `AgentInbox` owns
+
+- source registry
+- resolved source identity and resolved schema
+- implementation/module resolution
+- raw event to `eventVariant` / `metadata` / `rawPayload` mapping
+- subscription filters and shortcuts
+- inbox materialization
+- activation and delivery
+
+The important ownership rule is that `uxc` should stay raw-stream-oriented,
+while `AgentInbox` should own the product event model presented to agents.
+
 ## Terms
 
 ### Host Type
@@ -309,6 +334,23 @@ The important thing is to establish one extensibility surface that:
 - user-defined remote sources use
 - resolved schema can expose
 - CLI and skills can introspect
+
+## Remote Runtime Flow
+
+For a remote-hosted source, the intended sync flow is:
+
+1. resolve the implementation module
+2. validate source config
+3. build the `uxc` managed source spec
+4. call `uxc source.ensure(namespace, source_key, spec)`
+5. persist or reuse the managed `streamId`
+6. call `uxc stream.read(streamId, afterOffset)`
+7. map each `raw_payload` through the implementation module
+8. append mapped events into the `AgentInbox` source event bus
+9. update the consumer cursor
+
+This keeps the provider ingress boundary inside `uxc` and the agent-facing
+event model inside `AgentInbox`.
 
 ## Subscription Shortcuts
 
