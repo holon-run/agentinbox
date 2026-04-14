@@ -1993,6 +1993,86 @@ test("inbox read defaults to unacked items and ack through clears a processed ba
   }
 });
 
+test("direct inbox text messages create inbox items and trigger activation", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    terminalDispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const alpha = await registerTmuxAgent(service, "63");
+    service.addWebhookActivationTarget(alpha.agentId, {
+      url: "http://127.0.0.1:9999/direct",
+      activationMode: "activation_with_items",
+    });
+
+    const delivered = await service.addDirectInboxTextMessage(alpha.agentId, {
+      message: "  Review PR #51 CI failure and push a fix.  ",
+    }, {
+      ...process.env,
+      TMUX_PANE: "%63",
+      CODEX_THREAD_ID: "thread-63",
+      ITERM_SESSION_ID: "",
+      TERM_SESSION_ID: "",
+      TERM_PROGRAM: "",
+    });
+
+    assert.equal(delivered.activated, true);
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].eventVariant, "agentinbox.direct_text_message");
+    assert.deepEqual(items[0].metadata, {});
+    assert.deepEqual(items[0].rawPayload, {
+      type: "direct_text_message",
+      message: "Review PR #51 CI failure and push a fix.",
+      sender: alpha.agentId,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(dispatcher.calls.length, 1);
+    assert.equal(dispatcher.calls[0].activation.agentId, alpha.agentId);
+    assert.equal(dispatcher.calls[0].activation.newItemCount, 1);
+    assert.equal(dispatcher.calls[0].activation.items?.[0]?.itemId, delivered.itemId);
+    assert.match(dispatcher.calls[0].activation.summary, /from direct_text_message:/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("direct inbox text messages fail cleanly if the inbox item cannot be persisted", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const alpha = await registerTmuxAgent(service, "64");
+    const originalInsert = store.insertInboxItem.bind(store);
+    store.insertInboxItem = () => false;
+
+    await assert.rejects(
+      service.addDirectInboxTextMessage(alpha.agentId, {
+        message: "This should fail",
+      }),
+      /failed to persist direct inbox message item/,
+    );
+    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 0);
+    assert.equal(dispatcher.calls.length, 0);
+
+    store.insertInboxItem = originalInsert;
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("compact and gc remove only acked inbox items older than retention", async () => {
   const { store, service, dir } = await makeService();
   try {

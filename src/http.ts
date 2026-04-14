@@ -857,6 +857,40 @@ function buildFastifyServer(service: AgentInboxService) {
     };
   });
 
+  app.post("/agents/:agentId/inbox/items", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["message"],
+        properties: {
+          message: { type: "string", minLength: 1 },
+          sender: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const body = request.body as { message: string; sender?: string };
+    return service.addDirectInboxTextMessage(decodeURIComponent(params.agentId), {
+      message: body.message,
+      sender: body.sender ?? null,
+    });
+  });
+
   app.get("/agents/:agentId/inbox/watch", {
     schema: {
       tags: ["inbox"],
@@ -1130,6 +1164,7 @@ function normalizeValidationMessage(message: string): string {
 
 function isBadRequestError(message: string): boolean {
   return (
+    message.startsWith("direct inbox ") ||
     message.startsWith("manual append is not supported") ||
     message.startsWith("sources/events requires") ||
     message.startsWith("source remove requires") ||

@@ -231,6 +231,17 @@ export interface AddWebhookActivationTargetInput {
   notifyLeaseMs?: number | null;
 }
 
+export interface DirectInboxTextMessageInput {
+  message: string;
+  sender?: string | null;
+}
+
+export interface DirectInboxTextMessageResult {
+  itemId: string;
+  inboxId: string;
+  activated: boolean;
+}
+
 export interface RegisterSubscriptionInput {
   agentId: string;
   sourceId: string;
