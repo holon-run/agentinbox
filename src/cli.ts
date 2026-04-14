@@ -267,6 +267,8 @@ async function main(): Promise<void> {
     const args = normalized.slice(2);
     const positionals = positionalArgs(args, [
       "--agent-id",
+      "--shortcut",
+      "--shortcut-args-json",
       "--filter-json",
       "--filter-file",
       "--tracked-resource-ref",
@@ -277,17 +279,28 @@ async function main(): Promise<void> {
     ]);
     const sourceId = positionals[0];
     if (!sourceId || positionals[1]) {
-      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+      throw new Error("usage: agentinbox subscription add <sourceId> [--agent-id ID] [--shortcut NAME --shortcut-args-json JSON] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
       autoRegister: true,
     });
+    const shortcutName = takeFlagValue(normalized, "--shortcut");
+    const shortcutArgsJson = takeFlagValue(normalized, "--shortcut-args-json");
+    if (shortcutName && (hasFlag(normalized, "--filter-stdin") || takeFlagValue(normalized, "--filter-json") != null || takeFlagValue(normalized, "--filter-file") != null || takeFlagValue(normalized, "--tracked-resource-ref") != null || takeFlagValue(normalized, "--cleanup-policy-json") != null)) {
+      throw new Error("subscription add shortcut does not allow filter, trackedResourceRef, or cleanupPolicy flags");
+    }
     const cleanupPolicyJson = takeFlagValue(normalized, "--cleanup-policy-json");
     const response = await requestRemote<Record<string, unknown>>(client, "/subscriptions", {
       agentId: selection.agentId,
       sourceId,
-      filter: readSubscriptionFilter(normalized),
+      shortcut: shortcutName
+        ? {
+            name: shortcutName,
+            args: shortcutArgsJson != null ? parseJsonArg(shortcutArgsJson, "--shortcut-args-json") : {},
+          }
+        : undefined,
+      filter: shortcutName ? undefined : readSubscriptionFilter(normalized),
       trackedResourceRef: takeFlagValue(normalized, "--tracked-resource-ref") ?? undefined,
       cleanupPolicy: cleanupPolicyJson != null
         ? parseJsonArg(cleanupPolicyJson, "--cleanup-policy-json")
@@ -890,7 +903,7 @@ Usage:
     subscription: `agentinbox subscription
 
 Usage:
-  agentinbox subscription add <sourceId> [--agent-id ID] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+  agentinbox subscription add <sourceId> [--agent-id ID] [--shortcut NAME --shortcut-args-json JSON] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
   agentinbox subscription list [--source-id ID] [--agent-id ID]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription remove <subscriptionId>

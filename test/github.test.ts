@@ -4,6 +4,8 @@ import {
   deriveGithubTrackedResource,
   GithubDeliveryAdapter,
   GithubUxcClient,
+  githubSubscriptionShortcutSpec,
+  expandGithubSubscriptionShortcut,
   normalizeGithubRepoEvent,
   projectGithubLifecycleSignal,
   type GithubCallClient,
@@ -187,6 +189,27 @@ test("github pull request helpers derive tracked resources and terminal lifecycl
     action: "opened",
     pull_request: { number: 74 },
   }), null);
+});
+
+test("github subscription shortcut helpers expose and expand the builtin pr shortcut", async () => {
+  assert.deepEqual(githubSubscriptionShortcutSpec(), [{
+    name: "pr",
+    description: "Follow one pull request and auto-retire when it closes.",
+    argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+  }]);
+  assert.deepEqual(expandGithubSubscriptionShortcut({
+    name: "pr",
+    args: { number: 74 },
+  }), {
+    filter: {
+      metadata: {
+        number: 74,
+        isPullRequest: true,
+      },
+    },
+    trackedResourceRef: "pr:74",
+    cleanupPolicy: { mode: "on_terminal" },
+  });
 });
 
 test("github delivery adapter maps issue comments and review replies to uxc calls", async () => {

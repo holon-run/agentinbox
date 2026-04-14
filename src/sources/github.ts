@@ -4,6 +4,7 @@ import {
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryRequest,
+  SourceSchemaField,
   SubscriptionFilter,
   SubscriptionSource,
 } from "../model";
@@ -192,6 +193,45 @@ export function deriveGithubTrackedResource(filter: SubscriptionFilter): { ref: 
     return null;
   }
   return { ref: `pr:${number}` };
+}
+
+export function githubSubscriptionShortcutSpec(): Array<{
+  name: string;
+  description: string;
+  argsSchema: SourceSchemaField[];
+}> {
+  return [{
+    name: "pr",
+    description: "Follow one pull request and auto-retire when it closes.",
+    argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+  }];
+}
+
+export function expandGithubSubscriptionShortcut(input: {
+  name: string;
+  args?: Record<string, unknown>;
+}): {
+  filter: SubscriptionFilter;
+  trackedResourceRef: string;
+  cleanupPolicy: { mode: "on_terminal" };
+} | null {
+  if (input.name !== "pr") {
+    return null;
+  }
+  const number = typeof input.args?.number === "number" ? input.args.number : null;
+  if (!number || !Number.isInteger(number) || number <= 0) {
+    throw new Error("subscription shortcut pr requires a positive integer number");
+  }
+  return {
+    filter: {
+      metadata: {
+        number,
+        isPullRequest: true,
+      },
+    },
+    trackedResourceRef: `pr:${number}`,
+    cleanupPolicy: { mode: "on_terminal" },
+  };
 }
 
 export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>): {
