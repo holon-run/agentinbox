@@ -1058,6 +1058,93 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
   }
 });
 
+test("control plane shortcut validation errors return 400 instead of 500", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-error-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "http-shortcut-error.mjs"),
+    `export default {
+  id: "demo.http.shortcut.error",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  expandSubscriptionShortcut(input) {
+    if (input.name !== "ticket") return null;
+    return {
+      filter: { metadata: { ticketId: input.args.id } },
+      trackedResourceRef: "ticket:" + input.args.id,
+      cleanupPolicy: { mode: "manual" }
+    };
+  }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+  let started: Awaited<ReturnType<typeof startControlServer>> | null = null;
+
+  try {
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "http-shortcut-error-demo",
+      config: {
+        profilePath: "http-shortcut-error.mjs",
+        profileConfig: {},
+      },
+    });
+    const registered = service.registerAgent({
+      backend: "iterm2",
+      runtimeKind: "codex",
+      runtimeSessionId: "http-shortcut-error-thread",
+      mode: "agent_prompt",
+      termProgram: "iTerm.app",
+      itermSessionId: "http-shortcut-error-session",
+    });
+
+    started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    const client = new AgentInboxClient({
+      kind: "socket",
+      socketPath,
+      source: "flag",
+    });
+
+    const response = await client.request<Record<string, unknown>>("/subscriptions", {
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      shortcut: { name: "ticket", args: { id: "A-9" } },
+      filter: { metadata: { x: 1 } },
+    }, "POST");
+    assert.equal(response.statusCode, 400);
+    assert.match(String(response.data.error), /shortcut does not allow filter, trackedResourceRef, or cleanupPolicy/);
+  } finally {
+    if (started) {
+      await started.close();
+    }
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli source pause rejects unsupported local_event sources", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-pause-"));
   const env = {

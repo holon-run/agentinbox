@@ -1125,6 +1125,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unsupported terminal") ||
     message.startsWith("cleanupPolicy ") ||
     message.startsWith("trackedResourceRef ") ||
+    message.startsWith("subscription add shortcut") ||
+    message.startsWith("unknown subscription shortcut ") ||
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
