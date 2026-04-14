@@ -2179,6 +2179,73 @@ test("agent removal and offline GC delete agent timers", async () => {
   }
 });
 
+test("cron timers accept sunday as 7 and leap-day schedules remain active", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-cron");
+
+    const sunday = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "0 8 * * 7",
+      timezone: "UTC",
+      message: "Sunday reminder",
+    });
+    assert.equal(sunday.status, "active");
+    assert.ok(sunday.nextFireAt);
+
+    const leap = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "0 0 29 2 *",
+      timezone: "UTC",
+      message: "Leap reminder",
+    });
+    assert.equal(leap.status, "active");
+    assert.ok(leap.nextFireAt);
+    assert.match(leap.nextFireAt ?? "", /^2028-02-29T00:00:00\.000Z$/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("timer firing is idempotent per scheduled occurrence", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-idempotent");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      every: 60_000,
+      message: "Stand up reminder",
+    });
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+
+    await (service as unknown as { fireTimer(timer: { scheduleId: string; nextFireAt?: string | null; message: string; sender?: string | null; mode: "every"; intervalMs?: number | null; cronExpr?: string | null; at?: string | null; timezone: string }, now: string): Promise<void> }).fireTimer(
+      service.getTimer(timer.scheduleId) as never,
+      "2020-01-01T00:00:00.000Z",
+    );
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+    await (service as unknown as { fireTimer(timer: { scheduleId: string; nextFireAt?: string | null; message: string; sender?: string | null; mode: "every"; intervalMs?: number | null; cronExpr?: string | null; at?: string | null; timezone: string }, now: string): Promise<void> }).fireTimer(
+      service.getTimer(timer.scheduleId) as never,
+      "2020-01-01T00:00:01.000Z",
+    );
+
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].sourceNativeId, `${timer.scheduleId}:2020-01-01T00:00:00.000Z`);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("compact and gc remove only acked inbox items older than retention", async () => {
   const { store, service, dir } = await makeService();
   try {

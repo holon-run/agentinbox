@@ -513,7 +513,7 @@ export class AgentInboxService {
     const timer: AgentTimer = {
       scheduleId: generateId("sched"),
       agentId: input.agentId,
-      status: "active",
+      status: nextFireAt ? "active" : "paused",
       mode: normalized.mode,
       at: normalized.at ?? null,
       intervalMs: normalized.every ?? null,
@@ -577,14 +577,15 @@ export class AgentInboxService {
       lastFiredAt: timer.lastFiredAt ?? null,
       restartRecovery: false,
     });
+    const status: AgentTimer["status"] = nextFireAt ? "active" : "paused";
     const updated = this.store.updateTimer(scheduleId, {
-      status: "active",
+      status,
       nextFireAt,
       updatedAt: now,
     });
     this.rescheduleTimerSync();
     return {
-      updated: timer.status !== "active",
+      updated: timer.status !== status,
       timer: updated,
     };
   }
@@ -853,9 +854,10 @@ export class AgentInboxService {
   }
 
   private async fireTimer(timer: AgentTimer, now: string): Promise<void> {
-    await this.materializeAgentInboxItem(timer.agentId, {
+    const scheduledFireAt = timer.nextFireAt ?? now;
+    this.materializeAgentInboxItem(timer.agentId, {
       sourceId: TIMER_INBOX_SOURCE_ID,
-      sourceNativeId: `${timer.scheduleId}:${now}`,
+      sourceNativeId: `${timer.scheduleId}:${scheduledFireAt}`,
       eventVariant: TIMER_INBOX_EVENT_VARIANT,
       summary: summarizeTimerMessage(timer.scheduleId),
       rawPayload: {
@@ -864,7 +866,8 @@ export class AgentInboxService {
         message: timer.message,
         sender: timer.sender ?? DEFAULT_TIMER_SENDER,
       },
-      occurredAt: now,
+      occurredAt: scheduledFireAt,
+      allowDuplicate: true,
     });
 
     const nextFireAt = computeNextTimerFire({
@@ -873,8 +876,8 @@ export class AgentInboxService {
       intervalMs: timer.intervalMs ?? null,
       cronExpr: timer.cronExpr ?? null,
       timezone: timer.timezone,
-      fromIso: now,
-      lastFiredAt: now,
+      fromIso: scheduledFireAt,
+      lastFiredAt: scheduledFireAt,
       restartRecovery: false,
     });
     this.store.updateTimer(timer.scheduleId, {
@@ -894,6 +897,7 @@ export class AgentInboxService {
       summary: string;
       rawPayload: Record<string, unknown>;
       occurredAt?: string;
+      allowDuplicate?: boolean;
     },
   ): DirectInboxTextMessageResult {
     const inbox = this.ensureInboxForAgent(agentId);
@@ -911,8 +915,15 @@ export class AgentInboxService {
       ackedAt: null,
     };
     const inserted = this.store.insertInboxItem(item);
-    if (!inserted) {
+    if (!inserted && !input.allowDuplicate) {
       throw new Error(`failed to persist direct inbox message item: ${item.itemId}`);
+    }
+    if (!inserted) {
+      return {
+        itemId: item.itemId,
+        inboxId: inbox.inboxId,
+        activated: false,
+      };
     }
     this.notifyInboxWatchers(agentId, [item]);
 
@@ -2640,7 +2651,7 @@ function parseCronExpression(expr: string): ParsedCron {
     hour: parseCronField(hour, 0, 23),
     dayOfMonth: parseCronField(dayOfMonth, 1, 31),
     month: parseCronField(month, 1, 12),
-    dayOfWeek: parseCronField(dayOfWeek, 0, 6, true),
+    dayOfWeek: parseCronField(dayOfWeek, 0, 7, true),
   };
 }
 
@@ -2670,15 +2681,51 @@ function parseCronField(field: string, min: number, max: number, normalizeSunday
 
 function nextCronOccurrence(expr: string, timezone: string, after: Date): string | null {
   const parsed = parseCronExpression(expr);
-  const candidate = new Date(after.getTime());
+  let candidate = addMinutes(after, 1);
   candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  for (let index = 0; index < 366 * 24 * 60; index += 1) {
+
+  for (let guard = 0; guard < 10_000; guard += 1) {
     const zoned = zonedDateParts(candidate, timezone);
+
+    const nextMonth = nextAllowedValue(parsed.month, zoned.month, 1, 12);
+    if (nextMonth == null) {
+      candidate = utcDateForZoned(timezone, zoned.year + 1, firstAllowedValue(parsed.month, 1, 12), 1, 0, 0);
+      continue;
+    }
+    if (nextMonth !== zoned.month) {
+      candidate = utcDateForZoned(timezone, zoned.year, nextMonth, 1, 0, 0);
+      continue;
+    }
+
+    if (!matchesCronDay(parsed, zoned)) {
+      candidate = utcDateForZoned(timezone, zoned.year, zoned.month, zoned.day + 1, 0, 0);
+      continue;
+    }
+
+    const nextHour = nextAllowedValue(parsed.hour, zoned.hour, 0, 23);
+    if (nextHour == null) {
+      candidate = utcDateForZoned(timezone, zoned.year, zoned.month, zoned.day + 1, firstAllowedValue(parsed.hour, 0, 23), 0);
+      continue;
+    }
+    if (nextHour !== zoned.hour) {
+      candidate = utcDateForZoned(timezone, zoned.year, zoned.month, zoned.day, nextHour, 0);
+      continue;
+    }
+
+    const nextMinute = nextAllowedValue(parsed.minute, zoned.minute, 0, 59);
+    if (nextMinute == null) {
+      candidate = utcDateForZoned(timezone, zoned.year, zoned.month, zoned.day, zoned.hour + 1, firstAllowedValue(parsed.minute, 0, 59));
+      continue;
+    }
+    if (nextMinute !== zoned.minute) {
+      candidate = utcDateForZoned(timezone, zoned.year, zoned.month, zoned.day, zoned.hour, nextMinute);
+      continue;
+    }
+
     if (matchesCron(parsed, zoned)) {
       return candidate.toISOString();
     }
-    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+    candidate = addMinutes(candidate, 1);
   }
   return null;
 }
@@ -2690,6 +2737,15 @@ function matchesCron(parsed: ParsedCron, parts: ReturnType<typeof zonedDateParts
   if (!monthMatches || !hourMatches || !minuteMatches) {
     return false;
   }
+  const dayOfMonthMatches = parsed.dayOfMonth.any || parsed.dayOfMonth.values.has(parts.day);
+  const dayOfWeekMatches = parsed.dayOfWeek.any || parsed.dayOfWeek.values.has(parts.dayOfWeek);
+  if (!parsed.dayOfMonth.any && !parsed.dayOfWeek.any) {
+    return dayOfMonthMatches || dayOfWeekMatches;
+  }
+  return dayOfMonthMatches && dayOfWeekMatches;
+}
+
+function matchesCronDay(parsed: ParsedCron, parts: ReturnType<typeof zonedDateParts>): boolean {
   const dayOfMonthMatches = parsed.dayOfMonth.any || parsed.dayOfMonth.values.has(parts.day);
   const dayOfWeekMatches = parsed.dayOfWeek.any || parsed.dayOfWeek.values.has(parts.dayOfWeek);
   if (!parsed.dayOfMonth.any && !parsed.dayOfWeek.any) {
@@ -2729,6 +2785,43 @@ function zonedDateParts(date: Date, timezone: string): {
     minute: Number(entries.minute),
     dayOfWeek: weekdayToNumber(entries.weekday),
   };
+}
+
+function nextAllowedValue(field: ParsedCronField, current: number, min: number, max: number): number | null {
+  if (field.any) {
+    return current;
+  }
+  for (let value = current; value <= max; value += 1) {
+    if (field.values.has(value)) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function firstAllowedValue(field: ParsedCronField, min: number, max: number): number {
+  if (field.any) {
+    return min;
+  }
+  for (let value = min; value <= max; value += 1) {
+    if (field.values.has(value)) {
+      return value;
+    }
+  }
+  return min;
+}
+
+function addMinutes(date: Date, minutes: number): Date {
+  return new Date(date.getTime() + minutes * 60_000);
+}
+
+function utcDateForZoned(timezone: string, year: number, month: number, day: number, hour: number, minute: number): Date {
+  const approxUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  const approx = new Date(approxUtc);
+  const zoned = zonedDateParts(approx, timezone);
+  const targetNaiveUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  const zonedNaiveUtc = Date.UTC(zoned.year, zoned.month - 1, zoned.day, zoned.hour, zoned.minute, 0, 0);
+  return new Date(approxUtc - (zonedNaiveUtc - targetNaiveUtc));
 }
 
 function weekdayToNumber(value: string): number {
