@@ -2,18 +2,18 @@ import {
   AppendSourceEventInput,
   DeliveryAttempt,
   DeliveryRequest,
+  SubscriptionSource,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
   SourcePollResult,
   SourceType,
-  SubscriptionSource,
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
-import { RemoteSourceProfileRegistry } from "./sources/remote_profiles";
+import { LifecycleSignal, RemoteSourceProfileRegistry } from "./sources/remote_profiles";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -174,6 +174,13 @@ export class AdapterRegistry {
       homeDir: this.homeDir,
       profileRegistry: this.remoteProfileRegistry,
     });
+  }
+
+  async projectLifecycleSignal(source: SubscriptionSource, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.projectLifecycleSignal(source, rawPayload);
   }
 
   status(): Record<string, unknown> {

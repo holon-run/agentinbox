@@ -22,6 +22,7 @@ import {
   SourcePollResult,
   Subscription,
   CleanupPolicy,
+  SubscriptionLifecycleRetirement,
   SubscriptionPollResult,
   SubscriptionSource,
   TerminalActivationTarget,
@@ -44,6 +45,7 @@ import { getSourceSchema } from "./source_schema";
 import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
+import { LifecycleSignal } from "./sources/remote_profiles";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -53,6 +55,7 @@ const DEFAULT_NOTIFY_RETRY_MS = 5_000;
 const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
+const DEFAULT_SYNC_INTERVAL_MS = 2_000;
 const WEBHOOK_ACTIVATION_MODES = new Set<WebhookActivationTarget["mode"]>(["activation_only", "activation_with_items"]);
 const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["latest", "earliest", "at_offset", "at_time"]);
 interface ActivationPolicy {
@@ -96,6 +99,7 @@ export class AgentInboxService {
   private syncInterval: NodeJS.Timeout | null = null;
   private stopping = false;
   private lastAckedInboxGcAt = 0;
+  private lastLifecycleCleanupAt = 0;
   private lastOfflineAgentGcAt = 0;
 
   constructor(
@@ -127,7 +131,7 @@ export class AgentInboxService {
       void this.syncActivationDispatchStates();
       void this.runAckedInboxGcIfDue();
       void this.syncLifecycleGc();
-    }, 2_000);
+    }, DEFAULT_SYNC_INTERVAL_MS);
     await this.syncAllSubscriptions();
     await this.syncActivationDispatchStates();
     await this.runAckedInboxGcIfDue(true);
@@ -754,13 +758,15 @@ export class AgentInboxService {
     };
   }
 
-  gc(): { deleted: number; retentionMs: number; removedAgents: number } {
+  gc(): { deleted: number; retentionMs: number; removedAgents: number; removedSubscriptions: number } {
     const acked = this.gcAckedInboxItems();
-    const lifecycle = this.gcOfflineAgents();
+    const lifecycle = this.runLifecycleCleanupPass(Date.now());
+    const offlineAgents = this.gcOfflineAgents();
     return {
       deleted: acked.deleted,
       retentionMs: acked.retentionMs,
-      removedAgents: lifecycle.removedAgents,
+      removedAgents: offlineAgents.removedAgents,
+      removedSubscriptions: lifecycle.removedSubscriptions,
     };
   }
 
@@ -807,9 +813,11 @@ export class AgentInboxService {
       let inboxItemsCreated = 0;
       let lastProcessedOffset: number | null = null;
       const insertedItems: InboxItem[] = [];
+      const lifecycleSignals = new Map<string, LifecycleSignal>();
       try {
         for (const event of batch.events) {
           lastProcessedOffset = event.offset;
+          await this.collectLifecycleSignal(source, event.rawPayload, lifecycleSignals, event.occurredAt);
           const match = await matchSubscriptionFilter(subscription.filter, {
             metadata: event.metadata,
             payload: event.rawPayload,
@@ -882,6 +890,9 @@ export class AgentInboxService {
           consumerId: consumer.consumerId,
           committedOffset: lastProcessedOffset,
         });
+      }
+      for (const signal of lifecycleSignals.values()) {
+        this.scheduleLifecycleRetirements(source, subscription, signal);
       }
 
       return {
@@ -985,6 +996,63 @@ export class AgentInboxService {
       sourceId: source.sourceId,
       streamKey: streamKeyForSource(source.sourceType, source.sourceKey),
       backend: "sqlite",
+    });
+  }
+
+  private async collectLifecycleSignal(
+    source: SubscriptionSource,
+    rawPayload: Record<string, unknown>,
+    signals: Map<string, LifecycleSignal>,
+    fallbackOccurredAt?: string,
+  ): Promise<void> {
+    const signal = await this.adapters.projectLifecycleSignal(source, rawPayload);
+    if (!signal || !signal.terminal) {
+      return;
+    }
+    const normalized = normalizeLifecycleSignal(signal, fallbackOccurredAt);
+    if (!normalized) {
+      return;
+    }
+    const existing = signals.get(normalized.ref);
+    if (!existing) {
+      signals.set(normalized.ref, normalized);
+      return;
+    }
+    const existingAt = Date.parse(existing.occurredAt ?? "");
+    const normalizedAt = Date.parse(normalized.occurredAt ?? "");
+    if (Number.isNaN(existingAt) || (!Number.isNaN(normalizedAt) && normalizedAt > existingAt)) {
+      signals.set(normalized.ref, normalized);
+    }
+  }
+
+  private scheduleLifecycleRetirements(
+    source: SubscriptionSource,
+    subscription: Subscription,
+    signal: LifecycleSignal,
+  ): void {
+    if (!signal.terminal) {
+      return;
+    }
+    if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
+      return;
+    }
+    const signalOccurredAt = signal.occurredAt ?? nowIso();
+    const signalOccurredAtMs = Date.parse(signalOccurredAt);
+    const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
+    if (!retireAt) {
+      return;
+    }
+    const now = nowIso();
+    this.store.upsertSubscriptionLifecycleRetirement({
+      subscriptionId: subscription.subscriptionId,
+      sourceId: source.sourceId,
+      trackedResourceRef: signal.ref,
+      retireAt,
+      terminalState: signal.state ?? null,
+      terminalResult: signal.result ?? null,
+      terminalOccurredAt: signalOccurredAt,
+      createdAt: now,
+      updatedAt: now,
     });
   }
 
@@ -1149,6 +1217,7 @@ export class AgentInboxService {
       // state so future subscriptions do not inherit a stale notified window.
       this.store.deleteActivationDispatchState(state.agentId, state.targetId);
     }
+    this.store.deleteSubscriptionLifecycleRetirement(subscription.subscriptionId);
   }
 
   private async flushAllPendingNotifications(): Promise<void> {
@@ -1443,6 +1512,48 @@ export class AgentInboxService {
     });
   }
 
+  private runLifecycleCleanupPass(nowMs: number): { removedSubscriptions: number } {
+    this.lastLifecycleCleanupAt = nowMs;
+    const removed = new Set<string>();
+
+    for (const subscription of this.store.listSubscriptions()) {
+      if (removed.has(subscription.subscriptionId)) {
+        continue;
+      }
+      const deadline = lifecycleDeadlineAt(subscription.cleanupPolicy);
+      if (!deadline) {
+        continue;
+      }
+      const deadlineMs = Date.parse(deadline);
+      if (Number.isNaN(deadlineMs) || deadlineMs > nowMs) {
+        continue;
+      }
+      if (this.store.deleteSubscription(subscription.subscriptionId)) {
+        removed.add(subscription.subscriptionId);
+        this.clearSubscriptionRuntimeState(subscription);
+      }
+    }
+
+    const dueRetirements = this.store.listSubscriptionLifecycleRetirementsDue(new Date(nowMs).toISOString());
+    for (const retirement of dueRetirements) {
+      if (removed.has(retirement.subscriptionId)) {
+        this.store.deleteSubscriptionLifecycleRetirement(retirement.subscriptionId);
+        continue;
+      }
+      const subscription = this.store.getSubscription(retirement.subscriptionId);
+      if (!subscription) {
+        this.store.deleteSubscriptionLifecycleRetirement(retirement.subscriptionId);
+        continue;
+      }
+      if (this.store.deleteSubscription(retirement.subscriptionId)) {
+        removed.add(retirement.subscriptionId);
+        this.clearSubscriptionRuntimeState(subscription);
+      }
+    }
+
+    return { removedSubscriptions: removed.size };
+  }
+
   private gcOfflineAgents(now = Date.now()): { removedAgents: number } {
     const cutoffIso = new Date(now - DEFAULT_OFFLINE_AGENT_TTL_MS).toISOString();
     const agents = this.store.listOfflineAgentsOlderThan(cutoffIso);
@@ -1496,6 +1607,14 @@ export class AgentInboxService {
 
   private async syncLifecycleGc(): Promise<void> {
     const now = Date.now();
+    if (now - this.lastLifecycleCleanupAt >= DEFAULT_GC_INTERVAL_MS) {
+      try {
+        this.runLifecycleCleanupPass(now);
+      } catch (error) {
+        console.warn("subscription lifecycle gc failed:", error);
+      }
+    }
+
     if (now - this.lastOfflineAgentGcAt < DEFAULT_GC_INTERVAL_MS) {
       return;
     }
@@ -1533,7 +1652,7 @@ function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
     if ("gracePeriodSecs" in input) {
       throw new Error("cleanupPolicy mode at does not allow gracePeriodSecs");
     }
-    return { mode: "at", at: input.at };
+    return { mode: "at", at: canonicalIsoTimestamp(input.at) };
   }
   if (input.mode === "on_terminal") {
     if ("at" in input) {
@@ -1550,7 +1669,7 @@ function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
     }
     return {
       mode: "on_terminal_or_at",
-      at: input.at,
+      at: canonicalIsoTimestamp(input.at),
       ...(input.gracePeriodSecs != null ? { gracePeriodSecs: normalizeGracePeriodSecs(input.gracePeriodSecs) } : {}),
     };
   }
@@ -1562,6 +1681,63 @@ function normalizeGracePeriodSecs(value: number): number {
     throw new Error("cleanupPolicy gracePeriodSecs must be a non-negative integer");
   }
   return value;
+}
+
+function normalizeLifecycleSignal(signal: LifecycleSignal, fallbackOccurredAt?: string): LifecycleSignal | null {
+  const ref = typeof signal.ref === "string" ? signal.ref.trim() : "";
+  if (ref.length === 0) {
+    return null;
+  }
+  return {
+    ref,
+    terminal: signal.terminal,
+    state: signal.state ?? null,
+    result: signal.result ?? null,
+    occurredAt: normalizeLifecycleOccurredAt(signal.occurredAt, fallbackOccurredAt),
+  };
+}
+
+function normalizeLifecycleOccurredAt(value?: string, fallback?: string): string {
+  if (value && isValidIsoTimestamp(value)) {
+    return value;
+  }
+  if (fallback && isValidIsoTimestamp(fallback)) {
+    return fallback;
+  }
+  return nowIso();
+}
+
+function lifecycleRetireAtForSignal(cleanupPolicy: CleanupPolicy, signalOccurredAtMs: number): string | null {
+  if (cleanupPolicy.mode === "manual" || cleanupPolicy.mode === "at") {
+    return null;
+  }
+  if (cleanupPolicy.mode === "on_terminal") {
+    return lifecycleSignalRetireAt(signalOccurredAtMs, cleanupPolicy.gracePeriodSecs ?? null);
+  }
+  return minIsoTimestamps(
+    cleanupPolicy.at,
+    lifecycleSignalRetireAt(signalOccurredAtMs, cleanupPolicy.gracePeriodSecs ?? null),
+  );
+}
+
+function lifecycleSignalRetireAt(signalOccurredAtMs: number, gracePeriodSecs: number | null): string {
+  const graceMs = Math.max(0, gracePeriodSecs ?? 0) * 1000;
+  return new Date(signalOccurredAtMs + graceMs).toISOString();
+}
+
+function lifecycleDeadlineAt(cleanupPolicy: CleanupPolicy): string | null {
+  if (cleanupPolicy.mode === "at" || cleanupPolicy.mode === "on_terminal_or_at") {
+    return cleanupPolicy.at;
+  }
+  return null;
+}
+
+function minIsoTimestamps(left: string, right: string): string {
+  return new Date(Math.min(Date.parse(left), Date.parse(right))).toISOString();
+}
+
+function canonicalIsoTimestamp(value: string): string {
+  return new Date(value).toISOString();
 }
 
 function isValidIsoTimestamp(value: unknown): value is string {

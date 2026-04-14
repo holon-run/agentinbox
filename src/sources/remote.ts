@@ -3,7 +3,7 @@ import { AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "..
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
-import { ManagedSourceSpec, RemoteSourceProfileRegistry } from "./remote_profiles";
+import { LifecycleSignal, ManagedSourceSpec, RemoteSourceProfileRegistry } from "./remote_profiles";
 
 const REMOTE_SOURCE_TYPES = new Set<SubscriptionSource["sourceType"]>([
   "remote_source",
@@ -210,6 +210,17 @@ export class RemoteSourceRuntime {
       activeSourceIds: Array.from(this.inFlight.values()).sort(),
       erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
     };
+  }
+
+  async projectLifecycleSignal(source: SubscriptionSource, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const profile = await this.profileRegistry.resolve(source, this.homeDir);
+    if (typeof profile.projectLifecycleSignal !== "function") {
+      return null;
+    }
+    return profile.projectLifecycleSignal(rawPayload, profileInputSource(source));
   }
 
   private async syncAll(): Promise<void> {

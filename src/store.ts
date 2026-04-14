@@ -22,6 +22,7 @@ import {
   ListInboxItemsOptions,
   RegisterAgentInput,
   Subscription,
+  SubscriptionLifecycleRetirement,
   SubscriptionFilter,
   SubscriptionSource,
   SubscriptionStartPolicy,
@@ -44,6 +45,21 @@ function parseJson<T>(value: string | null): T {
     return {} as T;
   }
   return JSON.parse(value) as T;
+}
+
+function earlierLifecycleRetirement(
+  left: SubscriptionLifecycleRetirement,
+  right: SubscriptionLifecycleRetirement,
+): SubscriptionLifecycleRetirement {
+  const leftAt = Date.parse(left.retireAt);
+  const rightAt = Date.parse(right.retireAt);
+  if (!Number.isNaN(leftAt) && !Number.isNaN(rightAt) && leftAt <= rightAt) {
+    return {
+      ...left,
+      updatedAt: right.updatedAt,
+    };
+  }
+  return right;
 }
 
 export class AgentInboxStore {
@@ -476,9 +492,79 @@ export class AgentInboxStore {
     if (!subscription) {
       return null;
     }
-    this.db.run("delete from subscriptions where subscription_id = ?", [subscriptionId]);
+    this.inTransaction(() => {
+      this.db.run(
+        "delete from consumer_commits where consumer_id in (select consumer_id from consumers where subscription_id = ?)",
+        [subscriptionId],
+      );
+      this.db.run("delete from consumers where subscription_id = ?", [subscriptionId]);
+      this.db.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
+      this.db.run("delete from subscriptions where subscription_id = ?", [subscriptionId]);
+    });
     this.persist();
     return subscription;
+  }
+
+  getSubscriptionLifecycleRetirement(subscriptionId: string): SubscriptionLifecycleRetirement | null {
+    const row = this.getOne(
+      "select * from subscription_lifecycle_retirements where subscription_id = ?",
+      [subscriptionId],
+    );
+    return row ? this.mapSubscriptionLifecycleRetirement(row) : null;
+  }
+
+  listSubscriptionLifecycleRetirements(): SubscriptionLifecycleRetirement[] {
+    const rows = this.getAll("select * from subscription_lifecycle_retirements order by retire_at asc, created_at asc");
+    return rows.map((row) => this.mapSubscriptionLifecycleRetirement(row));
+  }
+
+  listSubscriptionLifecycleRetirementsDue(cutoffIso: string): SubscriptionLifecycleRetirement[] {
+    const rows = this.getAll(
+      "select * from subscription_lifecycle_retirements where retire_at <= ? order by retire_at asc, created_at asc",
+      [cutoffIso],
+    );
+    return rows.map((row) => this.mapSubscriptionLifecycleRetirement(row));
+  }
+
+  upsertSubscriptionLifecycleRetirement(retirement: SubscriptionLifecycleRetirement): SubscriptionLifecycleRetirement {
+    const existing = this.getSubscriptionLifecycleRetirement(retirement.subscriptionId);
+    const next = existing
+      ? earlierLifecycleRetirement(existing, retirement)
+      : retirement;
+    this.db.run(
+      `
+      insert into subscription_lifecycle_retirements (
+        subscription_id, source_id, tracked_resource_ref, retire_at, terminal_state, terminal_result, terminal_occurred_at, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(subscription_id) do update set
+        source_id = excluded.source_id,
+        tracked_resource_ref = excluded.tracked_resource_ref,
+        retire_at = excluded.retire_at,
+        terminal_state = excluded.terminal_state,
+        terminal_result = excluded.terminal_result,
+        terminal_occurred_at = excluded.terminal_occurred_at,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at
+    `,
+      [
+        next.subscriptionId,
+        next.sourceId,
+        next.trackedResourceRef,
+        next.retireAt,
+        next.terminalState ?? null,
+        next.terminalResult ?? null,
+        next.terminalOccurredAt ?? null,
+        next.createdAt,
+        next.updatedAt,
+      ],
+    );
+    this.persist();
+    return this.getSubscriptionLifecycleRetirement(retirement.subscriptionId)!;
+  }
+
+  deleteSubscriptionLifecycleRetirement(subscriptionId: string): void {
+    this.db.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
+    this.persist();
   }
 
   getActivationTarget(targetId: string): ActivationTarget | null {
@@ -692,6 +778,10 @@ export class AgentInboxStore {
         ]);
         this.db.run("delete from consumers where subscription_id = ?", [subscription.subscriptionId]);
       }
+      this.db.run(
+        "delete from subscription_lifecycle_retirements where subscription_id in (select subscription_id from subscriptions where agent_id = ?)",
+        [agentId],
+      );
       this.db.run("delete from subscriptions where agent_id = ?", [agentId]);
       this.db.run("delete from activation_dispatch_states where agent_id = ?", [agentId]);
       this.db.run("delete from activation_targets where agent_id = ?", [agentId]);
@@ -1206,6 +1296,7 @@ export class AgentInboxStore {
       agents: this.count("agents"),
       offlineAgents: this.count("agents where status = 'offline'"),
       subscriptions: this.count("subscriptions"),
+      subscriptionLifecycleRetirements: this.count("subscription_lifecycle_retirements"),
       inboxes: this.count("inboxes"),
       activationTargets: this.count("activation_targets"),
       offlineActivationTargets: this.count("activation_targets where status = 'offline'"),
@@ -1308,6 +1399,20 @@ export class AgentInboxStore {
       startOffset: row.start_offset != null ? Number(row.start_offset) : null,
       startTime: row.start_time ? String(row.start_time) : null,
       createdAt: String(row.created_at),
+    };
+  }
+
+  private mapSubscriptionLifecycleRetirement(row: Record<string, unknown>): SubscriptionLifecycleRetirement {
+    return {
+      subscriptionId: String(row.subscription_id),
+      sourceId: String(row.source_id),
+      trackedResourceRef: String(row.tracked_resource_ref),
+      retireAt: String(row.retire_at),
+      terminalState: row.terminal_state ? String(row.terminal_state) : null,
+      terminalResult: row.terminal_result ? String(row.terminal_result) : null,
+      terminalOccurredAt: row.terminal_occurred_at ? String(row.terminal_occurred_at) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
     };
   }
 

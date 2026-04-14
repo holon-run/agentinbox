@@ -162,7 +162,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 3);
+    assert.equal(state.appliedCount, 4);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -179,7 +179,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 3);
+    assert.equal(state.appliedCount, 4);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
@@ -1107,6 +1107,212 @@ test("subscription register rejects invalid cleanupPolicy combinations", async (
   }
 });
 
+test("gc removes subscriptions whose cleanupPolicy deadline has passed", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const agent = await registerTmuxAgent(service, "cleanup-deadline");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "cleanup-deadline-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      cleanupPolicy: { mode: "at", at: "2020-01-01T00:00:00.000Z" },
+      startPolicy: "latest",
+    });
+
+    const result = service.gc();
+    assert.equal(result.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal lifecycle signals schedule retirements and gc removes matching subscriptions after delivery", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "lifecycle-demo.mjs"),
+      `export default {
+  id: "demo.lifecycle",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.lifecycle", metadata: { ref: raw.ref }, rawPayload: raw };
+  },
+  projectLifecycleSignal(raw) {
+    if (raw.state !== "closed") return null;
+    return { ref: String(raw.ref), terminal: true, state: "closed", result: raw.result ?? null };
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "lifecycle-demo",
+      config: {
+        profilePath: "lifecycle-demo.mjs",
+        profileConfig: {},
+      },
+    });
+    const agentA = await registerTmuxAgent(service, "lifecycle-a");
+    const agentB = await registerTmuxAgent(service, "lifecycle-b");
+    const subA = await service.registerSubscription({
+      agentId: agentA.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:1",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:1" } },
+      startPolicy: "earliest",
+    });
+    const subB = await service.registerSubscription({
+      agentId: agentB.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:1",
+      cleanupPolicy: { mode: "on_terminal_or_at", at: "2030-01-01T00:00:00.000Z" },
+      filter: { payload: { ref: "pr:1" } },
+      startPolicy: "earliest",
+    });
+    const subOther = await service.registerSubscription({
+      agentId: agentA.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:2",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:2" } },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-terminal-1",
+      eventVariant: "demo.lifecycle",
+      metadata: { ref: "pr:1" },
+      rawPayload: { id: "evt-terminal-1", ref: "pr:1", state: "closed", result: "merged" },
+      occurredAt: "2020-06-01T00:00:00.000Z",
+    });
+
+    await service.pollSubscription(subA.subscriptionId);
+    await service.pollSubscription(subB.subscriptionId);
+    await service.pollSubscription(subOther.subscriptionId);
+
+    assert.equal(service.listInboxItems(agentA.agentId).length, 1);
+    assert.equal(service.listInboxItems(agentB.agentId).length, 1);
+    assert.equal(store.listSubscriptionLifecycleRetirements().length, 2);
+
+    const gc = service.gc();
+    assert.equal(gc.removedSubscriptions, 2);
+    assert.equal(store.getSubscription(subA.subscriptionId), null);
+    assert.equal(store.getSubscription(subB.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subA.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subB.subscriptionId), null);
+    assert.ok(store.getSubscription(subOther.subscriptionId));
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal lifecycle retirements honor gracePeriodSecs until gc reaches retireAt", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "lifecycle-grace.mjs"),
+      `export default {
+  id: "demo.lifecycle.grace",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.lifecycle", metadata: {}, rawPayload: raw };
+  },
+  projectLifecycleSignal(raw) {
+    return raw.state === "closed" ? { ref: String(raw.ref), terminal: true, state: "closed" } : null;
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "lifecycle-grace-demo",
+      config: {
+        profilePath: "lifecycle-grace.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = await registerTmuxAgent(service, "lifecycle-grace");
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:9",
+      cleanupPolicy: { mode: "on_terminal", gracePeriodSecs: 3600 },
+      filter: { payload: { ref: "pr:9" } },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-terminal-grace",
+      eventVariant: "demo.lifecycle",
+      metadata: {},
+      rawPayload: { id: "evt-terminal-grace", ref: "pr:9", state: "closed" },
+      occurredAt: "2026-06-01T00:00:00.000Z",
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+
+    const scheduled = store.getSubscriptionLifecycleRetirement(subscription.subscriptionId);
+    assert.ok(scheduled);
+    assert.equal(scheduled?.retireAt, "2026-06-01T01:00:00.000Z");
+
+    const firstGc = service.gc();
+    assert.equal(firstGc.removedSubscriptions, 0);
+    assert.ok(store.getSubscription(subscription.subscriptionId));
+
+    store.upsertSubscriptionLifecycleRetirement({
+      ...scheduled!,
+      retireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+    const secondGc = service.gc();
+    assert.equal(secondGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+    assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("subscription filter expr can match nested payload fields and exclude self-authored events", async () => {
   const { store, service, dir } = await makeService();
   try {
@@ -1461,6 +1667,169 @@ test("terminal target goes offline when dispatch fails and probe confirms disapp
     assert.equal(agent.status, "offline");
     assert.equal(target.status, "offline");
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gc does not retire subscriptions before they consume a terminal event", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "lifecycle-race.mjs"),
+      `export default {
+  id: "demo.lifecycle.race",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.lifecycle", metadata: {}, rawPayload: raw };
+  },
+  projectLifecycleSignal(raw) {
+    return raw.state === "closed" ? { ref: String(raw.ref), terminal: true, state: "closed" } : null;
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "lifecycle-race-demo",
+      config: {
+        profilePath: "lifecycle-race.mjs",
+        profileConfig: {},
+      },
+    });
+    const agent = await registerTmuxAgent(service, "lifecycle-race");
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:77",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:77" } },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-terminal-race",
+      eventVariant: "demo.lifecycle",
+      metadata: {},
+      rawPayload: { id: "evt-terminal-race", ref: "pr:77", state: "closed" },
+      occurredAt: "2020-06-01T00:00:00.000Z",
+    });
+
+    const firstGc = service.gc();
+    assert.equal(firstGc.removedSubscriptions, 0);
+    assert.ok(store.getSubscription(subscription.subscriptionId));
+    assert.equal(store.getSubscriptionLifecycleRetirement(subscription.subscriptionId), null);
+
+    await service.pollSubscription(subscription.subscriptionId);
+    assert.ok(store.getSubscriptionLifecycleRetirement(subscription.subscriptionId));
+
+    const secondGc = service.gc();
+    assert.equal(secondGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gc does not retire sibling subscriptions sharing a trackedResourceRef before they consume the terminal event", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "lifecycle-shared-ref.mjs"),
+      `export default {
+  id: "demo.lifecycle.shared-ref",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return { sourceNativeId: String(raw.id), eventVariant: "demo.lifecycle", metadata: {}, rawPayload: raw };
+  },
+  projectLifecycleSignal(raw) {
+    return raw.state === "closed" ? { ref: String(raw.ref), terminal: true, state: "closed" } : null;
+  }
+};`,
+      "utf8",
+    );
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "lifecycle-shared-ref-demo",
+      config: {
+        profilePath: "lifecycle-shared-ref.mjs",
+        profileConfig: {},
+      },
+    });
+    const agentA = await registerTmuxAgent(service, "lifecycle-shared-ref-a");
+    const agentB = await registerTmuxAgent(service, "lifecycle-shared-ref-b");
+    const subscriptionA = await service.registerSubscription({
+      agentId: agentA.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:77",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:77" } },
+      startPolicy: "earliest",
+    });
+    const subscriptionB = await service.registerSubscription({
+      agentId: agentB.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "pr:77",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { payload: { ref: "pr:77" } },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "evt-terminal-shared",
+      eventVariant: "demo.lifecycle",
+      metadata: {},
+      rawPayload: { id: "evt-terminal-shared", ref: "pr:77", state: "closed" },
+      occurredAt: "2020-06-01T00:00:00.000Z",
+    });
+
+    await service.pollSubscription(subscriptionA.subscriptionId);
+    assert.ok(store.getSubscriptionLifecycleRetirement(subscriptionA.subscriptionId));
+    assert.equal(store.getSubscriptionLifecycleRetirement(subscriptionB.subscriptionId), null);
+
+    const firstGc = service.gc();
+    assert.equal(firstGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscriptionA.subscriptionId), null);
+    assert.ok(store.getSubscription(subscriptionB.subscriptionId));
+
+    await service.pollSubscription(subscriptionB.subscriptionId);
+    assert.ok(store.getSubscriptionLifecycleRetirement(subscriptionB.subscriptionId));
+
+    const secondGc = service.gc();
+    assert.equal(secondGc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscriptionB.subscriptionId), null);
   } finally {
     await service.stop();
     store.close();
