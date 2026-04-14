@@ -44,6 +44,7 @@ agentinbox source remove <source_id>
 agentinbox source pause <remote_source_id>
 agentinbox source resume <remote_source_id>
 agentinbox source schema <source_id|source_type>
+agentinbox source schema preview <source_kind|source_type> [--config-json ...] [--config-ref ...]
 agentinbox source poll <source_id>
 agentinbox source event <source_id> --native-id <id> --event <variant>
 ```
@@ -55,6 +56,11 @@ resume a paused source.
 
 `source update` replaces persisted `config` and/or `configRef` in place while
 preserving the existing `sourceId` and attached subscriptions.
+
+`source schema preview` resolves a schema before source registration. Builtin
+remote-backed kinds can be previewed directly, for example `github_repo`.
+User-defined remote modules can be previewed with either `remote_source` or
+`remote:<moduleId>` plus `--config-json '{"profilePath":"...","profileConfig":{}}'`.
 
 ## Subscriptions
 

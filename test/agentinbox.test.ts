@@ -555,6 +555,93 @@ test("builtin remote-backed source details expose resolved remote identity", asy
   }
 });
 
+test("source schema preview resolves a user-defined remote module without persisting a source", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview.mjs"),
+      `export default {
+  id: "demo.preview",
+  validateConfig(source) {
+    if (!source.config.token) throw new Error("preview token required");
+  },
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  describeCapabilities() {
+    return {
+      sourceKind: "remote:demo.preview",
+      configSchema: [{ name: "token", type: "string", required: true, description: "Preview token." }],
+      metadataFields: [{ name: "ticketId", type: "string", description: "Ticket id." }],
+      eventVariantExamples: ["ticket.updated"],
+      payloadExamples: [{ id: "T-1" }]
+    };
+  }
+};`,
+      "utf8",
+    );
+
+    const preview = await service.previewSourceSchema({
+      sourceRef: "remote:demo.preview",
+      config: {
+        profilePath: "preview.mjs",
+        profileConfig: { token: "demo-token" },
+      },
+    });
+    assert.equal(preview.sourceType, "remote_source");
+    assert.equal(preview.hostType, "remote_source");
+    assert.equal(preview.sourceKind, "remote:demo.preview");
+    assert.equal(preview.implementationId, "demo.preview");
+    assert.deepEqual(preview.configFields, [
+      { name: "token", type: "string", required: true, description: "Preview token." },
+    ]);
+    assert.deepEqual(preview.metadataFields, [
+      { name: "ticketId", type: "string", description: "Ticket id." },
+    ]);
+    assert.equal(store.listSources().length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("source schema preview supports builtin remote-backed aliases without persisting a source", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const preview = await service.previewSourceSchema({
+      sourceRef: "github_repo",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    assert.equal(preview.sourceType, "github_repo");
+    assert.equal(preview.hostType, "remote_source");
+    assert.equal(preview.sourceKind, "github_repo");
+    assert.equal(preview.implementationId, "builtin.github_repo");
+    assert.ok(preview.subscriptionSchema);
+    assert.deepEqual(preview.subscriptionSchema?.shortcuts, [{
+      name: "pr",
+      description: "Follow one pull request and auto-retire when it closes.",
+      argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+    }]);
+    assert.equal(store.listSources().length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("remote_source capability hooks override resolved schema fields and advertise shortcut/lifecycle support", async () => {
   const { store, service, dir } = await makeService();
   try {

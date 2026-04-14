@@ -21,6 +21,7 @@ going forward.
 - `POST /sources`
 - `GET /sources/{sourceId}`
 - `GET /sources/{sourceId}/schema`
+- `POST /sources/schema-preview`
 - `PATCH /sources/{sourceId}`
 - `DELETE /sources/{sourceId}`
 - `POST /sources/{sourceId}/pause`
@@ -101,6 +102,10 @@ going forward.
   `POST /sources/{sourceId}/events`.
 - `remote_source` is supported and requires `config.profilePath` (and optional
   `config.profileConfig`) when registering.
+- `POST /sources/schema-preview` previews resolved schema without persisting a
+  source. It accepts `sourceRef` plus optional `config` and `configRef`. For a
+  user-defined remote implementation, use either `remote_source` with
+  `config.profilePath`, or `remote:<moduleId>` with the same config payload.
 - `PATCH /sources/{sourceId}` updates persisted `config` and/or `configRef`
   without changing the `sourceId` or existing subscriptions. Active/error
   sources are re-ensured after update; paused sources keep their paused

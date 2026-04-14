@@ -12,6 +12,7 @@ import {
   Inbox,
   InboxItem,
   InboxWatchEvent,
+  PreviewSourceSchemaInput,
   RegisterAgentInput,
   RegisterAgentResult,
   RegisterSourceInput,
@@ -19,6 +20,7 @@ import {
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
   SourceSchema,
+  SourceSchemaPreview,
   SourcePollResult,
   Subscription,
   CleanupPolicy,
@@ -222,6 +224,22 @@ export class AgentInboxService {
   async getResolvedSourceSchema(sourceId: string): Promise<ResolvedSourceSchema> {
     const source = this.getSource(sourceId);
     return this.adapters.resolveSourceSchema(source);
+  }
+
+  async previewSourceSchema(input: PreviewSourceSchemaInput): Promise<SourceSchemaPreview> {
+    const source = buildPreviewSource(input);
+    await this.adapters.sourceAdapterFor(source.sourceType).validateSource?.(source);
+    const schema = await this.adapters.resolveSourceSchema(source);
+    if (input.sourceRef.startsWith("remote:")) {
+      const expectedImplementationId = input.sourceRef.slice("remote:".length);
+      if (schema.implementationId !== expectedImplementationId) {
+        throw new Error(
+          `preview source kind ${input.sourceRef} resolved to implementation ${schema.implementationId}`,
+        );
+      }
+    }
+    const { sourceId: _sourceId, ...preview } = schema;
+    return preview;
   }
 
   async removeSource(
@@ -1673,6 +1691,32 @@ function hasSubscriptionFieldOverride(input: RegisterSubscriptionInput): boolean
     return true;
   }
   return input.filter != null && Object.keys(input.filter).length > 0;
+}
+
+function buildPreviewSource(input: PreviewSourceSchemaInput): SubscriptionSource {
+  const sourceType = sourceTypeForPreviewRef(input.sourceRef);
+  const now = nowIso();
+  return {
+    sourceId: "__preview__",
+    sourceType,
+    sourceKey: `preview:${input.sourceRef}`,
+    configRef: input.configRef ?? null,
+    config: input.config ?? {},
+    status: "active",
+    checkpoint: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function sourceTypeForPreviewRef(sourceRef: string): SubscriptionSource["sourceType"] {
+  if (sourceRef === "local_event" || sourceRef === "remote_source" || sourceRef === "github_repo" || sourceRef === "github_repo_ci" || sourceRef === "feishu_bot") {
+    return sourceRef;
+  }
+  if (sourceRef.startsWith("remote:")) {
+    return "remote_source";
+  }
+  throw new Error(`unknown source kind or type for preview: ${sourceRef}`);
 }
 
 function normalizeTrackedResourceRef(value: string | null | undefined): string | null {

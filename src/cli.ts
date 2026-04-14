@@ -147,6 +147,18 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "schema") {
+    if (normalized[2] === "preview") {
+      const sourceRef = normalized[3];
+      if (!sourceRef) {
+        throw new Error("usage: agentinbox source schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]");
+      }
+      await printRemote(client, "/sources/schema-preview", {
+        sourceRef,
+        configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
+        config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
+      });
+      return;
+    }
     const sourceRef = normalized[2];
     if (!sourceRef) {
       throw new Error("usage: agentinbox source schema <sourceId|sourceType>");
@@ -885,6 +897,7 @@ Usage:
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>
   agentinbox source schema <sourceId|sourceType>
+  agentinbox source schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
 `,
