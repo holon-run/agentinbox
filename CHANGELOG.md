@@ -12,6 +12,21 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.4.0] - 2026-04-15
+
+### Added
+
+- Added iTerm2 runtime-gate session parsing that matches real `it2api list-sessions` output, preventing false terminal-gone conclusions for live iTerm2 targets.
+- Added hardened Codex terminal gating with session-state-backed liveness checks, recent-activity-aware deferral, and stronger visible-input detection for `codex + iTerm2`.
+- Added daemon status runtime metadata so operators can see the daemon version and runtime details instead of inferring them from the CLI process alone.
+- Added explicit agent and target resume commands for recovering terminal targets that were marked offline.
+
+### Changed
+
+- Terminal activation prompts now report current unacked inbox totals instead of historical batch-local new-item counts.
+- Runtime-gate docs and operator guidance now recommend `inbox ack --through` as the default safe inbox-ack workflow.
+- README and bundled AgentInbox skill now document `inbox send`, timer commands, and subscription shortcuts more explicitly.
+
 ## [0.3.0] - 2026-04-15
 
 ### Added
