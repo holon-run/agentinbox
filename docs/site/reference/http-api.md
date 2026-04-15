@@ -43,6 +43,27 @@ going forward.
 - `POST /agents/{agentId}/targets`
 - `DELETE /agents/{agentId}/targets/{targetId}`
 
+## Timers
+
+- `GET /timers`
+- `POST /timers`
+- `POST /timers/{scheduleId}/pause`
+- `POST /timers/{scheduleId}/resume`
+- `DELETE /timers/{scheduleId}`
+
+`POST /timers` accepts a narrow reminder body:
+
+```json
+{
+  "agentId": "agent_...",
+  "at": "2026-04-15T08:00:00+08:00",
+  "message": "Analyze the agentinbox project and prepare today's task plan.",
+  "sender": "timer"
+}
+```
+
+Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseconds. `timezone` is optional and defaults to the daemon host timezone.
+
 ## Subscriptions
 
 - `GET /subscriptions`

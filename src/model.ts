@@ -242,6 +242,41 @@ export interface DirectInboxTextMessageResult {
   activated: boolean;
 }
 
+export type TimerMode = "at" | "every" | "cron";
+export type TimerStatus = "active" | "paused";
+
+export interface AgentTimer {
+  scheduleId: string;
+  agentId: string;
+  status: TimerStatus;
+  mode: TimerMode;
+  at?: string | null;
+  intervalMs?: number | null;
+  cronExpr?: string | null;
+  timezone: string;
+  message: string;
+  sender?: string | null;
+  nextFireAt?: string | null;
+  lastFiredAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RegisterTimerInput {
+  agentId: string;
+  at?: string | null;
+  every?: number | null;
+  cron?: string | null;
+  timezone?: string | null;
+  message: string;
+  sender?: string | null;
+}
+
+export interface UpdateTimerStatusResult {
+  updated: boolean;
+  timer: AgentTimer;
+}
+
 export interface RegisterSubscriptionInput {
   agentId: string;
   sourceId: string;

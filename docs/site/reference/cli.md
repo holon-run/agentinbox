@@ -107,6 +107,18 @@ agentinbox inbox ack [--agent-id <agent_id>] --all
 agentinbox inbox compact <agent_id>
 ```
 
+## Timers
+
+```bash
+agentinbox timer add --agent-id <agent_id> --at 2026-04-15T08:00:00+08:00 --message "..."
+agentinbox timer add --agent-id <agent_id> --every 24h --message "..."
+agentinbox timer add --agent-id <agent_id> --cron "0 8 * * *" --timezone Asia/Shanghai --message "..."
+agentinbox timer list [--agent-id <agent_id>]
+agentinbox timer pause <schedule_id>
+agentinbox timer resume <schedule_id>
+agentinbox timer remove <schedule_id>
+```
+
 ## Maintenance
 
 ```bash

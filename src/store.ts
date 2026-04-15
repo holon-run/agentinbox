@@ -20,6 +20,7 @@ import {
   Inbox,
   InboxItem,
   ListInboxItemsOptions,
+  AgentTimer,
   RegisterAgentInput,
   SourceIdleState,
   Subscription,
@@ -830,6 +831,7 @@ export class AgentInboxStore {
         "delete from source_idle_states where source_id in (select distinct source_id from subscriptions where agent_id = ?)",
         [agentId],
       );
+      this.db.run("delete from timers where agent_id = ?", [agentId]);
       this.db.run("delete from subscriptions where agent_id = ?", [agentId]);
       this.db.run("delete from activation_dispatch_states where agent_id = ?", [agentId]);
       this.db.run("delete from activation_targets where agent_id = ?", [agentId]);
@@ -861,6 +863,105 @@ export class AgentInboxStore {
       [cutoffIso],
     );
     return rows.map((row) => this.mapAgent(row));
+  }
+
+  insertTimer(timer: AgentTimer): void {
+    this.db.run(
+      `
+      insert into timers (
+        schedule_id, agent_id, status, mode, at, interval_ms, cron_expr, timezone,
+        message, sender, next_fire_at, last_fired_at, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        timer.scheduleId,
+        timer.agentId,
+        timer.status,
+        timer.mode,
+        timer.at ?? null,
+        timer.intervalMs ?? null,
+        timer.cronExpr ?? null,
+        timer.timezone,
+        timer.message,
+        timer.sender ?? null,
+        timer.nextFireAt ?? null,
+        timer.lastFiredAt ?? null,
+        timer.createdAt,
+        timer.updatedAt,
+      ],
+    );
+    this.persist();
+  }
+
+  getTimer(scheduleId: string): AgentTimer | null {
+    const row = this.getOne("select * from timers where schedule_id = ?", [scheduleId]);
+    return row ? this.mapTimer(row) : null;
+  }
+
+  listTimers(): AgentTimer[] {
+    const rows = this.getAll("select * from timers order by created_at asc");
+    return rows.map((row) => this.mapTimer(row));
+  }
+
+  listTimersForAgent(agentId: string): AgentTimer[] {
+    const rows = this.getAll("select * from timers where agent_id = ? order by created_at asc", [agentId]);
+    return rows.map((row) => this.mapTimer(row));
+  }
+
+  listDueTimers(cutoffIso: string): AgentTimer[] {
+    const rows = this.getAll(
+      "select * from timers where status = 'active' and next_fire_at is not null and next_fire_at <= ? order by next_fire_at asc, schedule_id asc",
+      [cutoffIso],
+    );
+    return rows.map((row) => this.mapTimer(row));
+  }
+
+  getNearestActiveTimer(): AgentTimer | null {
+    const row = this.getOne(
+      "select * from timers where status = 'active' and next_fire_at is not null order by next_fire_at asc, schedule_id asc limit 1",
+    );
+    return row ? this.mapTimer(row) : null;
+  }
+
+  updateTimer(scheduleId: string, input: Partial<Omit<AgentTimer, "scheduleId" | "agentId" | "createdAt">>): AgentTimer {
+    const current = this.getTimer(scheduleId);
+    if (!current) {
+      throw new Error(`unknown timer: ${scheduleId}`);
+    }
+    this.db.run(
+      `
+      update timers
+      set status = ?, mode = ?, at = ?, interval_ms = ?, cron_expr = ?, timezone = ?,
+          message = ?, sender = ?, next_fire_at = ?, last_fired_at = ?, updated_at = ?
+      where schedule_id = ?
+    `,
+      [
+        input.status ?? current.status,
+        input.mode ?? current.mode,
+        input.at !== undefined ? input.at ?? null : current.at ?? null,
+        input.intervalMs !== undefined ? input.intervalMs ?? null : current.intervalMs ?? null,
+        input.cronExpr !== undefined ? input.cronExpr ?? null : current.cronExpr ?? null,
+        input.timezone ?? current.timezone,
+        input.message ?? current.message,
+        input.sender !== undefined ? input.sender ?? null : current.sender ?? null,
+        input.nextFireAt !== undefined ? input.nextFireAt ?? null : current.nextFireAt ?? null,
+        input.lastFiredAt !== undefined ? input.lastFiredAt ?? null : current.lastFiredAt ?? null,
+        input.updatedAt ?? current.updatedAt,
+        scheduleId,
+      ],
+    );
+    this.persist();
+    return this.getTimer(scheduleId)!;
+  }
+
+  deleteTimer(scheduleId: string): AgentTimer | null {
+    const current = this.getTimer(scheduleId);
+    if (!current) {
+      return null;
+    }
+    this.db.run("delete from timers where schedule_id = ?", [scheduleId]);
+    this.persist();
+    return current;
   }
 
   getActivationDispatchState(agentId: string, targetId: string): ActivationDispatchState | null {
@@ -1532,6 +1633,25 @@ export class AgentInboxStore {
       pendingSummary: row.pending_summary ? String(row.pending_summary) : null,
       pendingSubscriptionIds: parseJson<string[]>(row.pending_subscription_ids_json as string),
       pendingSourceIds: parseJson<string[]>(row.pending_source_ids_json as string),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapTimer(row: Record<string, unknown>): AgentTimer {
+    return {
+      scheduleId: String(row.schedule_id),
+      agentId: String(row.agent_id),
+      status: String(row.status) as AgentTimer["status"],
+      mode: String(row.mode) as AgentTimer["mode"],
+      at: row.at ? String(row.at) : null,
+      intervalMs: row.interval_ms == null ? null : Number(row.interval_ms),
+      cronExpr: row.cron_expr ? String(row.cron_expr) : null,
+      timezone: String(row.timezone),
+      message: String(row.message),
+      sender: row.sender ? String(row.sender) : null,
+      nextFireAt: row.next_fire_at ? String(row.next_fire_at) : null,
+      lastFiredAt: row.last_fired_at ? String(row.last_fired_at) : null,
+      createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
   }

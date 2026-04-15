@@ -24,6 +24,26 @@ export const sourceIdleStates = sqliteTable("source_idle_states", {
   autoPauseAtIdx: index("idx_source_idle_states_auto_pause_at").on(table.autoPauseAt),
 }));
 
+export const timers = sqliteTable("timers", {
+  scheduleId: text("schedule_id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  status: text("status").notNull(),
+  mode: text("mode").notNull(),
+  at: text("at"),
+  intervalMs: integer("interval_ms"),
+  cronExpr: text("cron_expr"),
+  timezone: text("timezone").notNull(),
+  message: text("message").notNull(),
+  sender: text("sender"),
+  nextFireAt: text("next_fire_at"),
+  lastFiredAt: text("last_fired_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  agentNextFireIdx: index("idx_timers_agent_next_fire_at").on(table.agentId, table.nextFireAt),
+  nextFireIdx: index("idx_timers_next_fire_at").on(table.nextFireAt),
+}));
+
 export const agents = sqliteTable("agents", {
   agentId: text("agent_id").primaryKey(),
   status: text("status").notNull(),

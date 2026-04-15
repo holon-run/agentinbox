@@ -162,7 +162,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 5);
+    assert.equal(state.appliedCount, 6);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -179,7 +179,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 5);
+    assert.equal(state.appliedCount, 6);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
@@ -2066,6 +2066,179 @@ test("direct inbox text messages fail cleanly if the inbox item cannot be persis
     assert.equal(dispatcher.calls.length, 0);
 
     store.insertInboxItem = originalInsert;
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("at timers fire once into the inbox and then pause", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-at");
+    service.addWebhookActivationTarget(alpha.agentId, {
+      url: "http://127.0.0.1:9999/timer-at",
+      activationMode: "activation_with_items",
+    });
+
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      at: "2020-01-01T00:00:00.000Z",
+      message: "Prepare today's plan.",
+    });
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const fired = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(fired.length, 1);
+    assert.deepEqual(fired[0].rawPayload, {
+      type: "timer_fired",
+      scheduleId: timer.scheduleId,
+      message: "Prepare today's plan.",
+      sender: "timer",
+    });
+    assert.equal(service.getTimer(timer.scheduleId).status, "paused");
+    assert.equal(service.getTimer(timer.scheduleId).nextFireAt, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("every timers advance nextFireAt after firing", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-every");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      every: 60_000,
+      message: "Stand up reminder",
+    });
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const updated = service.getTimer(timer.scheduleId);
+    assert.equal(updated.status, "active");
+    assert.ok(updated.lastFiredAt);
+    assert.ok(updated.nextFireAt);
+    assert.notEqual(updated.nextFireAt, "2020-01-01T00:00:00.000Z");
+    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent removal and offline GC delete agent timers", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const first = await registerTmuxAgent(service, "timer-remove");
+    const second = await registerTmuxAgent(service, "timer-gc");
+
+    const firstTimer = service.registerTimer({
+      agentId: first.agentId,
+      every: 60_000,
+      message: "First timer",
+    });
+    const secondTimer = service.registerTimer({
+      agentId: second.agentId,
+      cron: "0 8 * * *",
+      timezone: "Asia/Shanghai",
+      message: "Second timer",
+    });
+
+    service.removeAgent(first.agentId);
+    assert.equal(store.getTimer(firstTimer.scheduleId), null);
+    assert.ok(store.getTimer(secondTimer.scheduleId));
+
+    store.updateAgent(second.agentId, {
+      status: "offline",
+      offlineSince: "2020-01-01T00:00:00.000Z",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-timer-gc",
+      updatedAt: nowIso(),
+      lastSeenAt: "2020-01-01T00:00:00.000Z",
+    });
+    service.gc();
+    assert.equal(store.getTimer(secondTimer.scheduleId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cron timers accept sunday as 7 and leap-day schedules remain active", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-cron");
+
+    const sunday = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "0 8 * * 7",
+      timezone: "UTC",
+      message: "Sunday reminder",
+    });
+    assert.equal(sunday.status, "active");
+    assert.ok(sunday.nextFireAt);
+
+    const leap = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "0 0 29 2 *",
+      timezone: "UTC",
+      message: "Leap reminder",
+    });
+    assert.equal(leap.status, "active");
+    assert.ok(leap.nextFireAt);
+    assert.match(leap.nextFireAt ?? "", /^2028-02-29T00:00:00\.000Z$/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("timer firing is idempotent per scheduled occurrence", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-idempotent");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      every: 60_000,
+      message: "Stand up reminder",
+    });
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+
+    await (service as unknown as { fireTimer(timer: { scheduleId: string; nextFireAt?: string | null; message: string; sender?: string | null; mode: "every"; intervalMs?: number | null; cronExpr?: string | null; at?: string | null; timezone: string }, now: string): Promise<void> }).fireTimer(
+      service.getTimer(timer.scheduleId) as never,
+      "2020-01-01T00:00:00.000Z",
+    );
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+    await (service as unknown as { fireTimer(timer: { scheduleId: string; nextFireAt?: string | null; message: string; sender?: string | null; mode: "every"; intervalMs?: number | null; cronExpr?: string | null; at?: string | null; timezone: string }, now: string): Promise<void> }).fireTimer(
+      service.getTimer(timer.scheduleId) as never,
+      "2020-01-01T00:00:01.000Z",
+    );
+
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].sourceNativeId, `${timer.scheduleId}:2020-01-01T00:00:00.000Z`);
   } finally {
     await service.stop();
     store.close();
