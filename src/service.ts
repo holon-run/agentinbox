@@ -54,6 +54,7 @@ import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import {
   assignedAgentIdFromContext,
+  deriveInlineItemPreview,
   detectTerminalContext,
   renderAgentPrompt,
   TerminalDispatcher,
@@ -1828,6 +1829,7 @@ export class AgentInboxService {
     const inbox = this.ensureInboxForAgent(input.agentId);
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
     const totalUnackedCount = input.totalUnackedCount ?? this.store.countInboxItems(inbox.inboxId, false);
+    let terminalPrompt: string | null = null;
     try {
       if (target.kind === "terminal") {
         const gate = await this.activationGate.evaluate(target);
@@ -1851,7 +1853,17 @@ export class AgentInboxService {
           });
           return "deferred";
         }
-        const promptFingerprint = terminalReminderFingerprint(totalUnackedCount, input.summary, input.items);
+        const preview = totalUnackedCount === 1 && input.items.length === 1
+          ? deriveInlineItemPreview(input.items[0], input.summary)
+          : null;
+        const prompt = renderAgentPrompt({
+          inboxId: inbox.inboxId,
+          totalUnackedCount,
+          summary: input.summary,
+          preview,
+        });
+        terminalPrompt = prompt;
+        const promptFingerprint = terminalReminderFingerprint(prompt, input.items);
         if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
           this.store.upsertActivationDispatchState({
             agentId: input.agentId,
@@ -1867,11 +1879,6 @@ export class AgentInboxService {
           });
           return "suppressed";
         }
-        const prompt = renderAgentPrompt({
-          inboxId: inbox.inboxId,
-          totalUnackedCount,
-          summary: input.summary,
-        });
         await this.terminalDispatcher.dispatch(target, prompt);
       } else {
         const activation: Activation = {
@@ -1902,7 +1909,7 @@ export class AgentInboxService {
         status: "notified",
         leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
         lastNotifiedFingerprint: target.kind === "terminal"
-          ? terminalReminderFingerprint(totalUnackedCount, input.summary, input.items)
+          ? terminalReminderFingerprint(terminalPrompt ?? "", input.items)
           : state?.lastNotifiedFingerprint ?? null,
         pendingNewItemCount: 0,
         pendingSummary: null,
@@ -2683,14 +2690,9 @@ function latestSummary(entries: Array<{ summary: string | null }>): string | nul
   return null;
 }
 
-function terminalReminderFingerprint(
-  totalUnackedCount: number,
-  summary: string | null,
-  items: ActivationItem[],
-): string {
+function terminalReminderFingerprint(prompt: string, items: ActivationItem[]): string {
   const payload = JSON.stringify({
-    totalUnackedCount,
-    summary: summary ?? null,
+    prompt,
     itemIds: items
       .map((item) => item.itemId)
       .sort((left, right) => left.localeCompare(right)),

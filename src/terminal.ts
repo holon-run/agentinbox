@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { RuntimeKind, TerminalActivationTarget, TerminalBackend } from "./model";
+import { ActivationItem, RuntimeKind, TerminalActivationTarget, TerminalBackend } from "./model";
 
 const execFileAsync = promisify(execFile);
 type ExecFileAsyncLike = (
@@ -68,14 +68,48 @@ export function renderAgentPrompt(input: {
   totalUnackedCount?: number;
   newItemCount?: number;
   summary?: string | null;
+  preview?: string | null;
 }): string {
   const totalUnackedCount = input.totalUnackedCount ?? input.newItemCount ?? 0;
   const itemWord = totalUnackedCount === 1 ? "item" : "items";
   const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} in inbox ${input.inboxId}.`;
+  if (totalUnackedCount === 1 && input.preview) {
+    const suffix = /(?:[.!?…]|\.{3})$/.test(input.preview) ? "" : ".";
+    return `${base} Preview: ${input.preview}${suffix} Read the inbox for full details if needed.`;
+  }
   if (input.summary) {
     return `${base} Summary: ${input.summary}. Please read the inbox, process them, and ack when finished.`;
   }
   return `${base} Please read the inbox, process them, and ack when finished.`;
+}
+
+const MAX_INLINE_PREVIEW_INPUT_CHARS = 240;
+const MAX_INLINE_PREVIEW_CHARS = 96;
+const INLINE_PREVIEW_KEYS = ["message", "text", "body", "title"] as const;
+
+export function deriveInlineItemPreview(item: ActivationItem, summary?: string | null): string | null {
+  const candidates: string[] = [];
+  for (const key of INLINE_PREVIEW_KEYS) {
+    const rawPayloadValue = item.rawPayload[key];
+    if (typeof rawPayloadValue === "string") {
+      candidates.push(rawPayloadValue);
+    }
+    const metadataValue = item.metadata[key];
+    if (typeof metadataValue === "string") {
+      candidates.push(metadataValue);
+    }
+  }
+  if (isPreviewFriendlySummary(summary)) {
+    candidates.push(summary);
+  }
+
+  for (const candidate of candidates) {
+    const preview = normalizeInlinePreview(candidate);
+    if (preview) {
+      return preview;
+    }
+  }
+  return null;
 }
 
 export function assignedAgentIdFromContext(input: {
@@ -213,6 +247,47 @@ function normalizeItermSessionId(raw: string | undefined): string | null {
   }
   const parts = value.split(":");
   return parts[parts.length - 1] || null;
+}
+
+function normalizeInlinePreview(value: string): string | null {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length > MAX_INLINE_PREVIEW_INPUT_CHARS) {
+    return null;
+  }
+  if (looksStructured(normalized)) {
+    return null;
+  }
+  if (normalized.length <= MAX_INLINE_PREVIEW_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_INLINE_PREVIEW_CHARS - 3).trimEnd()}...`;
+}
+
+function isPreviewFriendlySummary(summary?: string | null): summary is string {
+  if (typeof summary !== "string") {
+    return false;
+  }
+  const normalized = summary.trim();
+  if (!normalized) {
+    return false;
+  }
+  if (!normalized.includes(" ")) {
+    return false;
+  }
+  if (/^[a-z0-9_.-]+:/i.test(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function looksStructured(value: string): boolean {
+  if ((value.startsWith("{") && value.endsWith("}")) || (value.startsWith("[") && value.endsWith("]"))) {
+    return true;
+  }
+  return false;
 }
 
 function detectRuntimeContext(env: NodeJS.ProcessEnv): {

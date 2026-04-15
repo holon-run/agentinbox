@@ -2477,6 +2477,152 @@ test("terminal activation prompts use the current unacked inbox total", async ()
   }
 });
 
+test("single preview-friendly unacked item is inlined into the terminal prompt", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-inline-preview",
+      tmuxPaneId: "%56",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-inline-preview",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-inline-preview",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: { message: "Review PR #51 CI failure and push a fix." },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /Preview: Review PR #51 CI failure and push a fix\./);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /Read the inbox for full details if needed\./);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("single non-preview-friendly item falls back to the generic terminal prompt", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-inline-preview-fallback",
+      tmuxPaneId: "%57",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-inline-preview-fallback",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-inline-structured",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: { body: "{\"kind\":\"structured\",\"value\":42}" },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.doesNotMatch(terminalDispatcher.calls[0]!.prompt, /Preview:/);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /Please read the inbox, process them, and ack when finished\./);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("preview-aware terminal prompts still dedupe unchanged lease reminders", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-inline-preview-dedupe",
+      tmuxPaneId: "%58",
+      notifyLeaseMs: 50,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-inline-preview-dedupe",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-inline-preview-dedupe",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: { message: "Review PR #51 CI failure and push a fix." },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const firstPrompt = terminalDispatcher.calls[0]!.prompt;
+    assert.match(firstPrompt, /Preview: Review PR #51 CI failure and push a fix\./);
+
+    await sleep(70);
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(state?.lastNotifiedFingerprint);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("lease expiry does not repeat identical terminal prompts for unchanged inbox state", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { service, dir, store } = await makeService({
