@@ -1591,10 +1591,12 @@ export class AgentInboxService {
     try {
       const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
       if (!state) {
+        const inbox = this.ensureInboxForAgent(buffer.agentId);
         const dispatched = await this.dispatchActivationTarget({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
           newItemCount: entries.length,
+          totalUnackedCount: this.store.countInboxItems(inbox.inboxId, false),
           summary: entries[0]?.summary ?? null,
           subscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
           sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
@@ -1672,6 +1674,7 @@ export class AgentInboxService {
       agentId,
       targetId,
       newItemCount: state.pendingNewItemCount > 0 ? state.pendingNewItemCount : unacked,
+      totalUnackedCount: unacked,
       summary: state.pendingSummary,
       subscriptionIds: state.pendingSubscriptionIds,
       sourceIds: state.pendingSourceIds,
@@ -1706,6 +1709,7 @@ export class AgentInboxService {
     agentId: string;
     targetId: string;
     newItemCount: number;
+    totalUnackedCount?: number;
     summary: string | null;
     subscriptionIds: string[];
     sourceIds: string[];
@@ -1717,6 +1721,7 @@ export class AgentInboxService {
     }
     const inbox = this.ensureInboxForAgent(input.agentId);
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
+    const totalUnackedCount = input.totalUnackedCount ?? this.store.countInboxItems(inbox.inboxId, false);
     try {
       if (target.kind === "terminal") {
         const gate = await this.activationGate.evaluate(target);
@@ -1739,7 +1744,6 @@ export class AgentInboxService {
           });
           return "deferred";
         }
-        const totalUnackedCount = this.store.countInboxItems(inbox.inboxId, false);
         const prompt = renderAgentPrompt({
           inboxId: inbox.inboxId,
           totalUnackedCount,
