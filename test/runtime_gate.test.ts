@@ -233,7 +233,11 @@ test("ClaudeCodeRuntimePresenceProbe does not support targets without PID", () =
 });
 
 test("ClaudeCodeRuntimePresenceProbe reports alive for live process with valid session", async () => {
-  const probe = new ClaudeCodeRuntimePresenceProbe(() => {});
+  const mockSessionReader = async () => ({
+    sessionId: "f6037b9e-b970-475f-b339-5c5b286aceac",
+    cwd: "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox",
+  });
+  const probe = new ClaudeCodeRuntimePresenceProbe(() => {}, mockSessionReader);
   assert.equal(await probe.check(makeClaudeCodeTarget()), "alive");
 });
 
@@ -259,4 +263,59 @@ test("ClaudeCodeTerminalStateProbe returns unknown for missing PID/sessionId", a
     presence: "unknown",
     busy: "unknown",
   });
+});
+
+test("ClaudeCodeRuntimePresenceProbe reports gone when session reader returns null", async () => {
+  const mockSessionReader = async () => null;
+  const probe = new ClaudeCodeRuntimePresenceProbe(() => {}, mockSessionReader);
+  assert.equal(await probe.check(makeClaudeCodeTarget()), "gone");
+});
+
+test("ClaudeCodeRuntimePresenceProbe reports gone when session ID mismatches", async () => {
+  const mockSessionReader = async () => ({
+    sessionId: "different-session-id",
+    cwd: "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox",
+  });
+  const probe = new ClaudeCodeRuntimePresenceProbe(() => {}, mockSessionReader);
+  assert.equal(await probe.check(makeClaudeCodeTarget()), "gone");
+});
+
+test("ClaudeCodeTerminalStateProbe detects busy state from recent log activity", async () => {
+  const now = Date.now();
+  const mockSessionReader = async () => ({
+    sessionId: "f6037b9e-b970-475f-b339-5c5b286aceac",
+    cwd: "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox",
+  });
+  const mockStatReader = async () => ({ mtimeMs: now - 1000 }); // 1 second ago
+  const mockSleep = async () => {};
+  const probe = new ClaudeCodeTerminalStateProbe(mockSessionReader, mockStatReader, mockSleep);
+
+  const result = await probe.check(makeClaudeCodeTarget());
+  assert.equal(result.busy, "busy");
+});
+
+test("ClaudeCodeTerminalStateProbe reports idle for older log activity", async () => {
+  const now = Date.now();
+  const mockSessionReader = async () => ({
+    sessionId: "f6037b9e-b970-475f-b339-5c5b286aceac",
+    cwd: "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox",
+  });
+  const mockStatReader = async () => ({ mtimeMs: now - 10000 }); // 10 seconds ago
+  const mockSleep = async () => {};
+  const probe = new ClaudeCodeTerminalStateProbe(mockSessionReader, mockStatReader, mockSleep);
+
+  const result = await probe.check(makeClaudeCodeTarget());
+  assert.equal(result.busy, "idle");
+});
+
+test("Iterm2TerminalStateProbe does not support claude_code runtime", () => {
+  const probe = new Iterm2TerminalStateProbe();
+  const claudeTarget = makeClaudeCodeTarget();
+  assert.equal(probe.supports(claudeTarget), false);
+});
+
+test("Iterm2TerminalStateProbe supports non-claude iTerm2 targets", () => {
+  const probe = new Iterm2TerminalStateProbe();
+  const codexTarget = makeItermTarget(); // This has runtimeKind: "codex"
+  assert.equal(probe.supports(codexTarget), true);
 });
