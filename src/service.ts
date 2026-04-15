@@ -51,7 +51,12 @@ import { generateId, nowIso } from "./util";
 import { getSourceSchema } from "./source_schema";
 import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
-import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
+import {
+  assignedAgentIdFromContext,
+  detectTerminalContext,
+  renderAgentPrompt,
+  TerminalDispatcher,
+} from "./terminal";
 import { LifecycleSignal } from "./sources/remote_profiles";
 import { ActivationGate, DefaultActivationGate } from "./runtime_gate";
 
@@ -101,6 +106,27 @@ export interface InboxWatchSession {
   initialItems: InboxItem[];
   start(): void;
   close(): void;
+}
+
+type ResumeTargetReason =
+  | "already_active"
+  | "terminal_available"
+  | "terminal_busy"
+  | "terminal_gone"
+  | "probe_unknown"
+  | "webhook_resumed";
+
+export interface ResumeActivationTargetResult {
+  targetId: string;
+  resumed: boolean;
+  status: ActivationTarget["status"];
+  reason: ResumeTargetReason;
+}
+
+export interface ResumeAgentResult {
+  resumed: boolean;
+  agent: Agent;
+  targets: ResumeActivationTargetResult[];
 }
 
 export class AgentInboxService {
@@ -653,6 +679,59 @@ export class AgentInboxService {
     this.store.deleteActivationTarget(agentId, targetId);
     this.reconcileAgentStatus(agentId);
     return { removed: true };
+  }
+
+  async resumeAgent(agentId: string): Promise<ResumeAgentResult> {
+    this.getAgent(agentId);
+    const targets = this.store.listActivationTargetsForAgent(agentId);
+    const results: ResumeActivationTargetResult[] = [];
+    for (const target of targets) {
+      results.push(await this.resumeActivationTarget(agentId, target.targetId));
+    }
+    this.reconcileAgentStatus(agentId);
+    return {
+      resumed: results.some((result) => result.resumed),
+      agent: this.getAgent(agentId),
+      targets: results,
+    };
+  }
+
+  async resumeActivationTarget(agentId: string, targetId: string): Promise<ResumeActivationTargetResult> {
+    const target = this.getActivationTarget(targetId);
+    if (target.agentId !== agentId) {
+      throw new Error(`activation target ${targetId} does not belong to agent ${agentId}`);
+    }
+    if (target.status === "active") {
+      return {
+        targetId: target.targetId,
+        resumed: false,
+        status: target.status,
+        reason: "already_active",
+      };
+    }
+
+    let result: ResumeActivationTargetResult;
+    if (target.kind === "terminal") {
+      result = await this.resumeTerminalActivationTarget(target);
+    } else {
+      const now = nowIso();
+      this.store.updateActivationTargetRuntime(target.targetId, {
+        status: "active",
+        offlineSince: null,
+        consecutiveFailures: 0,
+        lastError: null,
+        updatedAt: now,
+        lastSeenAt: now,
+      });
+      result = {
+        targetId: target.targetId,
+        resumed: true,
+        status: "active",
+        reason: "webhook_resumed",
+      };
+    }
+    this.reconcileAgentStatus(agentId);
+    return result;
   }
 
   async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
@@ -1907,6 +1986,47 @@ export class AgentInboxService {
       updatedAt: now,
       lastSeenAt: agent.lastSeenAt,
     });
+  }
+
+  private async resumeTerminalActivationTarget(target: TerminalActivationTarget): Promise<ResumeActivationTargetResult> {
+    const probeStatus = await this.terminalDispatcher.probeStatus(target);
+    const now = nowIso();
+    if (probeStatus === "available") {
+      this.store.updateActivationTargetRuntime(target.targetId, {
+        status: "active",
+        offlineSince: null,
+        consecutiveFailures: 0,
+        lastError: null,
+        updatedAt: now,
+        lastSeenAt: now,
+      });
+      return {
+        targetId: target.targetId,
+        resumed: true,
+        status: "active",
+        reason: "terminal_available",
+      };
+    }
+    if (probeStatus === "gone") {
+      this.store.updateActivationTargetRuntime(target.targetId, {
+        status: "offline",
+        offlineSince: target.offlineSince ?? now,
+        updatedAt: now,
+        lastError: target.lastError ?? "terminal gone",
+      });
+      return {
+        targetId: target.targetId,
+        resumed: false,
+        status: "offline",
+        reason: "terminal_gone",
+      };
+    }
+    return {
+      targetId: target.targetId,
+      resumed: false,
+      status: "offline",
+      reason: "probe_unknown",
+    };
   }
 
   private runLifecycleCleanupPass(nowMs: number): { removedSubscriptions: number; affectedSourceIds: string[] } {

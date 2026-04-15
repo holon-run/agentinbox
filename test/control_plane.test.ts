@@ -832,6 +832,48 @@ test("cli inbox send writes a direct text message into the target inbox", () => 
   }
 });
 
+test("cli agent resume and target resume commands are available", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-agent-resume-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%964",
+    CODEX_THREAD_ID: "thread-agent-resume-cli",
+  };
+
+  try {
+    const register = runCli(["agent", "register"], env);
+    assert.equal(register.status, 0, register.stderr);
+    const registered = JSON.parse(register.stdout) as { agent: { agentId: string }; terminalTarget: { targetId: string } };
+
+    const targetResume = runCli([
+      "agent",
+      "target",
+      "resume",
+      registered.agent.agentId,
+      registered.terminalTarget.targetId,
+    ], env);
+    assert.equal(targetResume.status, 0, targetResume.stderr);
+    const targetPayload = JSON.parse(targetResume.stdout) as { resumed: boolean; status: string; reason: string };
+    assert.equal(targetPayload.resumed, false);
+    assert.equal(targetPayload.status, "active");
+    assert.equal(targetPayload.reason, "already_active");
+
+    const agentResume = runCli(["agent", "resume", registered.agent.agentId], env);
+    assert.equal(agentResume.status, 0, agentResume.stderr);
+    const agentPayload = JSON.parse(agentResume.stdout) as { resumed: boolean; agent: { status: string }; targets: Array<{ reason: string }> };
+    assert.equal(agentPayload.resumed, false);
+    assert.equal(agentPayload.agent.status, "active");
+    assert.equal(agentPayload.targets[0]?.reason, "already_active");
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli timer add and list manage agent-bound reminder timers", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-timer-"));
   const env = {
@@ -2156,6 +2198,100 @@ test("control plane can remove agents and gc stale offline agents", async () => 
       const gcResponse = await client.request<{ removedAgents: number } & { deleted?: number }>("/gc", {});
       assert.equal(gcResponse.statusCode, 200);
       assert.equal(gcResponse.data.removedAgents, 1);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane exposes target and agent resume for offline recovery", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-resume-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  const terminalDispatcher = new class extends TerminalDispatcher {
+    override async probeStatus(): Promise<"available" | "gone" | "unknown"> {
+      return "available";
+    }
+  }(async () => ({ stdout: "", stderr: "" }));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, terminalDispatcher);
+  const server = createServer(service);
+  await adapters.start();
+  await service.start();
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const registered = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-resume",
+        tmuxPaneId: "%950",
+        notifyLeaseMs: 200,
+      });
+      const agentId = registered.data.agent.agentId;
+      const target = service.listActivationTargets(agentId)[0];
+      const offlineAt = "2026-04-01T00:00:00.000Z";
+      store.updateActivationTargetRuntime(target!.targetId, {
+        status: "offline",
+        offlineSince: offlineAt,
+        consecutiveFailures: 2,
+        lastError: "probe bug",
+        updatedAt: offlineAt,
+      });
+      store.updateAgent(agentId, {
+        status: "offline",
+        offlineSince: offlineAt,
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-resume",
+        updatedAt: offlineAt,
+        lastSeenAt: offlineAt,
+      });
+
+      const targetResume = await client.request<{ resumed: boolean; status: string; reason: string }>(
+        `/agents/${encodeURIComponent(agentId)}/targets/${encodeURIComponent(target!.targetId)}/resume`,
+        {},
+      );
+      assert.equal(targetResume.statusCode, 200);
+      assert.equal(targetResume.data.resumed, true);
+      assert.equal(targetResume.data.status, "active");
+      assert.equal(targetResume.data.reason, "terminal_available");
+
+      store.updateActivationTargetRuntime(target!.targetId, {
+        status: "offline",
+        offlineSince: offlineAt,
+        consecutiveFailures: 1,
+        lastError: "probe bug again",
+        updatedAt: offlineAt,
+      });
+      store.updateAgent(agentId, {
+        status: "offline",
+        offlineSince: offlineAt,
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-resume",
+        updatedAt: offlineAt,
+        lastSeenAt: offlineAt,
+      });
+
+      const agentResume = await client.request<{ resumed: boolean; agent: { status: string }; targets: Array<{ resumed: boolean }> }>(
+        `/agents/${encodeURIComponent(agentId)}/resume`,
+        {},
+      );
+      assert.equal(agentResume.statusCode, 200);
+      assert.equal(agentResume.data.resumed, true);
+      assert.equal(agentResume.data.agent.status, "active");
+      assert.equal(agentResume.data.targets.length, 1);
+      assert.equal(agentResume.data.targets[0]?.resumed, true);
     } finally {
       await started.close();
     }

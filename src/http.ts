@@ -516,6 +516,25 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.removeAgent(decodeURIComponent(params.agentId));
   });
 
+  app.post("/agents/:agentId/resume", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.resumeAgent(decodeURIComponent(params.agentId));
+  });
+
   app.get("/agents/:agentId/targets", {
     schema: {
       tags: ["agents"],
@@ -599,6 +618,26 @@ function buildFastifyServer(service: AgentInboxService) {
   }, async (request) => {
     const params = request.params as { agentId: string; targetId: string };
     return service.removeActivationTarget(decodeURIComponent(params.agentId), decodeURIComponent(params.targetId));
+  });
+
+  app.post("/agents/:agentId/targets/:targetId/resume", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId", "targetId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          targetId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; targetId: string };
+    return service.resumeActivationTarget(decodeURIComponent(params.agentId), decodeURIComponent(params.targetId));
   });
 
   app.get("/timers", {
