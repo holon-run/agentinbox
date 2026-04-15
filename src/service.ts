@@ -2769,7 +2769,7 @@ function zonedDateParts(date: Date, timezone: string): {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    hour12: false,
+    hourCycle: "h23",
     weekday: "short",
   });
   const entries = Object.fromEntries(
@@ -2777,11 +2777,14 @@ function zonedDateParts(date: Date, timezone: string): {
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, part.value]),
   ) as Record<string, string>;
+  const hour = Number(entries.hour);
   return {
     year: Number(entries.year),
     month: Number(entries.month),
     day: Number(entries.day),
-    hour: Number(entries.hour),
+    // Some ICU builds format midnight as 24:00 even for exact timestamps.
+    // Normalize that representation so cron matching stays cross-platform.
+    hour: hour === 24 ? 0 : hour,
     minute: Number(entries.minute),
     dayOfWeek: weekdayToNumber(entries.weekday),
   };
