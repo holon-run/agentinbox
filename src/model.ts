@@ -133,6 +133,7 @@ export interface ActivationDispatchState {
   targetId: string;
   status: ActivationDispatchStatus;
   leaseExpiresAt: string | null;
+  lastNotifiedFingerprint: string | null;
   pendingNewItemCount: number;
   pendingSummary: string | null;
   pendingSubscriptionIds: string[];

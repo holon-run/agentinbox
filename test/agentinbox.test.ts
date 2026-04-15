@@ -184,7 +184,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 7);
+    assert.equal(state.appliedCount, 8);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -201,7 +201,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 7);
+    assert.equal(state.appliedCount, 8);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
@@ -1491,6 +1491,7 @@ test("subscription remove preserves unrelated activation dispatch state", async 
       targetId: registered.terminalTarget.targetId,
       status: "notified",
       leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      lastNotifiedFingerprint: null,
       pendingNewItemCount: 1,
       pendingSummary: "standing-subscription",
       pendingSubscriptionIds: [first.subscriptionId],
@@ -2469,6 +2470,194 @@ test("terminal activation prompts use the current unacked inbox total", async ()
     assert.equal(terminalDispatcher.calls.length, 2);
     assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item in inbox/);
     assert.doesNotMatch(terminalDispatcher.calls[1]!.prompt, /2 new items arrived/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lease expiry does not repeat identical terminal prompts for unchanged inbox state", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-terminal-reminder-dedupe",
+      tmuxPaneId: "%53",
+      notifyLeaseMs: 50,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-terminal-reminder-dedupe",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-reminder-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+
+    await sleep(70);
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(state);
+    assert.equal(state.status, "notified");
+    assert.ok(state.leaseExpiresAt);
+    assert.ok(Date.parse(state.leaseExpiresAt!) > Date.parse(state.updatedAt));
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("dirty terminal reminders re-notify only when the effective prompt changes", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-terminal-reminder-changes",
+      tmuxPaneId: "%54",
+      notifyLeaseMs: 50,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-terminal-reminder-changes",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-change-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-change-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+
+    await sleep(70);
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 2);
+    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 2 unacked items in inbox/);
+    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(state?.lastNotifiedFingerprint);
+    assert.equal(state?.pendingNewItemCount, 0);
+    assert.equal(state?.pendingSummary, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("terminal reminder fingerprints use the canonical unacked item set", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-terminal-reminder-canonical-items",
+      tmuxPaneId: "%55",
+      notifyLeaseMs: 50,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-terminal-reminder-canonical-items",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-canonical-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    const initialState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(initialState?.lastNotifiedFingerprint);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-canonical-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+
+    const allItems = service.listInboxItems(registered.agent.agentId, { includeAcked: false });
+    assert.equal(allItems.length, 2);
+    service.ackInboxItemsThrough(registered.agent.agentId, allItems[0]!.itemId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 2);
+    const updatedState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(updatedState?.lastNotifiedFingerprint);
+    assert.notEqual(updatedState?.lastNotifiedFingerprint, initialState?.lastNotifiedFingerprint);
+    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item in inbox/);
   } finally {
     await service.stop();
     store.close();
