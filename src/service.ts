@@ -37,6 +37,7 @@ import {
   WatchInboxOptions,
   WebhookActivationTarget,
 } from "./model";
+import { createHash } from "node:crypto";
 import { AgentInboxStore } from "./store";
 import { AdapterRegistry } from "./adapters";
 import {
@@ -1671,15 +1672,26 @@ export class AgentInboxService {
       const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
       if (!state) {
         const inbox = this.ensureInboxForAgent(buffer.agentId);
+        const unackedItems = this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => ({
+          itemId: item.itemId,
+          sourceId: item.sourceId,
+          sourceNativeId: item.sourceNativeId,
+          eventVariant: item.eventVariant,
+          inboxId: item.inboxId,
+          occurredAt: item.occurredAt,
+          metadata: item.metadata,
+          rawPayload: item.rawPayload,
+          deliveryHandle: item.deliveryHandle,
+        }));
         const dispatched = await this.dispatchActivationTarget({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
           newItemCount: entries.length,
-          totalUnackedCount: this.store.countInboxItems(inbox.inboxId, false),
-          summary: entries[0]?.summary ?? null,
+          totalUnackedCount: unackedItems.length,
+          summary: latestSummary(entries),
           subscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
           sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
-          items: entries.map((entry) => entry.item),
+          items: unackedItems,
         });
         if (dispatched === "retryable_failure") {
           this.upsertDirtyDispatchState(buffer.agentId, buffer.targetId, entries);
@@ -2676,11 +2688,14 @@ function terminalReminderFingerprint(
   summary: string | null,
   items: ActivationItem[],
 ): string {
-  return JSON.stringify({
+  const payload = JSON.stringify({
     totalUnackedCount,
     summary: summary ?? null,
-    itemIds: items.map((item) => item.itemId),
+    itemIds: items
+      .map((item) => item.itemId)
+      .sort((left, right) => left.localeCompare(right)),
   });
+  return createHash("sha256").update(payload).digest("hex");
 }
 
 function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {
