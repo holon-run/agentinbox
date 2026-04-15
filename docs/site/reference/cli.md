@@ -23,6 +23,10 @@ agentinbox daemon stop
 agentinbox daemon status
 ```
 
+`daemon status` returns machine-readable JSON including the daemon PID,
+transport, and runtime metadata such as the running `version`, `startedAt`,
+`command`, and `nodeVersion` when they can be determined locally.
+
 ## Agent
 
 ```bash

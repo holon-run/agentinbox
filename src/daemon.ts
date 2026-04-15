@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { AgentInboxClient } from "./client";
 import { resolveAgentInboxHome, resolveDaemonPaths, type ClientTransport } from "./paths";
 
@@ -23,12 +23,17 @@ export interface DaemonStartResult {
 export interface DaemonStatusResult {
   running: boolean;
   pid: number | null;
+  version: string | null;
+  startedAt: string | null;
+  command: string | null;
+  nodeVersion: string | null;
   pidPath: string;
   logPath: string;
   transport: ClientTransport;
 }
 
 const START_TIMEOUT_MS = 15_000;
+const PACKAGE_VERSION = readOwnPackageVersion();
 
 export async function ensureDaemonForClient(options: DaemonCliOptions = {}): Promise<ClientTransport> {
   const transport = resolveDaemonClientTransport(options);
@@ -121,15 +126,24 @@ export async function daemonStatus(options: DaemonCliOptions = {}): Promise<Daem
     return {
       running: false,
       pid: null,
+      version: null,
+      startedAt: null,
+      command: null,
+      nodeVersion: null,
       pidPath,
       logPath,
       transport,
     };
   }
 
+  const processInfo = pid == null ? null : readProcessMetadata(pid);
   return {
     running: await canReachHealthz(transport),
     pid,
+    version: pid == null ? null : PACKAGE_VERSION,
+    startedAt: processInfo?.startedAt ?? null,
+    command: processInfo?.command ?? null,
+    nodeVersion: processInfo?.nodeVersion ?? null,
     pidPath,
     logPath,
     transport,
@@ -218,6 +232,24 @@ async function canReachHealthz(transport: ClientTransport): Promise<boolean> {
   }
 }
 
+function readOwnPackageVersion(): string | null {
+  const candidatePaths = [
+    path.join(__dirname, "..", "package.json"),
+    path.join(__dirname, "..", "..", "package.json"),
+  ];
+  for (const candidate of candidatePaths) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as { version?: unknown };
+      if (typeof parsed.version === "string" && parsed.version.length > 0) {
+        return parsed.version;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 async function waitForHealthz(transport: ClientTransport, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -262,6 +294,52 @@ function readPidFile(pidPath: string): number | null {
   } catch {
     return null;
   }
+}
+
+function readProcessMetadata(pid: number): {
+  startedAt: string | null;
+  command: string | null;
+  nodeVersion: string | null;
+} | null {
+  try {
+    const output = execFileSync("ps", ["-o", "lstart=", "-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trimEnd();
+    if (!output) {
+      return null;
+    }
+    const firstNonSpace = output.search(/\S/);
+    if (firstNonSpace < 0) {
+      return null;
+    }
+    const trimmed = output.slice(firstNonSpace);
+    const match = trimmed.match(/^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/);
+    if (!match) {
+      return {
+        startedAt: null,
+        command: trimmed,
+        nodeVersion: inferNodeVersionFromCommand(trimmed),
+      };
+    }
+    const [, startedAtRaw, command] = match;
+    const startedAtMs = Date.parse(startedAtRaw);
+    return {
+      startedAt: Number.isNaN(startedAtMs) ? null : new Date(startedAtMs).toISOString(),
+      command: command || null,
+      nodeVersion: inferNodeVersionFromCommand(command),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function inferNodeVersionFromCommand(command: string | null): string | null {
+  if (!command) {
+    return null;
+  }
+  const match = command.match(/node\/(v\d+\.\d+\.\d+)\//);
+  return match ? match[1] : null;
 }
 
 function isProcessAlive(pid: number): boolean {

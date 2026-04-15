@@ -190,6 +190,7 @@ test("daemonStatus removes stale pid files", async () => {
 
 test("cli auto-starts the daemon for normal commands and daemon stop shuts it down", () => {
   const repoDir = path.resolve(__dirname, "..");
+  const packageVersion = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8")) as { version: string };
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-autostart-home-"));
   const env = {
     ...process.env,
@@ -213,9 +214,25 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
       timeout: 25_000,
     });
     assert.equal(daemonState.status, 0, daemonState.stderr);
-    const parsedDaemon = JSON.parse(daemonState.stdout) as { running: boolean; pid: number | null };
+    const parsedDaemon = JSON.parse(daemonState.stdout) as {
+      running: boolean;
+      pid: number | null;
+      version: string | null;
+      startedAt: string | null;
+      command: string | null;
+      nodeVersion: string | null;
+      pidPath: string;
+      logPath: string;
+    };
     assert.equal(parsedDaemon.running, true);
     assert.ok(parsedDaemon.pid && parsedDaemon.pid > 0);
+    assert.equal(parsedDaemon.version, packageVersion.version);
+    assert.equal(typeof parsedDaemon.command, "string");
+    assert.ok(parsedDaemon.command && parsedDaemon.command.includes("serve"));
+    assert.equal(typeof parsedDaemon.startedAt, "string");
+    assert.ok(parsedDaemon.startedAt && !Number.isNaN(Date.parse(parsedDaemon.startedAt)));
+    assert.equal(typeof parsedDaemon.pidPath, "string");
+    assert.equal(typeof parsedDaemon.logPath, "string");
 
     const stopped = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "stop"], {
       cwd: repoDir,
