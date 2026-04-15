@@ -4,6 +4,8 @@ import {
   CodexRuntimePresenceProbe,
   DefaultActivationGate,
   Iterm2TerminalStateProbe,
+  ClaudeCodeRuntimePresenceProbe,
+  ClaudeCodeTerminalStateProbe,
 } from "../src/runtime_gate";
 import { TerminalActivationTarget } from "../src/model";
 
@@ -188,5 +190,73 @@ test("DefaultActivationGate defers when the terminal probe reports busy", async 
   assert.deepEqual(await gate.evaluate(makeItermTarget()), {
     outcome: "defer",
     reason: "terminal_busy",
+  });
+});
+
+// Claude Code Runtime Presence Probe Tests
+function makeClaudeCodeTarget(): TerminalActivationTarget {
+  return {
+    targetId: "tgt_claude",
+    agentId: "agent_claude_demo",
+    kind: "terminal",
+    status: "active",
+    offlineSince: null,
+    consecutiveFailures: 0,
+    lastDeliveredAt: null,
+    lastError: null,
+    mode: "agent_prompt",
+    notifyLeaseMs: 100,
+    runtimeKind: "claude_code",
+    runtimeSessionId: "f6037b9e-b970-475f-b339-5c5b286aceac",
+    runtimePid: 48663,
+    backend: "iterm2",
+    tmuxPaneId: null,
+    tty: null,
+    termProgram: "iTerm.app",
+    itermSessionId: "E551BC86-9787-4C74-B297-F0A3EC3C9F46",
+    createdAt: "2026-04-15T00:00:00.000Z",
+    updatedAt: "2026-04-15T00:00:00.000Z",
+    lastSeenAt: "2026-04-15T00:00:00.000Z",
+  };
+}
+
+test("ClaudeCodeRuntimePresenceProbe supports claude_code runtime with PID", () => {
+  const probe = new ClaudeCodeRuntimePresenceProbe();
+  assert.equal(probe.supports(makeClaudeCodeTarget()), true);
+});
+
+test("ClaudeCodeRuntimePresenceProbe does not support targets without PID", () => {
+  const probe = new ClaudeCodeRuntimePresenceProbe();
+  const target = makeClaudeCodeTarget();
+  target.runtimePid = null;
+  assert.equal(probe.supports(target), false);
+});
+
+test("ClaudeCodeRuntimePresenceProbe reports alive for live process with valid session", async () => {
+  const probe = new ClaudeCodeRuntimePresenceProbe(() => {});
+  assert.equal(await probe.check(makeClaudeCodeTarget()), "alive");
+});
+
+test("ClaudeCodeRuntimePresenceProbe reports gone for ESRCH", async () => {
+  const probe = new ClaudeCodeRuntimePresenceProbe(() => {
+    const error = new Error("missing") as NodeJS.ErrnoException;
+    error.code = "ESRCH";
+    throw error;
+  });
+  assert.equal(await probe.check(makeClaudeCodeTarget()), "gone");
+});
+
+test("ClaudeCodeTerminalStateProbe supports claude_code runtime", () => {
+  const probe = new ClaudeCodeTerminalStateProbe();
+  assert.equal(probe.supports(makeClaudeCodeTarget()), true);
+});
+
+test("ClaudeCodeTerminalStateProbe returns unknown for missing PID/sessionId", async () => {
+  const probe = new ClaudeCodeTerminalStateProbe();
+  const target = makeClaudeCodeTarget();
+  target.runtimePid = null;
+  assert.deepEqual(await probe.check(target), {
+    presence: "unknown",
+    busy: "unknown",
   });
 });
