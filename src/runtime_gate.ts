@@ -178,11 +178,8 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
   private async checkSessionPresence(it2api: string, sessionId: string): Promise<TerminalPresenceStatus> {
     try {
       const result = await this.execAsync(it2api, ["list-sessions"]);
-      const sessions = result.stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-      return sessions.includes(sessionId) ? "available" : "gone";
+      const sessionIds = parseIterm2SessionIds(result.stdout);
+      return sessionIds.includes(sessionId) ? "available" : "gone";
     } catch {
       return "unknown";
     }
@@ -534,19 +531,22 @@ export class ClaudeCodeTerminalStateProbe implements TerminalStateProbe {
     try {
       const it2api = resolveIterm2ApiPath();
       const result = await execFileAsync(it2api, ["list-sessions"]);
-      const lines = result.stdout.split(/\r?\n/).map((line: string) => line.trim()).filter((line: string) => line.length > 0);
-
-      // Parse session IDs from iTerm2 output format: "Session \"...\" id=<UUID> ..."
-      const sessionIds = lines
-        .map((line: string) => {
-          const match = line.match(/id=([A-F0-9-]+)/);
-          return match ? match[1] : null;
-        })
-        .filter((id: string | null): id is string => id !== null);
-
+      const sessionIds = parseIterm2SessionIds(result.stdout);
       return sessionIds.includes(itermSessionId) ? "available" : "gone";
     } catch {
       return "unknown";
     }
   }
+}
+
+function parseIterm2SessionIds(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const match = line.match(/\bid=([A-F0-9-]+)/i);
+      return match ? match[1] : null;
+    })
+    .filter((id): id is string => id !== null);
 }
