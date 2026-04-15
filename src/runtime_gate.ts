@@ -7,10 +7,15 @@ import { TerminalActivationTarget } from "./model";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_ITERM2_SAMPLE_DELAY_MS = 250;
+const DEFAULT_TMUX_SAMPLE_DELAY_MS = 250;
 const ACTIVE_BUFFER_MARKERS = [
   "esc to interrupt",
   "Working (",
   "⠼ ",
+];
+const TYPING_PROMPT_PREFIXES = [
+  "› ",
+  "> ",
 ];
 
 type ExecFileAsyncLike = (
@@ -54,6 +59,7 @@ export class DefaultActivationGate implements ActivationGate {
     private readonly terminalProbes: TerminalStateProbe[] = [
       new Iterm2TerminalStateProbe(),
       new ClaudeCodeTerminalStateProbe(),
+      new TmuxTerminalStateProbe(),
     ],
   ) {}
 
@@ -200,8 +206,106 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
   }
 }
 
+export class TmuxTerminalStateProbe implements TerminalStateProbe {
+  constructor(
+    private readonly execAsync: ExecFileAsyncLike = execFileAsync,
+    private readonly options: {
+      sampleDelayMs?: number;
+      sleep?: (ms: number) => Promise<void>;
+    } = {},
+  ) {}
+
+  supports(target: TerminalActivationTarget): boolean {
+    return target.backend === "tmux" && typeof target.tmuxPaneId === "string" && target.tmuxPaneId.length > 0;
+  }
+
+  async check(target: TerminalActivationTarget): Promise<{
+    presence: TerminalPresenceStatus;
+    busy: TerminalBusyStatus;
+  }> {
+    const paneId = target.tmuxPaneId?.trim();
+    if (!paneId) {
+      return { presence: "unknown", busy: "unknown" };
+    }
+
+    const paneState = await this.readPaneState(paneId);
+    if (!paneState) {
+      return { presence: "gone", busy: "unknown" };
+    }
+    if (paneState.dead) {
+      return { presence: "gone", busy: "unknown" };
+    }
+
+    const first = await this.readBufferTail(paneId);
+    if (!first) {
+      return { presence: "available", busy: "unknown" };
+    }
+    await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_TMUX_SAMPLE_DELAY_MS);
+    const second = await this.readBufferTail(paneId);
+    if (!second) {
+      return { presence: "available", busy: "unknown" };
+    }
+
+    if (first !== second) {
+      return { presence: "available", busy: "busy" };
+    }
+    if (containsActiveBufferMarker(second)) {
+      return { presence: "available", busy: "busy" };
+    }
+    if (paneState.active && hasVisibleTypingPrompt(second)) {
+      return { presence: "available", busy: "busy" };
+    }
+    return { presence: "available", busy: "unknown" };
+  }
+
+  private async readPaneState(paneId: string): Promise<{ active: boolean; dead: boolean } | null> {
+    try {
+      const result = await this.execAsync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_active} #{pane_dead}"]);
+      const [active, dead] = result.stdout.trim().split(/\s+/, 2);
+      if (!active || !dead) {
+        return { active: false, dead: false };
+      }
+      return {
+        active: active === "1",
+        dead: dead === "1",
+      };
+    } catch (error) {
+      if (isTmuxMissingPaneError(error)) {
+        return null;
+      }
+      return { active: false, dead: false };
+    }
+  }
+
+  private async readBufferTail(paneId: string): Promise<string | null> {
+    try {
+      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", "-20"]);
+      return normalizeBufferTail(result.stdout);
+    } catch {
+      return null;
+    }
+  }
+}
+
 function containsActiveBufferMarker(bufferTail: string): boolean {
   return ACTIVE_BUFFER_MARKERS.some((marker) => bufferTail.includes(marker));
+}
+
+function hasVisibleTypingPrompt(bufferTail: string): boolean {
+  const lines = bufferTail
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+  const lastLine = lines.at(-1);
+  if (!lastLine) {
+    return false;
+  }
+  for (const prefix of TYPING_PROMPT_PREFIXES) {
+    if (lastLine.startsWith(prefix) && lastLine.slice(prefix.length).trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function normalizeBufferTail(buffer: string): string | null {
@@ -233,6 +337,14 @@ function resolveIterm2ApiPath(override?: string): string {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTmuxMissingPaneError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const candidate = `${error.message} ${"stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : ""}`;
+  return candidate.includes("can't find pane");
 }
 
 export class ClaudeCodeRuntimePresenceProbe implements RuntimePresenceProbe {
