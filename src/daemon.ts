@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { AgentInboxClient } from "./client";
 import { resolveAgentInboxHome, resolveDaemonPaths, type ClientTransport } from "./paths";
+import packageJson from "../package.json";
 
 export interface DaemonCliOptions {
   env?: NodeJS.ProcessEnv;
@@ -23,6 +24,10 @@ export interface DaemonStartResult {
 export interface DaemonStatusResult {
   running: boolean;
   pid: number | null;
+  version: string | null;
+  startedAt: string | null;
+  command: string | null;
+  nodeVersion: string | null;
   pidPath: string;
   logPath: string;
   transport: ClientTransport;
@@ -121,15 +126,24 @@ export async function daemonStatus(options: DaemonCliOptions = {}): Promise<Daem
     return {
       running: false,
       pid: null,
+      version: null,
+      startedAt: null,
+      command: null,
+      nodeVersion: null,
       pidPath,
       logPath,
       transport,
     };
   }
 
+  const processInfo = pid == null ? null : readProcessMetadata(pid);
   return {
     running: await canReachHealthz(transport),
     pid,
+    version: pid == null ? null : packageJson.version,
+    startedAt: processInfo?.startedAt ?? null,
+    command: processInfo?.command ?? null,
+    nodeVersion: processInfo?.nodeVersion ?? null,
     pidPath,
     logPath,
     transport,
@@ -262,6 +276,52 @@ function readPidFile(pidPath: string): number | null {
   } catch {
     return null;
   }
+}
+
+function readProcessMetadata(pid: number): {
+  startedAt: string | null;
+  command: string | null;
+  nodeVersion: string | null;
+} | null {
+  try {
+    const output = execFileSync("ps", ["-o", "lstart=", "-o", "command=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trimEnd();
+    if (!output) {
+      return null;
+    }
+    const firstNonSpace = output.search(/\S/);
+    if (firstNonSpace < 0) {
+      return null;
+    }
+    const trimmed = output.slice(firstNonSpace);
+    const match = trimmed.match(/^([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+\d{4})\s+(.*)$/);
+    if (!match) {
+      return {
+        startedAt: null,
+        command: trimmed,
+        nodeVersion: inferNodeVersionFromCommand(trimmed),
+      };
+    }
+    const [, startedAtRaw, command] = match;
+    const startedAtMs = Date.parse(startedAtRaw);
+    return {
+      startedAt: Number.isNaN(startedAtMs) ? null : new Date(startedAtMs).toISOString(),
+      command: command || null,
+      nodeVersion: inferNodeVersionFromCommand(command),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function inferNodeVersionFromCommand(command: string | null): string | null {
+  if (!command) {
+    return null;
+  }
+  const match = command.match(/node\/(v\d+\.\d+\.\d+)\//);
+  return match ? match[1] : null;
 }
 
 function isProcessAlive(pid: number): boolean {
