@@ -68,6 +68,19 @@ test("renderAgentPrompt includes inline preview for single-item prompts", () => 
   );
 });
 
+test("renderAgentPrompt does not add duplicate punctuation after previews", () => {
+  const prompt = renderAgentPrompt({
+    inboxId: "inbox_123",
+    totalUnackedCount: 1,
+    preview: "Review PR #51 CI failure and push a fix...",
+  });
+
+  assert.equal(
+    prompt,
+    "AgentInbox: 1 unacked item in inbox inbox_123. Preview: Review PR #51 CI failure and push a fix... Read the inbox for full details if needed.",
+  );
+});
+
 test("deriveInlineItemPreview truncates short text payloads and skips structured payloads", () => {
   const preview = deriveInlineItemPreview({
     itemId: "item_1",

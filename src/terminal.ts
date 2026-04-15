@@ -74,7 +74,8 @@ export function renderAgentPrompt(input: {
   const itemWord = totalUnackedCount === 1 ? "item" : "items";
   const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} in inbox ${input.inboxId}.`;
   if (totalUnackedCount === 1 && input.preview) {
-    return `${base} Preview: ${input.preview}. Read the inbox for full details if needed.`;
+    const suffix = /(?:[.!?…]|\.{3})$/.test(input.preview) ? "" : ".";
+    return `${base} Preview: ${input.preview}${suffix} Read the inbox for full details if needed.`;
   }
   if (input.summary) {
     return `${base} Summary: ${input.summary}. Please read the inbox, process them, and ack when finished.`;
