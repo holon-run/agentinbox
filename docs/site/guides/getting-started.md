@@ -112,6 +112,20 @@ agentinbox subscription add <source_id> --agent-id <agent_id> \
 agentinbox source poll <source_id>
 ```
 
+For implementation-backed sources such as `github_repo`, inspect the resolved
+schema first if you want source-defined subscription shortcuts:
+
+```bash
+agentinbox source schema <source_id>
+agentinbox subscription add <source_id> --agent-id <agent_id> \
+  --shortcut pr \
+  --shortcut-args-json '{"number":87}'
+```
+
+The shortcut path is preferred when the source exposes it because the source can
+fill in the matching filter, tracked resource ref, and cleanup policy as one
+consistent bundle.
+
 For larger filters with nested JSON or JEXL, prefer a file or stdin over shell
 quoting:
 

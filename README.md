@@ -136,6 +136,8 @@ Create a local source and publish an event:
 agentinbox source add local_event local-demo
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
+agentinbox source schema <source_id>
+agentinbox subscription add <source_id> --shortcut pr --shortcut-args-json '{"number":373}'
 agentinbox subscription add <source_id> --tracked-resource-ref pr:373 --cleanup-policy-json '{"mode":"manual"}'
 agentinbox subscription add <source_id> --filter-file ./filter.json
 cat filter.json | agentinbox subscription add <source_id> --filter-stdin
@@ -163,6 +165,16 @@ Remove a task-specific subscription without deleting the whole agent:
 ```bash
 agentinbox subscription remove <subscription_id>
 ```
+
+For implementation-backed sources, inspect resolved subscription capabilities
+before adding task-scoped subscriptions:
+
+```bash
+agentinbox source schema <source_id>
+```
+
+If the source advertises subscription shortcuts, prefer them over manually
+repeating the equivalent filter, tracked resource ref, and cleanup policy.
 
 ## Docs
 

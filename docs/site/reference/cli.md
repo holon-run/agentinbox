@@ -72,6 +72,7 @@ source is idle or was auto-paused for idleness.
 agentinbox subscription add <source_id> [--agent-id <agent_id>] [--filter-json ...] [--tracked-resource-ref <ref>] [--cleanup-policy-json <json>]
 agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-file <path> [--tracked-resource-ref <ref>] [--cleanup-policy-json <json>]
 agentinbox subscription add <source_id> [--agent-id <agent_id>] --filter-stdin [--tracked-resource-ref <ref>] [--cleanup-policy-json <json>]
+agentinbox subscription add <source_id> [--agent-id <agent_id>] --shortcut <name> [--shortcut-args-json <json>]
 agentinbox subscription list [--agent-id <agent_id>] [--source-id <source_id>]
 agentinbox subscription show <subscription_id>
 agentinbox subscription remove <subscription_id>
@@ -85,6 +86,13 @@ agentinbox subscription reset <subscription_id> --start-policy latest
 persisted `filter`. When any explicit filter input mode is selected
 (`--filter-json`, `--filter-file`, or `--filter-stdin`), the supplied payload
 must be a non-empty JSON object.
+
+`--shortcut` asks the source implementation to expand a named subscription
+shortcut into the standard persisted fields. Use `agentinbox source schema
+<source_id>` first to discover whether the source exposes any shortcuts and what
+arguments they require. When `--shortcut` is present, do not also pass
+`--filter-*`, `--tracked-resource-ref`, or `--cleanup-policy-json`; the
+shortcut owns those fields.
 
 `--tracked-resource-ref` persists a source-scoped opaque resource identity such
 as `pr:373`. `--cleanup-policy-json` accepts the structured cleanup policy

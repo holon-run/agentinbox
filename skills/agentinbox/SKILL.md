@@ -90,6 +90,8 @@ In practice:
   scoped
 - prefer one shared repo or repo-CI source and use subscription filters for PR,
   branch, workflow, or failure-specific routing
+- if a source exposes subscription shortcuts, prefer the shortcut over manually
+  reconstructing the same filter and lifecycle fields
 - treat unused task-specific subscriptions as cleanup debt and remove them when
   the task is done
 - if GitHub polling volume looks high, inspect old subscriptions and duplicate
@@ -119,14 +121,21 @@ agentinbox source event <sourceId> --native-id evt_123 --event local.demo --payl
 Add or inspect subscriptions:
 
 ```bash
+agentinbox source schema <sourceId>
 agentinbox subscription add <sourceId>
 agentinbox subscription add <sourceId> --agent-id <agentId>
+agentinbox subscription add <sourceId> --shortcut pr --shortcut-args-json '{"number":87}'
 agentinbox subscription add <sourceId> --filter-json '{"metadata":{"headBranch":"main","conclusion":"failure"}}'
 agentinbox subscription list --agent-id <agentId>
 agentinbox subscription show <subscriptionId>
 agentinbox subscription poll <subscriptionId>
 agentinbox subscription remove <subscriptionId>
 ```
+
+Use `source schema` before adding task-scoped subscriptions for remote-backed
+sources. If `subscriptionSchema.shortcuts` is non-empty, prefer those shortcut
+entries first. They are easier to reuse and let the source own any matching
+tracked-resource and cleanup-policy defaults.
 
 Read and ack the inbox:
 

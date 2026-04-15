@@ -27,6 +27,14 @@ For a single PR or branch, add temporary subscriptions such as:
 - PR discussion events for `metadata.number == <pr_number>`
 - CI completion events for `metadata.headBranch == <branch>` and `metadata.status == "completed"`
 
+If the source schema advertises a PR shortcut, prefer that over manually
+repeating the same filter and lifecycle fields:
+
+```bash
+agentinbox source schema <source_id>
+agentinbox subscription add <source_id> --shortcut pr --shortcut-args-json '{"number":87}'
+```
+
 When the task is finished:
 
 ```bash
