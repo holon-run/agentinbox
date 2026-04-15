@@ -190,6 +190,7 @@ test("daemonStatus removes stale pid files", async () => {
 
 test("cli auto-starts the daemon for normal commands and daemon stop shuts it down", () => {
   const repoDir = path.resolve(__dirname, "..");
+  const packageVersion = JSON.parse(fs.readFileSync(path.join(repoDir, "package.json"), "utf8")) as { version: string };
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-autostart-home-"));
   const env = {
     ...process.env,
@@ -225,7 +226,7 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
     };
     assert.equal(parsedDaemon.running, true);
     assert.ok(parsedDaemon.pid && parsedDaemon.pid > 0);
-    assert.equal(parsedDaemon.version, "0.3.0");
+    assert.equal(parsedDaemon.version, packageVersion.version);
     assert.equal(typeof parsedDaemon.command, "string");
     assert.ok(parsedDaemon.command && parsedDaemon.command.includes("serve"));
     assert.equal(typeof parsedDaemon.startedAt, "string");

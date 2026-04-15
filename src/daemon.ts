@@ -3,7 +3,6 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { AgentInboxClient } from "./client";
 import { resolveAgentInboxHome, resolveDaemonPaths, type ClientTransport } from "./paths";
-import packageJson from "../package.json";
 
 export interface DaemonCliOptions {
   env?: NodeJS.ProcessEnv;
@@ -34,6 +33,7 @@ export interface DaemonStatusResult {
 }
 
 const START_TIMEOUT_MS = 15_000;
+const PACKAGE_VERSION = readOwnPackageVersion();
 
 export async function ensureDaemonForClient(options: DaemonCliOptions = {}): Promise<ClientTransport> {
   const transport = resolveDaemonClientTransport(options);
@@ -140,7 +140,7 @@ export async function daemonStatus(options: DaemonCliOptions = {}): Promise<Daem
   return {
     running: await canReachHealthz(transport),
     pid,
-    version: pid == null ? null : packageJson.version,
+    version: pid == null ? null : PACKAGE_VERSION,
     startedAt: processInfo?.startedAt ?? null,
     command: processInfo?.command ?? null,
     nodeVersion: processInfo?.nodeVersion ?? null,
@@ -230,6 +230,24 @@ async function canReachHealthz(transport: ClientTransport): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function readOwnPackageVersion(): string | null {
+  const candidatePaths = [
+    path.join(__dirname, "..", "package.json"),
+    path.join(__dirname, "..", "..", "package.json"),
+  ];
+  for (const candidate of candidatePaths) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as { version?: unknown };
+      if (typeof parsed.version === "string" && parsed.version.length > 0) {
+        return parsed.version;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
 }
 
 async function waitForHealthz(transport: ClientTransport, timeoutMs: number): Promise<void> {
