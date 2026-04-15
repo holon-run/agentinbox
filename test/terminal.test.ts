@@ -55,6 +55,18 @@ test("renderAgentPrompt accepts legacy newItemCount input", () => {
   );
 });
 
+test("renderAgentPrompt prefers totalUnackedCount over legacy newItemCount", () => {
+  const prompt = renderAgentPrompt({
+    inboxId: "inbox_123",
+    totalUnackedCount: 2,
+  });
+
+  assert.equal(
+    prompt,
+    "AgentInbox: 2 unacked items in inbox inbox_123. Please read the inbox, process them, and ack when finished.",
+  );
+});
+
 test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", async () => {
   const calls: Array<{ file: string; args: string[]; env?: NodeJS.ProcessEnv | undefined }> = [];
   const dispatcher = new TerminalDispatcher(async (file, args, options) => {

@@ -63,13 +63,16 @@ export function detectTerminalContext(env: NodeJS.ProcessEnv = process.env): Det
   throw new Error("unable to detect a supported terminal context");
 }
 
-export function renderAgentPrompt(input: {
+type RenderAgentPromptInput = {
   inboxId: string;
-  totalUnackedCount?: number;
-  newItemCount?: number;
   summary?: string | null;
-}): string {
-  const totalUnackedCount = input.totalUnackedCount ?? input.newItemCount ?? 0;
+} & (
+  | { totalUnackedCount: number; newItemCount?: never }
+  | { newItemCount: number; totalUnackedCount?: never }
+);
+
+export function renderAgentPrompt(input: RenderAgentPromptInput): string {
+  const totalUnackedCount = input.totalUnackedCount ?? input.newItemCount;
   const itemWord = totalUnackedCount === 1 ? "item" : "items";
   const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} in inbox ${input.inboxId}.`;
   if (input.summary) {
