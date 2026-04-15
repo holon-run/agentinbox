@@ -176,6 +176,7 @@ export class AgentInboxService {
       this.timerSyncTimeout = null;
     }
     await this.flushAllPendingNotifications();
+    await this.awaitInFlightNotificationBuffers();
   }
 
   async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
@@ -1565,6 +1566,16 @@ export class AgentInboxService {
     }
   }
 
+  private async awaitInFlightNotificationBuffers(): Promise<void> {
+    while (true) {
+      const activeBuffers = Array.from(this.notificationBuffers.values());
+      if (activeBuffers.every((buffer) => !buffer.inFlight)) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
   private async flushNotificationBuffer(key: string): Promise<void> {
     const buffer = this.notificationBuffers.get(key);
     if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
@@ -1609,9 +1620,11 @@ export class AgentInboxService {
       const hasPendingDuringFlight = buffer.pending.length > 0;
       buffer.inFlight = false;
       if (hasPendingDuringFlight) {
-        buffer.timer = setTimeout(() => {
-          void this.flushNotificationBuffer(key);
-        }, this.activationWindowMs);
+        if (!this.stopping) {
+          buffer.timer = setTimeout(() => {
+            void this.flushNotificationBuffer(key);
+          }, this.activationWindowMs);
+        }
         return;
       }
       this.notificationBuffers.delete(key);

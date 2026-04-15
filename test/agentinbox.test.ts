@@ -2333,6 +2333,7 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
     terminalDispatcher,
     activationWindowMs: 20,
     activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
     const registered = service.registerAgent({
@@ -2410,6 +2411,7 @@ test("terminal target goes offline when dispatch fails and probe confirms disapp
   const { store, service, dir } = await makeService({
     terminalDispatcher,
     activationWindowMs: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
     const registered = service.registerAgent({

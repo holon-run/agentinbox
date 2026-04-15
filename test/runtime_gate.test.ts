@@ -238,6 +238,29 @@ test("TmuxTerminalStateProbe reports gone when the pane is absent", async () => 
   });
 });
 
+test("TmuxTerminalStateProbe trims pane ids in supports()", () => {
+  const probe = new TmuxTerminalStateProbe();
+  const target = makeTmuxTarget();
+  target.tmuxPaneId = "   ";
+  assert.equal(probe.supports(target), false);
+});
+
+test("TmuxTerminalStateProbe reports unknown when tmux pane lookup fails for non-missing reasons", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      throw new Error("failed to connect to server");
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "unknown",
+    busy: "unknown",
+  });
+});
+
 test("TmuxTerminalStateProbe reports busy when the buffer tail changes", async () => {
   const buffers = ["first snapshot", "second snapshot"];
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {

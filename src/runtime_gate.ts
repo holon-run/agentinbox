@@ -216,7 +216,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
-    return target.backend === "tmux" && typeof target.tmuxPaneId === "string" && target.tmuxPaneId.length > 0;
+    return target.backend === "tmux" && typeof target.tmuxPaneId === "string" && target.tmuxPaneId.trim().length > 0;
   }
 
   async check(target: TerminalActivationTarget): Promise<{
@@ -229,8 +229,11 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     }
 
     const paneState = await this.readPaneState(paneId);
-    if (!paneState) {
+    if (paneState === "missing") {
       return { presence: "gone", busy: "unknown" };
+    }
+    if (paneState === "unknown") {
+      return { presence: "unknown", busy: "unknown" };
     }
     if (paneState.dead) {
       return { presence: "gone", busy: "unknown" };
@@ -258,12 +261,12 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     return { presence: "available", busy: "unknown" };
   }
 
-  private async readPaneState(paneId: string): Promise<{ active: boolean; dead: boolean } | null> {
+  private async readPaneState(paneId: string): Promise<{ active: boolean; dead: boolean } | "missing" | "unknown"> {
     try {
       const result = await this.execAsync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_active} #{pane_dead}"]);
       const [active, dead] = result.stdout.trim().split(/\s+/, 2);
       if (!active || !dead) {
-        return { active: false, dead: false };
+        return "unknown";
       }
       return {
         active: active === "1",
@@ -271,9 +274,9 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
       };
     } catch (error) {
       if (isTmuxMissingPaneError(error)) {
-        return null;
+        return "missing";
       }
-      return { active: false, dead: false };
+      return "unknown";
     }
   }
 
