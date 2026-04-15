@@ -12,6 +12,24 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.3.0] - 2026-04-15
+
+### Added
+
+- Added direct inbox text ingress so local runtimes can append plain text messages without introducing a custom source adapter.
+- Added durable agent reminder timers with one-shot, interval, and cron schedules.
+- Added pre-dispatch terminal activity gating so AgentInbox can avoid interrupting active Codex and Claude Code sessions.
+- Added Claude Code session liveness and busy-state probes for iTerm2-backed terminal targets.
+- Added tmux input-aware terminal gating so terminal activation defers when a pane is actively being used.
+
+### Fixed
+
+- Fixed tmux terminal prompt submission to send a literal carriage return after literal text input, preserving the intended activation payload.
+
+### Changed
+
+- Terminal activation dispatch now treats runtime and terminal probes as first-class delivery gates instead of relying only on post-failure offline reconciliation.
+
 ## [0.2.0] - 2026-04-14
 
 ### Added
