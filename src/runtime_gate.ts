@@ -126,10 +126,16 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       return { presence: "unknown", busy: "unknown" };
     }
 
-    const it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
-    const present = await this.hasSession(it2api, sessionId);
-    if (!present) {
-      return { presence: "gone", busy: "unknown" };
+    let it2api: string;
+    try {
+      it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
+    } catch {
+      return { presence: "unknown", busy: "unknown" };
+    }
+
+    const presence = await this.checkSessionPresence(it2api, sessionId);
+    if (presence !== "available") {
+      return { presence, busy: "unknown" };
     }
 
     await this.tryReadPrompt(it2api, sessionId);
@@ -152,12 +158,16 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     return { presence: "available", busy: "unknown" };
   }
 
-  private async hasSession(it2api: string, sessionId: string): Promise<boolean> {
+  private async checkSessionPresence(it2api: string, sessionId: string): Promise<TerminalPresenceStatus> {
     try {
       const result = await this.execAsync(it2api, ["list-sessions"]);
-      return result.stdout.includes(sessionId);
+      const sessions = result.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      return sessions.includes(sessionId) ? "available" : "gone";
     } catch {
-      return false;
+      return "unknown";
     }
   }
 

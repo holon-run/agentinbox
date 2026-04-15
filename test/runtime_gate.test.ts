@@ -64,6 +64,37 @@ test("Iterm2TerminalStateProbe reports gone when the session is absent", async (
   });
 });
 
+test("Iterm2TerminalStateProbe matches session ids exactly", async () => {
+  const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
+    if (args[0] === "list-sessions") {
+      return { stdout: "SESSION-10\n", stderr: "" };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    iterm2ApiPath: "/tmp/fake-it2api",
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeItermTarget()), {
+    presence: "gone",
+    busy: "unknown",
+  });
+});
+
+test("Iterm2TerminalStateProbe reports unknown when it2api listing fails", async () => {
+  const probe = new Iterm2TerminalStateProbe(async () => {
+    throw new Error("it2api unavailable");
+  }, {
+    iterm2ApiPath: "/tmp/fake-it2api",
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeItermTarget()), {
+    presence: "unknown",
+    busy: "unknown",
+  });
+});
+
 test("Iterm2TerminalStateProbe reports busy when the buffer tail changes", async () => {
   const buffers = ["first snapshot", "second snapshot"];
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
