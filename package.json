@@ -49,8 +49,8 @@
   "devDependencies": {
     "@types/node": "^24.5.2",
     "@types/sql.js": "^1.4.9",
-    "drizzle-kit": "^0.31.6",
-    "drizzle-orm": "^0.44.2",
+    "drizzle-kit": "1.0.0-beta.21",
+    "drizzle-orm": "^0.45.2",
     "mdorigin": "^0.5.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
