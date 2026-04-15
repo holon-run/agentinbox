@@ -29,7 +29,7 @@ function makeItermTarget(): TerminalActivationTarget {
     tmuxPaneId: null,
     tty: null,
     termProgram: "iTerm.app",
-    itermSessionId: "SESSION-1",
+    itermSessionId: "4F7A2F18-E5F4-4E27-A391-23953DE1F826",
     createdAt: "2026-04-01T00:00:00.000Z",
     updatedAt: "2026-04-01T00:00:00.000Z",
     lastSeenAt: "2026-04-01T00:00:00.000Z",
@@ -79,7 +79,10 @@ test("CodexRuntimePresenceProbe reports gone for ESRCH", async () => {
 test("Iterm2TerminalStateProbe reports gone when the session is absent", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
-      return { stdout: "OTHER-SESSION\n", stderr: "" };
+      return {
+        stdout: "Session \"codex\" id=F1111111-E5F4-4E27-A391-23953DE1F826 (110 x 30)\n",
+        stderr: "",
+      };
     }
     throw new Error(`unexpected command: ${args.join(" ")}`);
   }, {
@@ -96,7 +99,13 @@ test("Iterm2TerminalStateProbe reports gone when the session is absent", async (
 test("Iterm2TerminalStateProbe matches session ids exactly", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
-      return { stdout: "SESSION-10\n", stderr: "" };
+      return {
+        stdout: [
+          "Session \"codex one\" id=4F7A2F18-E5F4-4E27-A391-23953DE1F820 (110 x 30)",
+          "Session \"codex two\" id=F1111111-E5F4-4E27-A391-23953DE1F826 (110 x 30)",
+        ].join("\n"),
+        stderr: "",
+      };
     }
     throw new Error(`unexpected command: ${args.join(" ")}`);
   }, {
@@ -128,7 +137,10 @@ test("Iterm2TerminalStateProbe reports busy when the buffer tail changes", async
   const buffers = ["first snapshot", "second snapshot"];
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
-      return { stdout: "SESSION-1\n", stderr: "" };
+      return {
+        stdout: "Session \"codex\" id=4F7A2F18-E5F4-4E27-A391-23953DE1F826 (110 x 30)\n",
+        stderr: "",
+      };
     }
     if (args[0] === "get-prompt") {
       throw new Error("prompt unavailable");
@@ -151,7 +163,10 @@ test("Iterm2TerminalStateProbe reports busy when the buffer tail changes", async
 test("Iterm2TerminalStateProbe reports busy when the stable buffer shows a codex activity marker", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
-      return { stdout: "SESSION-1\n", stderr: "" };
+      return {
+        stdout: "Session \"codex\" id=4F7A2F18-E5F4-4E27-A391-23953DE1F826 (110 x 30)\n",
+        stderr: "",
+      };
     }
     if (args[0] === "get-prompt") {
       throw new Error("prompt unavailable");
@@ -177,7 +192,10 @@ test("Iterm2TerminalStateProbe reports busy when the stable buffer shows a codex
 test("Iterm2TerminalStateProbe reports unknown when the buffer is stable and quiet", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
-      return { stdout: "SESSION-1\n", stderr: "" };
+      return {
+        stdout: "Session \"codex\" id=4F7A2F18-E5F4-4E27-A391-23953DE1F826 (110 x 30)\n",
+        stderr: "",
+      };
     }
     if (args[0] === "get-prompt") {
       throw new Error("prompt unavailable");
