@@ -70,14 +70,14 @@ export class DefaultActivationGate implements ActivationGate {
   }> {
     const runtimeProbe = this.runtimeProbes.find((probe) => probe.supports(target));
     const runtimePresence = runtimeProbe ? await runtimeProbe.check(target) : "unknown";
+    if (runtimePresence === "gone") {
+      return { outcome: "offline", reason: "runtime_gone" };
+    }
     const terminalProbe = this.terminalProbes.find((probe) => probe.supports(target));
     const terminalState = terminalProbe
       ? await terminalProbe.check(target)
       : { presence: "unknown" as const, busy: "unknown" as const };
 
-    if (runtimePresence === "gone") {
-      return { outcome: "offline", reason: "runtime_gone" };
-    }
     if (terminalState.presence === "gone") {
       return { outcome: "offline", reason: "terminal_gone" };
     }
@@ -94,7 +94,7 @@ export class DefaultActivationGate implements ActivationGate {
 export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
   constructor(
     private readonly killFn: (pid: number, signal: number) => void = (pid, signal) => process.kill(pid, signal),
-    private readonly sessionFileReader?: (sessionId: string) => Promise<{ sessionId: string; filePath: string; cwd?: string | null } | null>,
+    private readonly sessionFileReader?: (sessionId: string) => Promise<CodexSessionLookupResult>,
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -111,6 +111,9 @@ export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
         return "unknown";
       }
       const sessionInfo = await (this.sessionFileReader ?? defaultCodexSessionFileReader)(target.runtimeSessionId);
+      if (sessionInfo === "unknown") {
+        return "unknown";
+      }
       if (!sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
         return "gone";
       }
@@ -129,7 +132,7 @@ export class CodexTerminalStateProbe implements TerminalStateProbe {
   constructor(
     private readonly iTermProbe: TerminalStateProbe = new Iterm2TerminalStateProbe(),
     private readonly tmuxProbe: TerminalStateProbe = new TmuxTerminalStateProbe(),
-    private readonly sessionFileReader?: (sessionId: string) => Promise<{ sessionId: string; filePath: string; cwd?: string | null } | null>,
+    private readonly sessionFileReader?: (sessionId: string) => Promise<CodexSessionLookupResult>,
     private readonly statReader?: (filePath: string) => Promise<{ mtimeMs: number } | null>,
     private readonly nowFn: () => number = () => Date.now(),
   ) {}
@@ -147,7 +150,7 @@ export class CodexTerminalStateProbe implements TerminalStateProbe {
       return terminalState;
     }
     const sessionInfo = await (this.sessionFileReader ?? defaultCodexSessionFileReader)(target.runtimeSessionId);
-    if (!sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
+    if (sessionInfo === "unknown" || !sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
       return terminalState;
     }
     const stat = await (this.statReader ?? defaultFileStatReader)(sessionInfo.filePath);
@@ -419,20 +422,27 @@ async function defaultFileStatReader(filePath: string): Promise<{ mtimeMs: numbe
   }
 }
 
-async function defaultCodexSessionFileReader(sessionId: string): Promise<{
+type CodexSessionInfo = {
   sessionId: string;
   filePath: string;
   cwd?: string | null;
-} | null> {
+};
+
+type CodexSessionLookupResult = CodexSessionInfo | null | "unknown";
+
+async function defaultCodexSessionFileReader(sessionId: string): Promise<CodexSessionLookupResult> {
   const sessionsRoot = path.join(os.homedir(), ".codex", "sessions");
-  const filePath = await findCodexSessionFile(sessionsRoot, sessionId);
+  const filePath = await findCodexSessionFile(sessionsRoot, sessionId).catch(() => "unknown" as const);
+  if (filePath === "unknown") {
+    return "unknown";
+  }
   if (!filePath) {
     return null;
   }
   try {
     const firstLine = await readFirstLine(filePath);
     if (!firstLine) {
-      return null;
+      return "unknown";
     }
     const record = JSON.parse(firstLine) as {
       type?: string;
@@ -440,7 +450,7 @@ async function defaultCodexSessionFileReader(sessionId: string): Promise<{
     };
     const parsedSessionId = typeof record.payload?.id === "string" ? record.payload.id : null;
     if (record.type !== "session_meta" || parsedSessionId !== sessionId) {
-      return null;
+      return "unknown";
     }
     return {
       sessionId: parsedSessionId,
@@ -448,7 +458,7 @@ async function defaultCodexSessionFileReader(sessionId: string): Promise<{
       cwd: typeof record.payload?.cwd === "string" ? record.payload.cwd : null,
     };
   } catch {
-    return null;
+    return "unknown";
   }
 }
 

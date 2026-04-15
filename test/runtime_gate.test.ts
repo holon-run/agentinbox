@@ -97,6 +97,11 @@ test("CodexRuntimePresenceProbe reports unknown when runtimeSessionId is missing
   assert.equal(await probe.check(target), "unknown");
 });
 
+test("CodexRuntimePresenceProbe reports unknown when the session file cannot be read conclusively", async () => {
+  const probe = new CodexRuntimePresenceProbe(() => {}, async () => "unknown");
+  assert.equal(await probe.check(makeItermTarget()), "unknown");
+});
+
 test("Iterm2TerminalStateProbe reports gone when the session is absent", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
@@ -318,6 +323,33 @@ test("DefaultActivationGate defers when Codex looks recently active but not conc
     outcome: "defer",
     reason: "terminal_recently_active",
   });
+});
+
+test("DefaultActivationGate short-circuits terminal probes when runtime is already gone", async () => {
+  let terminalChecked = false;
+  const gate = new DefaultActivationGate(
+    [new CodexRuntimePresenceProbe(() => {
+      const error = new Error("missing") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    })],
+    [{
+      supports: () => true,
+      async check() {
+        terminalChecked = true;
+        return {
+          presence: "available" as const,
+          busy: "busy" as const,
+        };
+      },
+    }],
+  );
+
+  assert.deepEqual(await gate.evaluate(makeItermTarget()), {
+    outcome: "offline",
+    reason: "runtime_gone",
+  });
+  assert.equal(terminalChecked, false);
 });
 
 test("CodexTerminalStateProbe reports busy when the Codex session file was updated recently", async () => {
