@@ -152,6 +152,26 @@ That preserves the boundary of the items you actually inspected. Use
 `ack --all` only when you have intentionally verified that every current
 unacked item should be cleared.
 
+Send a direct text message into an agent inbox:
+
+```bash
+agentinbox inbox send --agent-id <agent_id> --message "Please review PR #87"
+agentinbox inbox send --agent-id <agent_id> --message "CI failed on main" --sender operator
+```
+
+Schedule reminder messages with timers:
+
+```bash
+agentinbox timer add --agent-id <agent_id> --at <RFC3339_TIMESTAMP> --message "Check the morning build"
+agentinbox timer add --agent-id <agent_id> --every 24h --message "Review today's open PRs"
+agentinbox timer add --agent-id <agent_id> --cron "0 8 * * *" --timezone Asia/Shanghai --message "Daily triage"
+agentinbox timer list
+agentinbox timer list --agent-id <agent_id>
+agentinbox timer pause <schedule_id>
+agentinbox timer resume <schedule_id>
+agentinbox timer remove <schedule_id>
+```
+
 Update an existing source in place:
 
 ```bash

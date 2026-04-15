@@ -143,6 +143,8 @@ Read and ack the inbox:
 agentinbox inbox read
 agentinbox inbox read --agent-id <agentId>
 agentinbox inbox ack --agent-id <agentId> --through <lastItemId>
+agentinbox inbox send --agent-id <agentId> --message "Please review PR #87"
+agentinbox inbox send --agent-id <agentId> --message "CI failed on main" --sender operator
 agentinbox inbox watch
 agentinbox inbox watch --agent-id <agentId>
 agentinbox inbox ack --all
@@ -159,6 +161,27 @@ Use `ack --all` only when you have explicitly verified that every current
 unacked item should be cleared and there is no need to preserve the reviewed
 batch boundary. Otherwise it can clear items that arrived after the read step
 or older pending items you did not intend to acknowledge yet.
+
+Use `inbox send` as the default local operator path for direct text ingress when
+you want to place a human-written or agent-written message into an inbox
+without creating a source event or calling the HTTP control plane directly.
+
+Manage timers:
+
+```bash
+agentinbox timer add --agent-id <agentId> --at <RFC3339_TIMESTAMP> --message "Check the morning build"
+agentinbox timer add --agent-id <agentId> --every 24h --message "Review today's open PRs"
+agentinbox timer add --agent-id <agentId> --cron "0 8 * * *" --timezone Asia/Shanghai --message "Daily triage"
+agentinbox timer list
+agentinbox timer list --agent-id <agentId>
+agentinbox timer pause <scheduleId>
+agentinbox timer resume <scheduleId>
+agentinbox timer remove <scheduleId>
+```
+
+Use timers when the need is time-based rather than source-based. Prefer them
+over local event workarounds for reminders, recurring check-ins, and scheduled
+follow-ups.
 
 Manage activation targets:
 
