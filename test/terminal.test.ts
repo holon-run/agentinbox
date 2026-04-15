@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "../src/terminal";
+import { assignedAgentIdFromContext, deriveInlineItemPreview, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "../src/terminal";
 import { TerminalActivationTarget } from "../src/model";
 
 test("detectTerminalContext derives codex runtime and iTerm2 session", () => {
@@ -53,6 +53,53 @@ test("renderAgentPrompt accepts legacy newItemCount input", () => {
     prompt,
     "AgentInbox: 1 unacked item in inbox inbox_123. Please read the inbox, process them, and ack when finished.",
   );
+});
+
+test("renderAgentPrompt includes inline preview for single-item prompts", () => {
+  const prompt = renderAgentPrompt({
+    inboxId: "inbox_123",
+    totalUnackedCount: 1,
+    preview: "Review PR #51 CI failure and push a fix",
+  });
+
+  assert.equal(
+    prompt,
+    "AgentInbox: 1 unacked item in inbox inbox_123. Preview: Review PR #51 CI failure and push a fix. Read the inbox for full details if needed.",
+  );
+});
+
+test("deriveInlineItemPreview truncates short text payloads and skips structured payloads", () => {
+  const preview = deriveInlineItemPreview({
+    itemId: "item_1",
+    sourceId: "src_1",
+    sourceNativeId: "evt_1",
+    eventVariant: "message.created",
+    inboxId: "inbox_1",
+    occurredAt: "2026-04-16T00:00:00.000Z",
+    metadata: {},
+    rawPayload: {
+      message: "This is a fairly long single-line message that should still become a short inline preview in the terminal prompt without dumping the full payload verbatim.",
+    },
+    deliveryHandle: null,
+  });
+  assert.ok(preview);
+  assert.match(preview!, /^This is a fairly long single-line message/);
+  assert.ok(preview!.endsWith("..."));
+
+  const structured = deriveInlineItemPreview({
+    itemId: "item_2",
+    sourceId: "src_1",
+    sourceNativeId: "evt_2",
+    eventVariant: "message.created",
+    inboxId: "inbox_1",
+    occurredAt: "2026-04-16T00:00:00.000Z",
+    metadata: {},
+    rawPayload: {
+      body: "{\"kind\":\"structured\",\"value\":42}",
+    },
+    deliveryHandle: null,
+  });
+  assert.equal(structured, null);
 });
 
 test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", async () => {

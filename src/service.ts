@@ -54,6 +54,7 @@ import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import {
   assignedAgentIdFromContext,
+  deriveInlineItemPreview,
   detectTerminalContext,
   renderAgentPrompt,
   TerminalDispatcher,
@@ -1871,6 +1872,9 @@ export class AgentInboxService {
           inboxId: inbox.inboxId,
           totalUnackedCount,
           summary: input.summary,
+          preview: totalUnackedCount === 1 && input.items.length === 1
+            ? deriveInlineItemPreview(input.items[0], input.summary)
+            : null,
         });
         await this.terminalDispatcher.dispatch(target, prompt);
       } else {
