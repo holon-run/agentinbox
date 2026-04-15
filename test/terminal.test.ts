@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignedAgentIdFromContext, detectTerminalContext, TerminalDispatcher } from "../src/terminal";
+import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "../src/terminal";
 import { TerminalActivationTarget } from "../src/model";
 
 test("detectTerminalContext derives codex runtime and iTerm2 session", () => {
@@ -41,6 +41,18 @@ test("assignedAgentIdFromContext prefers runtime session ids", () => {
   });
 
   assert.equal(agentId, "agent_codex_019d57fd65247e20a850a89e81957100");
+});
+
+test("renderAgentPrompt accepts legacy newItemCount input", () => {
+  const prompt = renderAgentPrompt({
+    inboxId: "inbox_123",
+    newItemCount: 1,
+  });
+
+  assert.equal(
+    prompt,
+    "AgentInbox: 1 unacked item in inbox inbox_123. Please read the inbox, process them, and ack when finished.",
+  );
 });
 
 test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", async () => {
