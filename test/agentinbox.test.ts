@@ -11,7 +11,7 @@ import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { ActivationGate } from "../src/runtime_gate";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
-import { TerminalDispatcher } from "../src/terminal";
+import { TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
 import { nowIso } from "../src/util";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
@@ -25,6 +25,7 @@ class RecordingActivationDispatcher extends ActivationDispatcher {
 class RecordingTerminalDispatcher extends TerminalDispatcher {
   public readonly calls: Array<{ target: TerminalActivationTarget; prompt: string }> = [];
   public probeResult = true;
+  public probeStatusResult: TerminalProbeStatus = "available";
 
   override async dispatch(target: TerminalActivationTarget, prompt: string): Promise<void> {
     this.calls.push({ target, prompt });
@@ -32,6 +33,10 @@ class RecordingTerminalDispatcher extends TerminalDispatcher {
 
   override async probe(_target: TerminalActivationTarget): Promise<boolean> {
     return this.probeResult;
+  }
+
+  override async probeStatus(_target: TerminalActivationTarget): Promise<TerminalProbeStatus> {
+    return this.probeStatusResult;
   }
 }
 
@@ -2617,6 +2622,210 @@ test("offline terminal gate marks the target offline before dispatch", async () 
     assert.equal(target?.status, "offline");
     assert.match(target?.lastError ?? "", /runtime gate: runtime_gone/);
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resumeActivationTarget restores an offline terminal target when the terminal is available", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  terminalDispatcher.probeStatusResult = "available";
+  const { store, service, dir } = await makeService({ terminalDispatcher });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-resume-ok",
+      tmuxPaneId: "%901",
+      notifyLeaseMs: 100,
+    });
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    assert.equal(target?.kind, "terminal");
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(target!.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 2,
+      lastError: "probe bug",
+      updatedAt: offlineAt,
+    });
+    store.updateAgent(registered.agent.agentId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      runtimeKind: registered.agent.runtimeKind,
+      runtimeSessionId: registered.agent.runtimeSessionId,
+      updatedAt: offlineAt,
+      lastSeenAt: offlineAt,
+    });
+
+    const resumed = await service.resumeActivationTarget(registered.agent.agentId, target!.targetId);
+
+    assert.deepEqual(resumed, {
+      targetId: target!.targetId,
+      resumed: true,
+      status: "active",
+      reason: "terminal_available",
+    });
+    assert.equal(service.getActivationTarget(target!.targetId).status, "active");
+    assert.equal(service.getActivationTarget(target!.targetId).offlineSince, null);
+    assert.equal(service.getAgent(registered.agent.agentId).status, "active");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resumeActivationTarget keeps an offline terminal target offline when the terminal is gone", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  terminalDispatcher.probeStatusResult = "gone";
+  const { store, service, dir } = await makeService({ terminalDispatcher });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-resume-gone",
+      tmuxPaneId: "%902",
+      notifyLeaseMs: 100,
+    });
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(target!.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "terminal unavailable",
+      updatedAt: offlineAt,
+    });
+    store.updateAgent(registered.agent.agentId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      runtimeKind: registered.agent.runtimeKind,
+      runtimeSessionId: registered.agent.runtimeSessionId,
+      updatedAt: offlineAt,
+      lastSeenAt: offlineAt,
+    });
+
+    const resumed = await service.resumeActivationTarget(registered.agent.agentId, target!.targetId);
+
+    assert.deepEqual(resumed, {
+      targetId: target!.targetId,
+      resumed: false,
+      status: "offline",
+      reason: "terminal_gone",
+    });
+    assert.equal(service.getActivationTarget(target!.targetId).status, "offline");
+    assert.equal(service.getAgent(registered.agent.agentId).status, "offline");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resumeActivationTarget returns a non-destructive result when terminal probe is unknown", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  terminalDispatcher.probeStatusResult = "unknown";
+  const { store, service, dir } = await makeService({ terminalDispatcher });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-resume-unknown",
+      tmuxPaneId: "%903",
+      notifyLeaseMs: 100,
+    });
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(target!.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "probe unavailable",
+      updatedAt: offlineAt,
+    });
+    store.updateAgent(registered.agent.agentId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      runtimeKind: registered.agent.runtimeKind,
+      runtimeSessionId: registered.agent.runtimeSessionId,
+      updatedAt: offlineAt,
+      lastSeenAt: offlineAt,
+    });
+
+    const resumed = await service.resumeActivationTarget(registered.agent.agentId, target!.targetId);
+
+    assert.deepEqual(resumed, {
+      targetId: target!.targetId,
+      resumed: false,
+      status: "offline",
+      reason: "probe_unknown",
+    });
+    const after = service.getActivationTarget(target!.targetId);
+    assert.equal(after.status, "offline");
+    assert.equal(after.offlineSince, offlineAt);
+    assert.equal(after.lastError, "probe unavailable");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resumeAgent partially recovers mixed offline targets and reconciles agent status", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  terminalDispatcher.probeStatusResult = "gone";
+  const { store, service, dir } = await makeService({ terminalDispatcher });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-resume-mixed",
+      tmuxPaneId: "%904",
+      notifyLeaseMs: 100,
+    });
+    const webhook = service.addWebhookActivationTarget(registered.agent.agentId, {
+      url: "http://127.0.0.1:8787/hook",
+    });
+    const terminal = service.listActivationTargets(registered.agent.agentId).find((target) => target.kind === "terminal");
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(terminal!.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "terminal unavailable",
+      updatedAt: offlineAt,
+    });
+    store.updateActivationTargetRuntime(webhook.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "webhook failure",
+      updatedAt: offlineAt,
+    });
+    store.updateAgent(registered.agent.agentId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      runtimeKind: registered.agent.runtimeKind,
+      runtimeSessionId: registered.agent.runtimeSessionId,
+      updatedAt: offlineAt,
+      lastSeenAt: offlineAt,
+    });
+
+    const resumed = await service.resumeAgent(registered.agent.agentId);
+
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.agent.status, "active");
+    assert.equal(resumed.targets.length, 2);
+    assert.deepEqual(
+      resumed.targets.map((entry) => [entry.targetId, entry.resumed, entry.status, entry.reason]).sort(),
+      [
+        [terminal!.targetId, false, "offline", "terminal_gone"],
+        [webhook.targetId, true, "active", "webhook_resumed"],
+      ].sort(),
+    );
   } finally {
     await service.stop();
     store.close();

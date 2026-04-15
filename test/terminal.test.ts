@@ -155,3 +155,43 @@ test("TerminalDispatcher uses literal text plus carriage return for tmux targets
     "\r",
   ]);
 });
+
+test("TerminalDispatcher probeStatus distinguishes tmux available, gone, and unknown", async () => {
+  const target: TerminalActivationTarget = {
+    targetId: "tgt_tmux_probe",
+    agentId: "agent_codex_tmux",
+    kind: "terminal",
+    status: "offline",
+    offlineSince: "2026-04-07T00:00:00.000Z",
+    consecutiveFailures: 1,
+    lastDeliveredAt: null,
+    lastError: "probe bug",
+    mode: "agent_prompt",
+    notifyLeaseMs: 600000,
+    runtimeKind: "codex",
+    runtimeSessionId: "thread-tmux-probe",
+    backend: "tmux",
+    tmuxPaneId: "%2",
+    tty: null,
+    termProgram: "tmux",
+    itermSessionId: null,
+    createdAt: "2026-04-07T00:00:00.000Z",
+    updatedAt: "2026-04-07T00:00:00.000Z",
+    lastSeenAt: "2026-04-07T00:00:00.000Z",
+  };
+
+  const available = new TerminalDispatcher(async () => ({ stdout: "%2\n", stderr: "" }));
+  assert.equal(await available.probeStatus(target), "available");
+
+  const gone = new TerminalDispatcher(async () => {
+    const error = new Error("can't find pane: %2") as Error & { stderr?: string };
+    error.stderr = "can't find pane: %2";
+    throw error;
+  });
+  assert.equal(await gone.probeStatus(target), "gone");
+
+  const unknown = new TerminalDispatcher(async () => {
+    throw new Error("tmux unavailable");
+  });
+  assert.equal(await unknown.probeStatus(target), "unknown");
+});

@@ -15,6 +15,8 @@ type ExecFileAsyncLike = (
   },
 ) => Promise<{ stdout: string; stderr: string }>;
 
+export type TerminalProbeStatus = "available" | "gone" | "unknown";
+
 export interface DetectedTerminalContext {
   runtimeKind: RuntimeKind;
   runtimeSessionId?: string | null;
@@ -124,28 +126,43 @@ export class TerminalDispatcher {
   }
 
   async probe(target: TerminalActivationTarget): Promise<boolean> {
+    return (await this.probeStatus(target)) === "available";
+  }
+
+  async probeStatus(target: TerminalActivationTarget): Promise<TerminalProbeStatus> {
     try {
       if (target.backend === "tmux") {
         if (!target.tmuxPaneId) {
-          return false;
+          return "unknown";
         }
         const result = await this.execAsync("tmux", ["display-message", "-p", "-t", target.tmuxPaneId, "#{pane_id}"]);
-        return result.stdout.trim() === target.tmuxPaneId;
+        return result.stdout.trim() === target.tmuxPaneId ? "available" : "gone";
       }
       if (target.backend === "iterm2") {
         const sessionId = normalizeOptionalString(target.itermSessionId);
         if (!sessionId) {
-          return false;
+          return "unknown";
         }
         const it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
         const result = await this.execAsync(it2api, ["list-sessions"]);
-        return result.stdout.includes(sessionId);
+        return result.stdout.includes(sessionId) ? "available" : "gone";
       }
-    } catch {
-      return false;
+    } catch (error) {
+      if (target.backend === "tmux" && isTmuxMissingPaneError(error)) {
+        return "gone";
+      }
+      return "unknown";
     }
+    return "unknown";
+  }
+}
+
+function isTmuxMissingPaneError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
     return false;
   }
+  const candidate = `${error.message} ${"stderr" in error ? String((error as { stderr?: unknown }).stderr ?? "") : ""}`;
+  return candidate.includes("can't find pane");
 }
 
 function detectTty(env: NodeJS.ProcessEnv): string | null {

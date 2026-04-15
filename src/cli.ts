@@ -243,6 +243,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "agent" && normalized[1] === "resume") {
+    const agentId = normalized[2];
+    if (!agentId) {
+      throw new Error("usage: agentinbox agent resume <agentId>");
+    }
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/resume`, {});
+    return;
+  }
+
   if (command === "agent" && normalized[1] === "target" && normalized[2] === "add" && normalized[3] === "webhook") {
     const agentId = normalized[4];
     const url = takeFlagValue(normalized, "--url");
@@ -273,6 +282,15 @@ async function main(): Promise<void> {
       throw new Error("usage: agentinbox agent target remove <agentId> <targetId>");
     }
     await printRemote(client, `/agents/${encodeURIComponent(agentId)}/targets/${encodeURIComponent(targetId)}`, undefined, "DELETE");
+    return;
+  }
+
+  if (command === "agent" && normalized[1] === "target" && normalized[2] === "resume") {
+    const [agentId, targetId] = normalized.slice(3, 5);
+    if (!agentId || !targetId) {
+      throw new Error("usage: agentinbox agent target resume <agentId> <targetId>");
+    }
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/targets/${encodeURIComponent(targetId)}/resume`, {});
     return;
   }
 
@@ -1016,9 +1034,11 @@ Usage:
   agentinbox agent current
   agentinbox agent show <agentId>
   agentinbox agent remove <agentId>
+  agentinbox agent resume <agentId>
   agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N]
   agentinbox agent target list <agentId>
   agentinbox agent target remove <agentId> <targetId>
+  agentinbox agent target resume <agentId> <targetId>
 `,
     timer: `agentinbox timer
 
