@@ -109,7 +109,8 @@ export class TerminalDispatcher {
       if (!target.tmuxPaneId) {
         throw new Error(`tmux terminal target ${target.targetId} is missing tmuxPaneId`);
       }
-      await this.execAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, prompt, "Enter"]);
+      await this.execAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, "-l", prompt]);
+      await this.execAsync("tmux", ["send-keys", "-t", target.tmuxPaneId, "-l", "\r"]);
       return;
     }
 
