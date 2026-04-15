@@ -100,7 +100,7 @@ interface InboxWatcher {
   onItems(items: InboxItem[]): void;
 }
 
-type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline" | "deferred";
+type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline" | "deferred" | "suppressed";
 
 export interface InboxWatchSession {
   initialItems: InboxItem[];
@@ -1690,8 +1690,9 @@ export class AgentInboxService {
           targetId: buffer.targetId,
           status: "dirty",
           leaseExpiresAt: state.leaseExpiresAt,
+          lastNotifiedFingerprint: state.lastNotifiedFingerprint,
           pendingNewItemCount: state.pendingNewItemCount + entries.length,
-          pendingSummary: state.pendingSummary ?? entries[0]?.summary ?? null,
+          pendingSummary: latestSummary(entries) ?? state.pendingSummary,
           pendingSubscriptionIds: uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
           pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
           updatedAt: nowIso(),
@@ -1748,6 +1749,19 @@ export class AgentInboxService {
     if (reason === "ack" && state.status !== "dirty") {
       return;
     }
+    if (reason === "lease" && state.status === "notified") {
+      const target = this.getActivationTarget(targetId);
+      if (target.kind !== "terminal") {
+        // Webhook targets keep the existing lease-based behavior.
+      } else {
+        this.store.upsertActivationDispatchState({
+          ...state,
+          leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
+          updatedAt: nowIso(),
+        });
+        return;
+      }
+    }
 
     const dispatched = await this.dispatchActivationTarget({
       agentId,
@@ -1798,6 +1812,7 @@ export class AgentInboxService {
     if (target.status === "offline") {
       return "offline";
     }
+    const state = this.store.getActivationDispatchState(input.agentId, input.targetId);
     const inbox = this.ensureInboxForAgent(input.agentId);
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
     const totalUnackedCount = input.totalUnackedCount ?? this.store.countInboxItems(inbox.inboxId, false);
@@ -1815,6 +1830,7 @@ export class AgentInboxService {
             targetId: input.targetId,
             status: "dirty",
             leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+            lastNotifiedFingerprint: state?.lastNotifiedFingerprint ?? null,
             pendingNewItemCount: input.newItemCount,
             pendingSummary: input.summary,
             pendingSubscriptionIds: uniqueSortedNullable(input.subscriptionIds),
@@ -1822,6 +1838,22 @@ export class AgentInboxService {
             updatedAt: nowIso(),
           });
           return "deferred";
+        }
+        const promptFingerprint = terminalReminderFingerprint(totalUnackedCount, input.summary, input.items);
+        if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
+          this.store.upsertActivationDispatchState({
+            agentId: input.agentId,
+            targetId: input.targetId,
+            status: "notified",
+            leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
+            lastNotifiedFingerprint: promptFingerprint,
+            pendingNewItemCount: 0,
+            pendingSummary: null,
+            pendingSubscriptionIds: [],
+            pendingSourceIds: [],
+            updatedAt: nowIso(),
+          });
+          return "suppressed";
         }
         const prompt = renderAgentPrompt({
           inboxId: inbox.inboxId,
@@ -1857,6 +1889,9 @@ export class AgentInboxService {
         targetId: input.targetId,
         status: "notified",
         leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
+        lastNotifiedFingerprint: target.kind === "terminal"
+          ? terminalReminderFingerprint(totalUnackedCount, input.summary, input.items)
+          : state?.lastNotifiedFingerprint ?? null,
         pendingNewItemCount: 0,
         pendingSummary: null,
         pendingSubscriptionIds: [],
@@ -1890,8 +1925,9 @@ export class AgentInboxService {
       targetId,
       status: "dirty",
       leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+      lastNotifiedFingerprint: this.store.getActivationDispatchState(agentId, targetId)?.lastNotifiedFingerprint ?? null,
       pendingNewItemCount: entries.length,
-      pendingSummary: entries[0]?.summary ?? null,
+      pendingSummary: latestSummary(entries),
       pendingSubscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
       pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
       updatedAt: nowIso(),
@@ -2623,6 +2659,28 @@ function summarizeActivation(inboxId: string, newItemCount: number, firstSummary
     return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
   }
   return `${newItemCount} new ${itemWord} in ${inboxId}`;
+}
+
+function latestSummary(entries: Array<{ summary: string | null }>): string | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const summary = entries[index]?.summary;
+    if (summary) {
+      return summary;
+    }
+  }
+  return null;
+}
+
+function terminalReminderFingerprint(
+  totalUnackedCount: number,
+  summary: string | null,
+  items: ActivationItem[],
+): string {
+  return JSON.stringify({
+    totalUnackedCount,
+    summary: summary ?? null,
+    itemIds: items.map((item) => item.itemId),
+  });
 }
 
 function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {

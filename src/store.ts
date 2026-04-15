@@ -992,12 +992,13 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into activation_dispatch_states (
-        agent_id, target_id, status, lease_expires_at, pending_new_item_count, pending_summary,
+        agent_id, target_id, status, lease_expires_at, last_notified_fingerprint, pending_new_item_count, pending_summary,
         pending_subscription_ids_json, pending_source_ids_json, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(agent_id, target_id) do update set
         status = excluded.status,
         lease_expires_at = excluded.lease_expires_at,
+        last_notified_fingerprint = excluded.last_notified_fingerprint,
         pending_new_item_count = excluded.pending_new_item_count,
         pending_summary = excluded.pending_summary,
         pending_subscription_ids_json = excluded.pending_subscription_ids_json,
@@ -1009,6 +1010,7 @@ export class AgentInboxStore {
         state.targetId,
         state.status,
         state.leaseExpiresAt ?? null,
+        state.lastNotifiedFingerprint ?? null,
         state.pendingNewItemCount,
         state.pendingSummary ?? null,
         JSON.stringify(state.pendingSubscriptionIds),
@@ -1633,6 +1635,7 @@ export class AgentInboxStore {
       targetId: String(row.target_id),
       status: row.status as ActivationDispatchState["status"],
       leaseExpiresAt: row.lease_expires_at ? String(row.lease_expires_at) : null,
+      lastNotifiedFingerprint: row.last_notified_fingerprint ? String(row.last_notified_fingerprint) : null,
       pendingNewItemCount: Number(row.pending_new_item_count),
       pendingSummary: row.pending_summary ? String(row.pending_summary) : null,
       pendingSubscriptionIds: parseJson<string[]>(row.pending_subscription_ids_json as string),

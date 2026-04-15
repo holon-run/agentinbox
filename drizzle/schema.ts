@@ -122,6 +122,7 @@ export const activationDispatchStates = sqliteTable("activation_dispatch_states"
   targetId: text("target_id").notNull(),
   status: text("status").notNull(),
   leaseExpiresAt: text("lease_expires_at"),
+  lastNotifiedFingerprint: text("last_notified_fingerprint"),
   pendingNewItemCount: integer("pending_new_item_count").notNull(),
   pendingSummary: text("pending_summary"),
   pendingSubscriptionIdsJson: text("pending_subscription_ids_json").notNull(),
