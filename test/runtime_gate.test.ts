@@ -7,9 +7,13 @@ import {
   Iterm2TerminalStateProbe,
   ClaudeCodeRuntimePresenceProbe,
   ClaudeCodeTerminalStateProbe,
+  readFirstLine,
   TmuxTerminalStateProbe,
 } from "../src/runtime_gate";
 import { TerminalActivationTarget } from "../src/model";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 function makeItermTarget(): TerminalActivationTarget {
   return {
@@ -100,6 +104,26 @@ test("CodexRuntimePresenceProbe reports unknown when runtimeSessionId is missing
 test("CodexRuntimePresenceProbe reports unknown when the session file cannot be read conclusively", async () => {
   const probe = new CodexRuntimePresenceProbe(() => {}, async () => "unknown");
   assert.equal(await probe.check(makeItermTarget()), "unknown");
+});
+
+test("readFirstLine reads a full first line even when it exceeds 4096 bytes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agentinbox-runtime-gate-"));
+  const filePath = path.join(dir, "large-first-line.jsonl");
+  const largeJsonLine = JSON.stringify({
+    type: "session_meta",
+    payload: {
+      id: "thread-1",
+      cwd: "/tmp/demo",
+      instructions: "x".repeat(16_384),
+    },
+  });
+
+  try {
+    await fs.writeFile(filePath, `${largeJsonLine}\n{"type":"next"}\n`, "utf8");
+    assert.equal(await readFirstLine(filePath), largeJsonLine);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("Iterm2TerminalStateProbe reports gone when the session is absent", async () => {

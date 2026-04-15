@@ -504,17 +504,31 @@ async function walkCodexSessionLevel(dir: string, sessionId: string, depth: numb
   return null;
 }
 
-async function readFirstLine(filePath: string): Promise<string | null> {
+export async function readFirstLine(filePath: string): Promise<string | null> {
   const handle = await fs.promises.open(filePath, "r");
   try {
-    const buffer = Buffer.alloc(4096);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead <= 0) {
-      return null;
+    const chunkSize = 4096;
+    const chunks: string[] = [];
+    let position = 0;
+
+    while (true) {
+      const buffer = Buffer.alloc(chunkSize);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead <= 0) {
+        break;
+      }
+      const chunk = buffer.toString("utf8", 0, bytesRead);
+      const newline = chunk.indexOf("\n");
+      if (newline >= 0) {
+        chunks.push(chunk.slice(0, newline));
+        break;
+      }
+      chunks.push(chunk);
+      position += bytesRead;
     }
-    const chunk = buffer.toString("utf8", 0, bytesRead);
-    const newline = chunk.indexOf("\n");
-    return (newline >= 0 ? chunk.slice(0, newline) : chunk).trim() || null;
+
+    const firstLine = chunks.join("").trim();
+    return firstLine.length > 0 ? firstLine : null;
   } finally {
     await handle.close();
   }
