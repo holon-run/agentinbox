@@ -142,11 +142,23 @@ Read and ack the inbox:
 ```bash
 agentinbox inbox read
 agentinbox inbox read --agent-id <agentId>
+agentinbox inbox ack --agent-id <agentId> --through <lastItemId>
 agentinbox inbox watch
 agentinbox inbox watch --agent-id <agentId>
 agentinbox inbox ack --all
 agentinbox inbox ack --agent-id <agentId> --all
 ```
+
+Default to a batch-bounded ack flow:
+
+1. read the inbox items you intend to process
+2. identify the last item you actually reviewed in that batch
+3. ack with `--through <lastItemId>`
+
+Use `ack --all` only when you have explicitly verified that every current
+unacked item should be cleared and there is no need to preserve the reviewed
+batch boundary. Otherwise it can clear items that arrived after the read step
+or older pending items you did not intend to acknowledge yet.
 
 Manage activation targets:
 

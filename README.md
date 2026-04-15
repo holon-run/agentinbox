@@ -144,7 +144,13 @@ cat filter.json | agentinbox subscription add <source_id> --filter-stdin
 agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
+agentinbox inbox ack --agent-id <agent_id> --through <last_item_id>
 ```
+
+When acking a reviewed batch, prefer `--through <last_item_id>` over `--all`.
+That preserves the boundary of the items you actually inspected. Use
+`ack --all` only when you have intentionally verified that every current
+unacked item should be cleared.
 
 Update an existing source in place:
 
