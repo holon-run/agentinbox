@@ -156,7 +156,7 @@ agentinbox inbox send --agent-id <agent_id> --message "CI failed on main" --send
 Schedule reminder messages with timers:
 
 ```bash
-agentinbox timer add --agent-id <agent_id> --at 2026-04-15T08:00:00+08:00 --message "Check the morning build"
+agentinbox timer add --agent-id <agent_id> --at <RFC3339_TIMESTAMP> --message "Check the morning build"
 agentinbox timer add --agent-id <agent_id> --every 24h --message "Review today's open PRs"
 agentinbox timer add --agent-id <agent_id> --cron "0 8 * * *" --timezone Asia/Shanghai --message "Daily triage"
 agentinbox timer list

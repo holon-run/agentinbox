@@ -157,7 +157,7 @@ without creating a source event or calling the HTTP control plane directly.
 Manage timers:
 
 ```bash
-agentinbox timer add --agent-id <agentId> --at 2026-04-15T08:00:00+08:00 --message "Check the morning build"
+agentinbox timer add --agent-id <agentId> --at <RFC3339_TIMESTAMP> --message "Check the morning build"
 agentinbox timer add --agent-id <agentId> --every 24h --message "Review today's open PRs"
 agentinbox timer add --agent-id <agentId> --cron "0 8 * * *" --timezone Asia/Shanghai --message "Daily triage"
 agentinbox timer list
