@@ -53,6 +53,7 @@ import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
 import { assignedAgentIdFromContext, detectTerminalContext, renderAgentPrompt, TerminalDispatcher } from "./terminal";
 import { LifecycleSignal } from "./sources/remote_profiles";
+import { ActivationGate, DefaultActivationGate } from "./runtime_gate";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -94,7 +95,7 @@ interface InboxWatcher {
   onItems(items: InboxItem[]): void;
 }
 
-type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline";
+type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline" | "deferred";
 
 export interface InboxWatchSession {
   initialItems: InboxItem[];
@@ -124,6 +125,7 @@ export class AgentInboxService {
     backend?: EventBusBackend,
     activationPolicy?: ActivationPolicy,
     terminalDispatcher: TerminalDispatcher = new TerminalDispatcher(),
+    activationGate: ActivationGate = new DefaultActivationGate(),
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
@@ -131,10 +133,12 @@ export class AgentInboxService {
     this.activationMaxItems = activationPolicy?.maxItems ?? DEFAULT_ACTIVATION_MAX_ITEMS;
     this.ackedRetentionMs = DEFAULT_ACKED_RETENTION_MS;
     this.terminalDispatcher = terminalDispatcher;
+    this.activationGate = activationGate;
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
   private readonly terminalDispatcher: TerminalDispatcher;
+  private readonly activationGate: ActivationGate;
 
   async start(): Promise<void> {
     if (this.syncInterval) {
@@ -438,6 +442,7 @@ export class AgentInboxService {
     return this.registerAgent({
       runtimeKind: detected.runtimeKind,
       runtimeSessionId: detected.runtimeSessionId ?? null,
+      runtimePid: detected.runtimePid ?? null,
       backend: detected.backend,
       mode: "agent_prompt",
       tmuxPaneId: detected.tmuxPaneId ?? null,
@@ -1433,6 +1438,7 @@ export class AgentInboxService {
       const target = this.store.updateTerminalActivationTargetHeartbeat(existing.targetId, {
         runtimeKind: input.runtimeKind ?? "unknown",
         runtimeSessionId: input.runtimeSessionId ?? null,
+        runtimePid: input.runtimePid ?? null,
         tmuxPaneId: input.tmuxPaneId ?? null,
         tty: input.tty ?? null,
         termProgram: input.termProgram ?? null,
@@ -1460,6 +1466,7 @@ export class AgentInboxService {
       notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
       runtimeKind: input.runtimeKind ?? "unknown",
       runtimeSessionId: input.runtimeSessionId ?? null,
+      runtimePid: input.runtimePid ?? null,
       backend: input.backend,
       tmuxPaneId: input.tmuxPaneId ?? null,
       tty: input.tty ?? null,
@@ -1699,6 +1706,26 @@ export class AgentInboxService {
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
     try {
       if (target.kind === "terminal") {
+        const gate = await this.activationGate.evaluate(target);
+        if (gate.outcome === "offline") {
+          this.markActivationTargetOffline(target.targetId, `runtime gate: ${gate.reason}`);
+          this.reconcileAgentStatus(target.agentId);
+          return "offline";
+        }
+        if (gate.outcome === "defer") {
+          this.store.upsertActivationDispatchState({
+            agentId: input.agentId,
+            targetId: input.targetId,
+            status: "dirty",
+            leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+            pendingNewItemCount: input.newItemCount,
+            pendingSummary: input.summary,
+            pendingSubscriptionIds: uniqueSortedNullable(input.subscriptionIds),
+            pendingSourceIds: uniqueSorted(input.sourceIds),
+            updatedAt: nowIso(),
+          });
+          return "deferred";
+        }
         const prompt = renderAgentPrompt({
           inboxId: inbox.inboxId,
           newItemCount: input.newItemCount,
@@ -1780,6 +1807,7 @@ export class AgentInboxService {
       const target = findExistingTerminalActivationTarget(this.store, {
         runtimeKind: detected.runtimeKind,
         runtimeSessionId: detected.runtimeSessionId ?? null,
+        runtimePid: detected.runtimePid ?? null,
         backend: detected.backend,
         tmuxPaneId: detected.tmuxPaneId ?? null,
         tty: detected.tty ?? null,

@@ -684,9 +684,9 @@ export class AgentInboxStore {
         `
         insert into activation_targets (
           target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error, mode, notify_lease_ms,
-          runtime_kind, runtime_session_id, backend, tmux_pane_id, tty, term_program, iterm_session_id,
+          runtime_kind, runtime_session_id, runtime_pid, backend, tmux_pane_id, tty, term_program, iterm_session_id,
           created_at, updated_at, last_seen_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           target.targetId,
@@ -701,6 +701,7 @@ export class AgentInboxStore {
           target.notifyLeaseMs,
           target.runtimeKind,
           target.runtimeSessionId ?? null,
+          target.runtimePid ?? null,
           target.backend,
           target.tmuxPaneId ?? null,
           target.tty ?? null,
@@ -720,6 +721,7 @@ export class AgentInboxStore {
     input: {
       runtimeKind: TerminalActivationTarget["runtimeKind"];
       runtimeSessionId?: string | null;
+      runtimePid?: number | null;
       tmuxPaneId?: string | null;
       tty?: string | null;
       termProgram?: string | null;
@@ -732,12 +734,13 @@ export class AgentInboxStore {
       `
       update activation_targets
       set status = 'active', offline_since = null, last_error = null, consecutive_failures = 0,
-          runtime_kind = ?, runtime_session_id = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
+          runtime_kind = ?, runtime_session_id = ?, runtime_pid = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
       where target_id = ? and kind = 'terminal'
     `,
       [
         input.runtimeKind,
         input.runtimeSessionId ?? null,
+        input.runtimePid ?? null,
         input.tmuxPaneId ?? null,
         input.tty ?? null,
         input.termProgram ?? null,
@@ -1612,6 +1615,7 @@ export class AgentInboxStore {
       notifyLeaseMs: Number(row.notify_lease_ms),
       runtimeKind: (row.runtime_kind ? String(row.runtime_kind) : "unknown") as TerminalActivationTarget["runtimeKind"],
       runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
+      runtimePid: row.runtime_pid == null ? null : Number(row.runtime_pid),
       backend: row.backend as TerminalActivationTarget["backend"],
       tmuxPaneId: row.tmux_pane_id ? String(row.tmux_pane_id) : null,
       tty: row.tty ? String(row.tty) : null,

@@ -18,6 +18,7 @@ type ExecFileAsyncLike = (
 export interface DetectedTerminalContext {
   runtimeKind: RuntimeKind;
   runtimeSessionId?: string | null;
+  runtimePid?: number | null;
   backend: TerminalBackend;
   tmuxPaneId?: string | null;
   tty?: string | null;
@@ -36,6 +37,7 @@ export function detectTerminalContext(env: NodeJS.ProcessEnv = process.env): Det
     return {
       runtimeKind: runtime.runtimeKind,
       runtimeSessionId: runtime.runtimeSessionId,
+      runtimePid: runtime.runtimePid,
       backend: "tmux",
       tmuxPaneId,
       tty,
@@ -48,6 +50,7 @@ export function detectTerminalContext(env: NodeJS.ProcessEnv = process.env): Det
     return {
       runtimeKind: runtime.runtimeKind,
       runtimeSessionId: runtime.runtimeSessionId,
+      runtimePid: runtime.runtimePid,
       backend: "iterm2",
       tty,
       termProgram,
@@ -194,12 +197,14 @@ function normalizeItermSessionId(raw: string | undefined): string | null {
 function detectRuntimeContext(env: NodeJS.ProcessEnv): {
   runtimeKind: RuntimeKind;
   runtimeSessionId: string | null;
+  runtimePid: number | null;
 } {
   const codexThreadId = normalizeOptionalString(env.CODEX_THREAD_ID);
   if (codexThreadId) {
     return {
       runtimeKind: "codex",
       runtimeSessionId: codexThreadId,
+      runtimePid: findNamedProcessInAncestry((name) => name === "codex"),
     };
   }
 
@@ -209,9 +214,11 @@ function detectRuntimeContext(env: NodeJS.ProcessEnv): {
       ?? env.CLAUDE_SESSION_ID,
   );
   if (claudeSessionId) {
+    const claudePid = findNamedProcessInAncestry((name) => name.includes("claude"));
     return {
       runtimeKind: "claude_code",
       runtimeSessionId: claudeSessionId,
+      runtimePid: claudePid,
     };
   }
 
@@ -224,16 +231,18 @@ function detectRuntimeContext(env: NodeJS.ProcessEnv): {
   return {
     runtimeKind: "unknown",
     runtimeSessionId: null,
+    runtimePid: null,
   };
 }
 
 function detectClaudeCodeFromFileSystem(env: NodeJS.ProcessEnv): {
   runtimeKind: RuntimeKind;
   runtimeSessionId: string | null;
+  runtimePid: number | null;
 } | null {
   try {
     // Walk up the process tree to find a claude process
-    const claudePid = findClaudeProcessInAncestry();
+    const claudePid = findNamedProcessInAncestry((name) => name.includes("claude"));
     if (!claudePid) {
       return null;
     }
@@ -265,6 +274,7 @@ function detectClaudeCodeFromFileSystem(env: NodeJS.ProcessEnv): {
     return {
       runtimeKind: "claude_code",
       runtimeSessionId: sessionData.sessionId,
+      runtimePid: claudePid,
     };
   } catch {
     // Silently fail if filesystem detection fails
@@ -272,14 +282,14 @@ function detectClaudeCodeFromFileSystem(env: NodeJS.ProcessEnv): {
   }
 }
 
-function findClaudeProcessInAncestry(): number | null {
+function findNamedProcessInAncestry(matcher: (processName: string) => boolean): number | null {
   let currentPid = process.ppid;
   const maxIterations = 10; // Prevent infinite loops
   let iterations = 0;
 
   while (currentPid && iterations < maxIterations) {
     const processName = tryGetProcessName(currentPid);
-    if (processName?.includes("claude")) {
+    if (processName && matcher(processName)) {
       return currentPid;
     }
 

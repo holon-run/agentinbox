@@ -399,6 +399,7 @@ test("control plane GET /agents can include activation target summaries", async 
         itermSessionId: null,
         runtimeKind: "codex",
         runtimeSessionId: "thread-http-list",
+        runtimePid: null,
       });
       assert.equal(listed.activationTargets[1]?.kind, "webhook");
       assert.equal(listed.activationTargets[1]?.status, "active");
