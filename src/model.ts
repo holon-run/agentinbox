@@ -118,6 +118,7 @@ export interface TerminalActivationTarget extends ActivationTargetBase {
   mode: TerminalMode;
   runtimeKind: RuntimeKind;
   runtimeSessionId?: string | null;
+  runtimePid?: number | null;
   backend: TerminalBackend;
   tmuxPaneId?: string | null;
   tty?: string | null;
@@ -210,6 +211,7 @@ export interface RegisterAgentInput {
   forceRebind?: boolean;
   runtimeKind?: RuntimeKind | null;
   runtimeSessionId?: string | null;
+  runtimePid?: number | null;
   backend: TerminalBackend;
   mode?: TerminalMode;
   tmuxPaneId?: string | null;

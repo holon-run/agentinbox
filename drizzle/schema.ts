@@ -104,6 +104,7 @@ export const activationTargets = sqliteTable("activation_targets", {
   url: text("url"),
   runtimeKind: text("runtime_kind"),
   runtimeSessionId: text("runtime_session_id"),
+  runtimePid: integer("runtime_pid"),
   backend: text("backend"),
   tmuxPaneId: text("tmux_pane_id"),
   tty: text("tty"),

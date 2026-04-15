@@ -14,6 +14,7 @@ export interface TerminalTargetSummary {
   itermSessionId?: string | null;
   runtimeKind?: RuntimeKind | null;
   runtimeSessionId?: string | null;
+  runtimePid?: number | null;
 }
 
 export interface WebhookTargetSummary {
@@ -58,6 +59,7 @@ export function summarizeActivationTarget(target: ActivationTarget): ActivationT
       itermSessionId: target.itermSessionId ?? null,
       runtimeKind: target.runtimeKind ?? null,
       runtimeSessionId: target.runtimeSessionId ?? null,
+      runtimePid: target.runtimePid ?? null,
     };
   }
   return {

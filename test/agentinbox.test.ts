@@ -8,6 +8,7 @@ import { AdapterRegistry } from "../src/adapters";
 import { SqliteEventBusBackend } from "../src/backend";
 import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget } from "../src/model";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
+import { ActivationGate } from "../src/runtime_gate";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
@@ -37,6 +38,20 @@ class RecordingTerminalDispatcher extends TerminalDispatcher {
 class FailingTerminalDispatcher extends RecordingTerminalDispatcher {
   override async dispatch(_target: TerminalActivationTarget, _prompt: string): Promise<void> {
     throw new Error("terminal unavailable");
+  }
+}
+
+class FixedActivationGate implements ActivationGate {
+  constructor(
+    private readonly outcome: "inject" | "defer" | "offline",
+    private readonly reason = "test",
+  ) {}
+
+  async evaluate(_target: TerminalActivationTarget): Promise<{ outcome: "inject" | "defer" | "offline"; reason: string }> {
+    return {
+      outcome: this.outcome,
+      reason: this.reason,
+    };
   }
 }
 
@@ -88,6 +103,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
 async function makeService(options?: {
   dispatcher?: ActivationDispatcher;
   terminalDispatcher?: TerminalDispatcher;
+  activationGate?: ActivationGate;
   activationWindowMs?: number;
   activationMaxItems?: number;
 }): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
@@ -111,6 +127,7 @@ async function makeService(options?: {
       stdout: "",
       stderr: "",
     })),
+    options?.activationGate,
   );
   return { store, service, dir };
 }
@@ -162,7 +179,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 6);
+    assert.equal(state.appliedCount, 7);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -179,7 +196,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 6);
+    assert.equal(state.appliedCount, 7);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
@@ -2426,6 +2443,111 @@ test("terminal target goes offline when dispatch fails and probe confirms disapp
     const target = service.listActivationTargets(registered.agent.agentId)[0];
     assert.equal(agent.status, "offline");
     assert.equal(target.status, "offline");
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("busy terminal gate defers activation without counting a dispatch failure", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate: new FixedActivationGate("defer", "terminal_busy"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "iterm2",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-busy",
+      runtimePid: 4242,
+      itermSessionId: "SESSION-BUSY",
+      termProgram: "iTerm.app",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "busy-gate-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-busy-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 0);
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    assert.equal(target?.kind, "terminal");
+    assert.equal(target?.status, "active");
+    assert.equal(target?.consecutiveFailures, 0);
+    assert.equal(target?.lastError ?? null, null);
+    const states = store.listActivationDispatchStatesForAgent(registered.agent.agentId);
+    assert.equal(states.length, 1);
+    assert.equal(states[0]?.status, "dirty");
+    assert.equal(states[0]?.pendingNewItemCount, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("offline terminal gate marks the target offline before dispatch", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate: new FixedActivationGate("offline", "runtime_gone"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "iterm2",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-gone",
+      runtimePid: 9999,
+      itermSessionId: "SESSION-GONE",
+      termProgram: "iTerm.app",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "offline-gate-demo",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-gone-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 0);
+    const agent = service.getAgent(registered.agent.agentId);
+    const target = service.listActivationTargets(registered.agent.agentId)[0];
+    assert.equal(agent.status, "offline");
+    assert.equal(target?.status, "offline");
+    assert.match(target?.lastError ?? "", /runtime gate: runtime_gone/);
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
   } finally {
     await service.stop();
