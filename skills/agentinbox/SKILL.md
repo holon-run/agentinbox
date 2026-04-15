@@ -142,11 +142,34 @@ Read and ack the inbox:
 ```bash
 agentinbox inbox read
 agentinbox inbox read --agent-id <agentId>
+agentinbox inbox send --agent-id <agentId> --message "Please review PR #87"
+agentinbox inbox send --agent-id <agentId> --message "CI failed on main" --sender operator
 agentinbox inbox watch
 agentinbox inbox watch --agent-id <agentId>
 agentinbox inbox ack --all
 agentinbox inbox ack --agent-id <agentId> --all
 ```
+
+Use `inbox send` as the default local operator path for direct text ingress when
+you want to place a human-written or agent-written message into an inbox
+without creating a source event or calling the HTTP control plane directly.
+
+Manage timers:
+
+```bash
+agentinbox timer add --agent-id <agentId> --at <RFC3339_TIMESTAMP> --message "Check the morning build"
+agentinbox timer add --agent-id <agentId> --every 24h --message "Review today's open PRs"
+agentinbox timer add --agent-id <agentId> --cron "0 8 * * *" --timezone Asia/Shanghai --message "Daily triage"
+agentinbox timer list
+agentinbox timer list --agent-id <agentId>
+agentinbox timer pause <scheduleId>
+agentinbox timer resume <scheduleId>
+agentinbox timer remove <scheduleId>
+```
+
+Use timers when the need is time-based rather than source-based. Prefer them
+over local event workarounds for reminders, recurring check-ins, and scheduled
+follow-ups.
 
 Manage activation targets:
 
