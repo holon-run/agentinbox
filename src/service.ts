@@ -1863,7 +1863,7 @@ export class AgentInboxService {
           preview,
         });
         terminalPrompt = prompt;
-        const promptFingerprint = terminalReminderFingerprint(prompt);
+        const promptFingerprint = terminalReminderFingerprint(prompt, input.items);
         if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
           this.store.upsertActivationDispatchState({
             agentId: input.agentId,
@@ -1909,7 +1909,7 @@ export class AgentInboxService {
         status: "notified",
         leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
         lastNotifiedFingerprint: target.kind === "terminal"
-          ? terminalReminderFingerprint(terminalPrompt ?? "")
+          ? terminalReminderFingerprint(terminalPrompt ?? "", input.items)
           : state?.lastNotifiedFingerprint ?? null,
         pendingNewItemCount: 0,
         pendingSummary: null,
@@ -2690,8 +2690,14 @@ function latestSummary(entries: Array<{ summary: string | null }>): string | nul
   return null;
 }
 
-function terminalReminderFingerprint(prompt: string): string {
-  return createHash("sha256").update(prompt).digest("hex");
+function terminalReminderFingerprint(prompt: string, items: ActivationItem[]): string {
+  const payload = JSON.stringify({
+    prompt,
+    itemIds: items
+      .map((item) => item.itemId)
+      .sort((left, right) => left.localeCompare(right)),
+  });
+  return createHash("sha256").update(payload).digest("hex");
 }
 
 function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {
