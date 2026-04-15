@@ -1739,9 +1739,10 @@ export class AgentInboxService {
           });
           return "deferred";
         }
+        const totalUnackedCount = this.store.countInboxItems(inbox.inboxId, false);
         const prompt = renderAgentPrompt({
           inboxId: inbox.inboxId,
-          newItemCount: input.newItemCount,
+          totalUnackedCount,
           summary: input.summary,
         });
         await this.terminalDispatcher.dispatch(target, prompt);
