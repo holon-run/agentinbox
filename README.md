@@ -146,6 +146,26 @@ agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
 ```
 
+Send a direct text message into an agent inbox:
+
+```bash
+agentinbox inbox send --agent-id <agent_id> --message "Please review PR #87"
+agentinbox inbox send --agent-id <agent_id> --message "CI failed on main" --sender operator
+```
+
+Schedule reminder messages with timers:
+
+```bash
+agentinbox timer add --agent-id <agent_id> --at 2026-04-15T08:00:00+08:00 --message "Check the morning build"
+agentinbox timer add --agent-id <agent_id> --every 24h --message "Review today's open PRs"
+agentinbox timer add --agent-id <agent_id> --cron "0 8 * * *" --timezone Asia/Shanghai --message "Daily triage"
+agentinbox timer list
+agentinbox timer list --agent-id <agent_id>
+agentinbox timer pause <schedule_id>
+agentinbox timer resume <schedule_id>
+agentinbox timer remove <schedule_id>
+```
+
 Update an existing source in place:
 
 ```bash
