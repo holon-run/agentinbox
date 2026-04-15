@@ -2,13 +2,18 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   CodexRuntimePresenceProbe,
+  CodexTerminalStateProbe,
   DefaultActivationGate,
   Iterm2TerminalStateProbe,
   ClaudeCodeRuntimePresenceProbe,
   ClaudeCodeTerminalStateProbe,
+  readFirstLine,
   TmuxTerminalStateProbe,
 } from "../src/runtime_gate";
 import { TerminalActivationTarget } from "../src/model";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 function makeItermTarget(): TerminalActivationTarget {
   return {
@@ -63,7 +68,13 @@ function makeTmuxTarget(): TerminalActivationTarget {
 }
 
 test("CodexRuntimePresenceProbe reports alive for a live pid", async () => {
-  const probe = new CodexRuntimePresenceProbe(() => {});
+  const probe = new CodexRuntimePresenceProbe(
+    () => {},
+    async () => ({
+      sessionId: "thread-1",
+      filePath: "/tmp/codex-thread-1.jsonl",
+    }),
+  );
   assert.equal(await probe.check(makeItermTarget()), "alive");
 });
 
@@ -74,6 +85,45 @@ test("CodexRuntimePresenceProbe reports gone for ESRCH", async () => {
     throw error;
   });
   assert.equal(await probe.check(makeItermTarget()), "gone");
+});
+
+test("CodexRuntimePresenceProbe reports gone when the session file is missing", async () => {
+  const probe = new CodexRuntimePresenceProbe(() => {}, async () => null);
+  assert.equal(await probe.check(makeItermTarget()), "gone");
+});
+
+test("CodexRuntimePresenceProbe reports unknown when runtimeSessionId is missing", async () => {
+  const probe = new CodexRuntimePresenceProbe(() => {}, async () => {
+    throw new Error("should not read session file without runtimeSessionId");
+  });
+  const target = makeItermTarget();
+  target.runtimeSessionId = null;
+  assert.equal(await probe.check(target), "unknown");
+});
+
+test("CodexRuntimePresenceProbe reports unknown when the session file cannot be read conclusively", async () => {
+  const probe = new CodexRuntimePresenceProbe(() => {}, async () => "unknown");
+  assert.equal(await probe.check(makeItermTarget()), "unknown");
+});
+
+test("readFirstLine reads a full first line even when it exceeds 4096 bytes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agentinbox-runtime-gate-"));
+  const filePath = path.join(dir, "large-first-line.jsonl");
+  const largeJsonLine = JSON.stringify({
+    type: "session_meta",
+    payload: {
+      id: "thread-1",
+      cwd: "/tmp/demo",
+      instructions: "x".repeat(16_384),
+    },
+  });
+
+  try {
+    await fs.writeFile(filePath, `${largeJsonLine}\n{"type":"next"}\n`, "utf8");
+    assert.equal(await readFirstLine(filePath), largeJsonLine);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("Iterm2TerminalStateProbe reports gone when the session is absent", async () => {
@@ -218,9 +268,44 @@ test("Iterm2TerminalStateProbe reports unknown when the buffer is stable and qui
   });
 });
 
+test("Iterm2TerminalStateProbe reports busy when the stable buffer shows visible typed input", async () => {
+  const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
+    if (args[0] === "list-sessions") {
+      return {
+        stdout: "Session \"codex\" id=4F7A2F18-E5F4-4E27-A391-23953DE1F826 (110 x 30)\n",
+        stderr: "",
+      };
+    }
+    if (args[0] === "get-prompt") {
+      throw new Error("prompt unavailable");
+    }
+    if (args[0] === "get-buffer") {
+      return {
+        stdout: "workspace\n> agentinbox inbox read --agent-id demo\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    iterm2ApiPath: "/tmp/fake-it2api",
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeItermTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
 test("DefaultActivationGate defers when the terminal probe reports busy", async () => {
   const gate = new DefaultActivationGate(
-    [new CodexRuntimePresenceProbe(() => {})],
+    [new CodexRuntimePresenceProbe(
+      () => {},
+      async () => ({
+        sessionId: "thread-1",
+        filePath: "/tmp/codex-thread-1.jsonl",
+      }),
+    )],
     [{
       supports: () => true,
       async check() {
@@ -235,6 +320,121 @@ test("DefaultActivationGate defers when the terminal probe reports busy", async 
   assert.deepEqual(await gate.evaluate(makeItermTarget()), {
     outcome: "defer",
     reason: "terminal_busy",
+  });
+});
+
+test("DefaultActivationGate defers when Codex looks recently active but not conclusively idle", async () => {
+  const gate = new DefaultActivationGate(
+    [new CodexRuntimePresenceProbe(
+      () => {},
+      async () => ({
+        sessionId: "thread-1",
+        filePath: "/tmp/codex-thread-1.jsonl",
+      }),
+    )],
+    [{
+      supports: () => true,
+      async check() {
+        return {
+          presence: "available" as const,
+          busy: "idle" as const,
+        };
+      },
+    }],
+  );
+
+  assert.deepEqual(await gate.evaluate(makeItermTarget()), {
+    outcome: "defer",
+    reason: "terminal_recently_active",
+  });
+});
+
+test("DefaultActivationGate short-circuits terminal probes when runtime is already gone", async () => {
+  let terminalChecked = false;
+  const gate = new DefaultActivationGate(
+    [new CodexRuntimePresenceProbe(() => {
+      const error = new Error("missing") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    })],
+    [{
+      supports: () => true,
+      async check() {
+        terminalChecked = true;
+        return {
+          presence: "available" as const,
+          busy: "busy" as const,
+        };
+      },
+    }],
+  );
+
+  assert.deepEqual(await gate.evaluate(makeItermTarget()), {
+    outcome: "offline",
+    reason: "runtime_gone",
+  });
+  assert.equal(terminalChecked, false);
+});
+
+test("CodexTerminalStateProbe reports busy when the Codex session file was updated recently", async () => {
+  const probe = new CodexTerminalStateProbe(
+    {
+      supports: () => true,
+      async check() {
+        return {
+          presence: "available" as const,
+          busy: "unknown" as const,
+        };
+      },
+    },
+    {
+      supports: () => false,
+      async check() {
+        throw new Error("tmux probe should not be used");
+      },
+    },
+    async () => ({
+      sessionId: "thread-1",
+      filePath: "/tmp/codex-thread-1.jsonl",
+    }),
+    async () => ({ mtimeMs: 199_000 }),
+    () => 200_000,
+  );
+
+  assert.deepEqual(await probe.check(makeItermTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
+test("CodexTerminalStateProbe reports idle when the Codex session was only recently active", async () => {
+  const probe = new CodexTerminalStateProbe(
+    {
+      supports: () => true,
+      async check() {
+        return {
+          presence: "available" as const,
+          busy: "unknown" as const,
+        };
+      },
+    },
+    {
+      supports: () => false,
+      async check() {
+        throw new Error("tmux probe should not be used");
+      },
+    },
+    async () => ({
+      sessionId: "thread-1",
+      filePath: "/tmp/codex-thread-1.jsonl",
+    }),
+    async () => ({ mtimeMs: 190_000 }),
+    () => 200_000,
+  );
+
+  assert.deepEqual(await probe.check(makeItermTarget()), {
+    presence: "available",
+    busy: "idle",
   });
 });
 
