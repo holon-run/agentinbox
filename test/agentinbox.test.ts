@@ -2405,6 +2405,72 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
   }
 });
 
+test("terminal activation prompts use the current unacked inbox total", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-unacked",
+      tmuxPaneId: "%52",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-unacked-prompt",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 1 unacked item in inbox/);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const allItems = service.listInboxItems(registered.agent.agentId, { includeAcked: false });
+    assert.equal(allItems.length, 2);
+
+    const ack = service.ackInboxItemsThrough(registered.agent.agentId, allItems[0]!.itemId);
+    assert.equal(ack.acked, 1);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 2);
+    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item in inbox/);
+    assert.doesNotMatch(terminalDispatcher.calls[1]!.prompt, /2 new items arrived/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("terminal target goes offline when dispatch fails and probe confirms disappearance", async () => {
   const terminalDispatcher = new FailingTerminalDispatcher();
   terminalDispatcher.probeResult = false;
