@@ -57,6 +57,7 @@ export class DefaultActivationGate implements ActivationGate {
       new ClaudeCodeRuntimePresenceProbe(),
     ],
     private readonly terminalProbes: TerminalStateProbe[] = [
+      new CodexTerminalStateProbe(),
       new Iterm2TerminalStateProbe(),
       new ClaudeCodeTerminalStateProbe(),
       new TmuxTerminalStateProbe(),
@@ -83,6 +84,9 @@ export class DefaultActivationGate implements ActivationGate {
     if (terminalState.busy === "busy") {
       return { outcome: "defer", reason: "terminal_busy" };
     }
+    if (target.runtimeKind === "codex" && terminalState.busy === "idle") {
+      return { outcome: "defer", reason: "terminal_recently_active" };
+    }
     return { outcome: "inject", reason: "gate_unknown_or_idle" };
   }
 }
@@ -90,6 +94,7 @@ export class DefaultActivationGate implements ActivationGate {
 export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
   constructor(
     private readonly killFn: (pid: number, signal: number) => void = (pid, signal) => process.kill(pid, signal),
+    private readonly sessionFileReader?: (sessionId: string) => Promise<{ sessionId: string; filePath: string; cwd?: string | null } | null>,
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -102,6 +107,13 @@ export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
     }
     try {
       this.killFn(target.runtimePid!, 0);
+      if (!target.runtimeSessionId) {
+        return "unknown";
+      }
+      const sessionInfo = await (this.sessionFileReader ?? defaultCodexSessionFileReader)(target.runtimeSessionId);
+      if (!sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
+        return "gone";
+      }
       return "alive";
     } catch (error) {
       const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : "";
@@ -110,6 +122,62 @@ export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
       }
       return "unknown";
     }
+  }
+}
+
+export class CodexTerminalStateProbe implements TerminalStateProbe {
+  constructor(
+    private readonly iTermProbe: TerminalStateProbe = new Iterm2TerminalStateProbe(),
+    private readonly tmuxProbe: TerminalStateProbe = new TmuxTerminalStateProbe(),
+    private readonly sessionFileReader?: (sessionId: string) => Promise<{ sessionId: string; filePath: string; cwd?: string | null } | null>,
+    private readonly statReader?: (filePath: string) => Promise<{ mtimeMs: number } | null>,
+    private readonly nowFn: () => number = () => Date.now(),
+  ) {}
+
+  supports(target: TerminalActivationTarget): boolean {
+    return target.runtimeKind === "codex";
+  }
+
+  async check(target: TerminalActivationTarget): Promise<{
+    presence: TerminalPresenceStatus;
+    busy: TerminalBusyStatus;
+  }> {
+    const terminalState = await this.readTerminalState(target);
+    if (!target.runtimeSessionId) {
+      return terminalState;
+    }
+    const sessionInfo = await (this.sessionFileReader ?? defaultCodexSessionFileReader)(target.runtimeSessionId);
+    if (!sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
+      return terminalState;
+    }
+    const stat = await (this.statReader ?? defaultFileStatReader)(sessionInfo.filePath);
+    if (!stat) {
+      return terminalState;
+    }
+    if (terminalState.busy === "busy" || terminalState.presence === "gone") {
+      return terminalState;
+    }
+    const ageMs = this.nowFn() - stat.mtimeMs;
+    if (ageMs < 5000) {
+      return { presence: terminalState.presence, busy: "busy" };
+    }
+    if (ageMs < 30000) {
+      return { presence: terminalState.presence, busy: "idle" };
+    }
+    return terminalState;
+  }
+
+  private async readTerminalState(target: TerminalActivationTarget): Promise<{
+    presence: TerminalPresenceStatus;
+    busy: TerminalBusyStatus;
+  }> {
+    if (this.iTermProbe.supports(target)) {
+      return this.iTermProbe.check(target);
+    }
+    if (this.tmuxProbe.supports(target)) {
+      return this.tmuxProbe.check(target);
+    }
+    return { presence: "unknown", busy: "unknown" };
   }
 }
 
@@ -170,6 +238,9 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       return { presence: "available", busy: "busy" };
     }
     if (containsActiveBufferMarker(second)) {
+      return { presence: "available", busy: "busy" };
+    }
+    if (hasVisibleTypingPrompt(second)) {
       return { presence: "available", busy: "busy" };
     }
     return { presence: "available", busy: "unknown" };
@@ -337,6 +408,106 @@ function resolveIterm2ApiPath(override?: string): string {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function defaultFileStatReader(filePath: string): Promise<{ mtimeMs: number } | null> {
+  try {
+    const stats = await fs.promises.stat(filePath);
+    return { mtimeMs: stats.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+async function defaultCodexSessionFileReader(sessionId: string): Promise<{
+  sessionId: string;
+  filePath: string;
+  cwd?: string | null;
+} | null> {
+  const sessionsRoot = path.join(os.homedir(), ".codex", "sessions");
+  const filePath = await findCodexSessionFile(sessionsRoot, sessionId);
+  if (!filePath) {
+    return null;
+  }
+  try {
+    const firstLine = await readFirstLine(filePath);
+    if (!firstLine) {
+      return null;
+    }
+    const record = JSON.parse(firstLine) as {
+      type?: string;
+      payload?: { id?: unknown; cwd?: unknown };
+    };
+    const parsedSessionId = typeof record.payload?.id === "string" ? record.payload.id : null;
+    if (record.type !== "session_meta" || parsedSessionId !== sessionId) {
+      return null;
+    }
+    return {
+      sessionId: parsedSessionId,
+      filePath,
+      cwd: typeof record.payload?.cwd === "string" ? record.payload.cwd : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function findCodexSessionFile(root: string, sessionId: string): Promise<string | null> {
+  let years: fs.Dirent[];
+  try {
+    years = await fs.promises.readdir(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const year of years) {
+    if (!year.isDirectory()) {
+      continue;
+    }
+    const yearPath = path.join(root, year.name);
+    const match = await walkCodexSessionLevel(yearPath, sessionId, 2);
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
+async function walkCodexSessionLevel(dir: string, sessionId: string, depth: number): Promise<string | null> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isFile() && entry.name.endsWith(`${sessionId}.jsonl`)) {
+      return entryPath;
+    }
+    if (entry.isDirectory() && depth > 0) {
+      const match = await walkCodexSessionLevel(entryPath, sessionId, depth - 1);
+      if (match) {
+        return match;
+      }
+    }
+  }
+  return null;
+}
+
+async function readFirstLine(filePath: string): Promise<string | null> {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(4096);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead <= 0) {
+      return null;
+    }
+    const chunk = buffer.toString("utf8", 0, bytesRead);
+    const newline = chunk.indexOf("\n");
+    return (newline >= 0 ? chunk.slice(0, newline) : chunk).trim() || null;
+  } finally {
+    await handle.close();
+  }
 }
 
 function isTmuxMissingPaneError(error: unknown): boolean {
