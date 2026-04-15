@@ -6,6 +6,7 @@ import {
   Iterm2TerminalStateProbe,
   ClaudeCodeRuntimePresenceProbe,
   ClaudeCodeTerminalStateProbe,
+  TmuxTerminalStateProbe,
 } from "../src/runtime_gate";
 import { TerminalActivationTarget } from "../src/model";
 
@@ -29,6 +30,32 @@ function makeItermTarget(): TerminalActivationTarget {
     tty: null,
     termProgram: "iTerm.app",
     itermSessionId: "SESSION-1",
+    createdAt: "2026-04-01T00:00:00.000Z",
+    updatedAt: "2026-04-01T00:00:00.000Z",
+    lastSeenAt: "2026-04-01T00:00:00.000Z",
+  };
+}
+
+function makeTmuxTarget(): TerminalActivationTarget {
+  return {
+    targetId: "tgt_tmux",
+    agentId: "agent_codex_tmux",
+    kind: "terminal",
+    status: "active",
+    offlineSince: null,
+    consecutiveFailures: 0,
+    lastDeliveredAt: null,
+    lastError: null,
+    mode: "agent_prompt",
+    notifyLeaseMs: 100,
+    runtimeKind: "codex",
+    runtimeSessionId: "thread-tmux-1",
+    runtimePid: 1234,
+    backend: "tmux",
+    tmuxPaneId: "%2",
+    tty: "/dev/ttys001",
+    termProgram: "tmux",
+    itermSessionId: null,
     createdAt: "2026-04-01T00:00:00.000Z",
     updatedAt: "2026-04-01T00:00:00.000Z",
     lastSeenAt: "2026-04-01T00:00:00.000Z",
@@ -190,6 +217,133 @@ test("DefaultActivationGate defers when the terminal probe reports busy", async 
   assert.deepEqual(await gate.evaluate(makeItermTarget()), {
     outcome: "defer",
     reason: "terminal_busy",
+  });
+});
+
+test("TmuxTerminalStateProbe reports gone when the pane is absent", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      const error = new Error("can't find pane: %2") as Error & { stderr?: string };
+      error.stderr = "can't find pane: %2";
+      throw error;
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "gone",
+    busy: "unknown",
+  });
+});
+
+test("TmuxTerminalStateProbe trims pane ids in supports()", () => {
+  const probe = new TmuxTerminalStateProbe();
+  const target = makeTmuxTarget();
+  target.tmuxPaneId = "   ";
+  assert.equal(probe.supports(target), false);
+});
+
+test("TmuxTerminalStateProbe reports unknown when tmux pane lookup fails for non-missing reasons", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      throw new Error("failed to connect to server");
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "unknown",
+    busy: "unknown",
+  });
+});
+
+test("TmuxTerminalStateProbe reports busy when the buffer tail changes", async () => {
+  const buffers = ["first snapshot", "second snapshot"];
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return { stdout: `${buffers.shift() ?? "second snapshot"}\n`, stderr: "" };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
+test("TmuxTerminalStateProbe reports busy when the stable buffer shows a codex activity marker", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "workspace\n• Working (1m 23s • esc to interrupt)\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
+test("TmuxTerminalStateProbe reports busy when the active pane shows typed prompt input", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "question text\n\n› abcdefg\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
+test("TmuxTerminalStateProbe reports unknown when the pane is stable and prompt is empty", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "workspace\nAll quiet here\n› \n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "unknown",
   });
 });
 
