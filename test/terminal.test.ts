@@ -98,3 +98,60 @@ test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", as
     "\r",
   ]);
 });
+
+test("TerminalDispatcher uses literal text plus carriage return for tmux targets", async () => {
+  const calls: Array<{ file: string; args: string[] }> = [];
+  const dispatcher = new TerminalDispatcher(async (file, args) => {
+    calls.push({
+      file,
+      args: [...args],
+    });
+    return {
+      stdout: "sent\n",
+      stderr: "",
+    };
+  });
+
+  const target: TerminalActivationTarget = {
+    targetId: "tgt_tmux_1",
+    agentId: "agent_codex_tmux",
+    kind: "terminal",
+    status: "active",
+    offlineSince: null,
+    consecutiveFailures: 0,
+    lastDeliveredAt: null,
+    lastError: null,
+    mode: "agent_prompt",
+    notifyLeaseMs: 600000,
+    runtimeKind: "codex",
+    runtimeSessionId: "thread-tmux-1",
+    backend: "tmux",
+    tmuxPaneId: "%2",
+    tty: null,
+    termProgram: "tmux",
+    itermSessionId: null,
+    createdAt: "2026-04-07T00:00:00.000Z",
+    updatedAt: "2026-04-07T00:00:00.000Z",
+    lastSeenAt: "2026-04-07T00:00:00.000Z",
+  };
+
+  await dispatcher.dispatch(target, "AgentInbox: hello");
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].file, "tmux");
+  assert.deepEqual(calls[0].args, [
+    "send-keys",
+    "-t",
+    "%2",
+    "-l",
+    "AgentInbox: hello",
+  ]);
+  assert.equal(calls[1].file, "tmux");
+  assert.deepEqual(calls[1].args, [
+    "send-keys",
+    "-t",
+    "%2",
+    "-l",
+    "\r",
+  ]);
+});
