@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { TerminalActivationTarget } from "./model";
 
 const execFileAsync = promisify(execFile);
@@ -47,9 +49,11 @@ export class DefaultActivationGate implements ActivationGate {
   constructor(
     private readonly runtimeProbes: RuntimePresenceProbe[] = [
       new CodexRuntimePresenceProbe(),
+      new ClaudeCodeRuntimePresenceProbe(),
     ],
     private readonly terminalProbes: TerminalStateProbe[] = [
       new Iterm2TerminalStateProbe(),
+      new ClaudeCodeTerminalStateProbe(),
     ],
   ) {}
 
@@ -114,7 +118,14 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
-    return target.backend === "iterm2" && typeof target.itermSessionId === "string" && target.itermSessionId.length > 0;
+    // Only support iTerm2 targets that are NOT Claude Code
+    // Claude Code targets are handled by ClaudeCodeTerminalStateProbe
+    return (
+      target.backend === "iterm2" &&
+      target.runtimeKind !== "claude_code" &&
+      typeof target.itermSessionId === "string" &&
+      target.itermSessionId.length > 0
+    );
   }
 
   async check(target: TerminalActivationTarget): Promise<{
@@ -222,4 +233,205 @@ function resolveIterm2ApiPath(override?: string): string {
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export class ClaudeCodeRuntimePresenceProbe implements RuntimePresenceProbe {
+  constructor(
+    private readonly killFn: (pid: number, signal: number) => void = (pid, signal) => process.kill(pid, signal),
+    private readonly sessionFileReader?: (pid: number) => Promise<{ sessionId: string; cwd: string } | null>,
+  ) {}
+
+  supports(target: TerminalActivationTarget): boolean {
+    return target.runtimeKind === "claude_code" && Number.isInteger(target.runtimePid);
+  }
+
+  async check(target: TerminalActivationTarget): Promise<RuntimePresenceStatus> {
+    if (!Number.isInteger(target.runtimePid)) {
+      return "unknown";
+    }
+
+    try {
+      // 1. Check if process exists
+      this.killFn(target.runtimePid!, 0);
+
+      // 2. Verify session file exists and is valid
+      const sessionInfo = await (this.sessionFileReader ?? this.defaultSessionFileReader)(target.runtimePid!);
+      if (!sessionInfo) {
+        return "gone"; // Process exists but session file is invalid/missing
+      }
+
+      // 3. Verify session ID matches (prevent PID reuse)
+      if (target.runtimeSessionId && sessionInfo.sessionId !== target.runtimeSessionId) {
+        return "gone";
+      }
+
+      return "alive";
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : "";
+      if (code === "ESRCH") {
+        return "gone"; // Process doesn't exist
+      }
+      return "unknown";
+    }
+  }
+
+  private readonly defaultSessionFileReader = async (pid: number): Promise<{
+    sessionId: string;
+    cwd: string;
+  } | null> => {
+    const sessionFile = path.join(os.homedir(), ".claude", "sessions", `${pid}.json`);
+    try {
+      const content = await fs.promises.readFile(sessionFile, "utf8");
+      const session = JSON.parse(content);
+
+      if (!session.sessionId || typeof session.sessionId !== "string") {
+        return null;
+      }
+
+      return {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+      };
+    } catch {
+      return null;
+    }
+  };
+}
+
+export class ClaudeCodeTerminalStateProbe implements TerminalStateProbe {
+  constructor(
+    private readonly sessionFileReader?: (pid: number) => Promise<{ sessionId: string; cwd: string } | null>,
+    private readonly logFileStatReader?: (path: string) => Promise<{ mtimeMs: number } | null>,
+    private readonly sleepFn: (ms: number) => Promise<void> = sleep,
+  ) {}
+
+  supports(target: TerminalActivationTarget): boolean {
+    return target.runtimeKind === "claude_code";
+  }
+
+  async check(target: TerminalActivationTarget): Promise<{
+    presence: TerminalPresenceStatus;
+    busy: TerminalBusyStatus;
+  }> {
+    if (!target.runtimePid || !target.runtimeSessionId) {
+      return { presence: "unknown", busy: "unknown" };
+    }
+
+    try {
+      // 1. Read session file to get cwd
+      const sessionData = await (this.sessionFileReader ?? this.defaultSessionFileReader)(target.runtimePid);
+      if (!sessionData) {
+        return { presence: "gone", busy: "unknown" };
+      }
+
+      // 2. Verify session ID matches
+      if (sessionData.sessionId !== target.runtimeSessionId) {
+        return { presence: "gone", busy: "unknown" };
+      }
+
+      // 3. Construct log file path using Claude Code's encoding rules
+      const sanitizedProjectPath = sessionData.cwd.replace(/[^a-zA-Z0-9]/g, '-');
+      const logFile = path.join(os.homedir(), ".claude", "projects", sanitizedProjectPath, `${target.runtimeSessionId}.jsonl`);
+
+      // 4. Check log file activity
+      const busy = await this.checkLogFileActivity(logFile);
+
+      // 5. Check iTerm2 session presence if available
+      const presence = target.backend === "iterm2" && target.itermSessionId
+        ? await this.checkIterm2Presence(target.itermSessionId)
+        : "available";
+
+      return { presence, busy };
+
+    } catch (error) {
+      console.warn('Claude Code state check failed:', error);
+      return { presence: "unknown", busy: "unknown" };
+    }
+  }
+
+  private readonly defaultSessionFileReader = async (pid: number): Promise<{
+    sessionId: string;
+    cwd: string;
+  } | null> => {
+    const sessionFile = path.join(os.homedir(), ".claude", "sessions", `${pid}.json`);
+    try {
+      const content = await fs.promises.readFile(sessionFile, "utf8");
+      const session = JSON.parse(content);
+
+      if (!session.sessionId || typeof session.sessionId !== "string") {
+        return null;
+      }
+
+      return {
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  private readonly defaultLogFileStatReader = async (filePath: string): Promise<{ mtimeMs: number } | null> => {
+    try {
+      const stats = await fs.promises.stat(filePath);
+      return { mtimeMs: stats.mtimeMs };
+    } catch {
+      return null;
+    }
+  };
+
+  private async checkLogFileActivity(logFile: string): Promise<TerminalBusyStatus> {
+    try {
+      const statResult = await (this.logFileStatReader ?? this.defaultLogFileStatReader)(logFile);
+      if (!statResult) {
+        return "unknown";
+      }
+
+      const timeSinceLastActivity = Date.now() - statResult.mtimeMs;
+
+      // Activity within last 5 seconds = busy
+      if (timeSinceLastActivity < 5000) {
+        return "busy";
+      }
+
+      // Secondary sampling to confirm (avoid false positives)
+      await this.sleepFn(250);
+      const statResult2 = await (this.logFileStatReader ?? this.defaultLogFileStatReader)(logFile);
+      if (!statResult2) {
+        return "unknown";
+      }
+
+      const timeSinceLastActivity2 = Date.now() - statResult2.mtimeMs;
+
+      if (statResult2.mtimeMs > statResult.mtimeMs && timeSinceLastActivity2 < 5000) {
+        return "busy";
+      }
+
+      // Activity within last 30 seconds = idle but recently active
+      return timeSinceLastActivity2 < 30000 ? "idle" : "unknown";
+
+    } catch {
+      return "unknown";
+    }
+  }
+
+  private async checkIterm2Presence(itermSessionId: string): Promise<TerminalPresenceStatus> {
+    try {
+      const it2api = resolveIterm2ApiPath();
+      const result = await execFileAsync(it2api, ["list-sessions"]);
+      const lines = result.stdout.split(/\r?\n/).map((line: string) => line.trim()).filter((line: string) => line.length > 0);
+
+      // Parse session IDs from iTerm2 output format: "Session \"...\" id=<UUID> ..."
+      const sessionIds = lines
+        .map((line: string) => {
+          const match = line.match(/id=([A-F0-9-]+)/);
+          return match ? match[1] : null;
+        })
+        .filter((id: string | null): id is string => id !== null);
+
+      return sessionIds.includes(itermSessionId) ? "available" : "gone";
+    } catch {
+      return "unknown";
+    }
+  }
 }
