@@ -184,7 +184,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 8);
+    assert.equal(state.appliedCount, 9);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -201,7 +201,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 8);
+    assert.equal(state.appliedCount, 9);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
@@ -2009,6 +2009,49 @@ test("inbox read defaults to unacked items and ack through clears a processed ba
 
     const history = service.listInboxItems(alpha.agentId, { includeAcked: true });
     assert.equal(history.filter((item) => item.ackedAt !== null).length, 2);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ack through matches visible inbox order for same-timestamp items", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "same-ts");
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "same-ts",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: alpha.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    for (const event of ["evt-1", "evt-2", "evt-3", "evt-4"]) {
+      await service.appendSourceEventByCaller(source.sourceId, {
+        sourceNativeId: event,
+        eventVariant: "message.created",
+        metadata: {},
+        rawPayload: { text: event },
+        occurredAt: "2026-04-01T00:00:00.000Z",
+      });
+    }
+
+    const poll = await service.pollSubscription(subscription.subscriptionId);
+    assert.equal(poll.inboxItemsCreated, 4);
+
+    const allItems = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.deepEqual(allItems.map((item) => item.sourceNativeId), ["evt-1", "evt-2", "evt-3", "evt-4"]);
+
+    const ack = service.ackInboxItemsThrough(alpha.agentId, allItems[2]!.itemId);
+    assert.equal(ack.acked, 3);
+
+    const unread = service.listInboxItems(alpha.agentId);
+    assert.deepEqual(unread.map((item) => item.sourceNativeId), ["evt-4"]);
   } finally {
     await service.stop();
     store.close();
