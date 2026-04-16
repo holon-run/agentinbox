@@ -19,6 +19,7 @@
   },
   "files": [
     "dist/src/",
+    "scripts/",
     "drizzle/",
     "README.md",
     "LICENSE"

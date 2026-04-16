@@ -189,8 +189,10 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     private readonly execAsync: ExecFileAsyncLike = execFileAsync,
     private readonly options: {
       iterm2ApiPath?: string;
+      pythonScriptPath?: string;
       sampleDelayMs?: number;
       sleep?: (ms: number) => Promise<void>;
+      enablePythonProbe?: boolean;
     } = {},
   ) {}
 
@@ -214,6 +216,126 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       return { presence: "unknown", busy: "unknown" };
     }
 
+    // Try Python API probe first (if enabled)
+    if (this.options.enablePythonProbe !== false) {
+      const pythonResult = await this.tryPythonApiProbe(sessionId, target.runtimeKind);
+      if (pythonResult && pythonResult.presence !== "unknown") {
+        return pythonResult;
+      }
+    }
+
+    // Fallback to command-line tools
+    return this.checkWithCommandLineTools(sessionId);
+  }
+
+  private async tryPythonApiProbe(
+    sessionId: string,
+    runtimeKind: string
+  ): Promise<{ presence: TerminalPresenceStatus; busy: TerminalBusyStatus } | null> {
+    try {
+      const scriptPath = this.options.pythonScriptPath ?? resolvePythonProbeScript();
+      const result = await this.execAsync("python3", [scriptPath, sessionId], {
+        env: { ...process.env, PYTHONIOENCODING: "utf-8" }
+      });
+
+      const data = JSON.parse(result.stdout);
+
+      if (data.status === "gone") {
+        return { presence: "gone", busy: "unknown" };
+      }
+
+      if (data.status === "available") {
+        // If we have cursor and lines data, use cursor-aware detection
+        if (data.cursor && data.lines) {
+          const bufferTail = data.lines.join("\n");
+          const cursorPosition = { x: data.cursor.x, y: data.cursor.y };
+          const screenHeight = data.screen_height;
+          const startLine = data.start_line ?? 0;
+
+          // Perform cursor-aware typing detection
+          const busyStatus = evaluatePythonCursorAwareTypingPrompt(
+            bufferTail,
+            cursorPosition,
+            screenHeight,
+            startLine,
+            runtimeKind
+          );
+
+          // If cursor-aware detection indicates busy, return immediately
+          if (busyStatus === "busy") {
+            return { presence: "available", busy: "busy" };
+          }
+
+          // If cursor-aware detection is certain it's not busy, don't apply prompt heuristics
+          if (busyStatus === "not_busy") {
+            // Still check for buffer changes and active markers
+            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+            const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
+              env: { ...process.env, PYTHONIOENCODING: "utf-8" }
+            });
+            const secondData = JSON.parse(secondResult.stdout);
+
+            if (secondData.status === "available" && secondData.lines) {
+              const secondBufferTail = secondData.lines.join("\n");
+              if (bufferTail !== secondBufferTail) {
+                return { presence: "available", busy: "busy" };
+              }
+            }
+
+            // Check for active buffer markers
+            if (containsActiveBufferMarker(bufferTail)) {
+              return { presence: "available", busy: "busy" };
+            }
+
+            return { presence: "available", busy: "idle" };
+          }
+
+          // If cursor-aware detection is uncertain, fall back to buffer change detection only
+          // Do NOT use generic typing prompts to avoid false positives (see #116)
+          if (busyStatus === "unknown") {
+            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+            const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
+              env: { ...process.env, PYTHONIOENCODING: "utf-8" }
+            });
+            const secondData = JSON.parse(secondResult.stdout);
+
+            if (secondData.status === "available" && secondData.lines) {
+              const secondBufferTail = secondData.lines.join("\n");
+              if (bufferTail !== secondBufferTail) {
+                return { presence: "available", busy: "busy" };
+              }
+            }
+
+            // Check for active buffer markers
+            if (containsActiveBufferMarker(bufferTail)) {
+              return { presence: "available", busy: "busy" };
+            }
+
+            // Return unknown when cursor-aware detection is uncertain
+            // Do NOT fall back to generic typing prompts to avoid false positives
+            return { presence: "available", busy: "unknown" };
+          }
+
+          // This should never be reached as all cases are handled above
+          return { presence: "available", busy: "unknown" };
+        }
+
+        // If we don't have cursor data, return unknown to trigger fallback
+        return null;
+      }
+
+      // Any other status means we should fall back
+      return null;
+    } catch {
+      // Python API probe failed, fall back to command-line tools
+      return null;
+    }
+  }
+
+  private async checkWithCommandLineTools(sessionId: string): Promise<{
+    presence: TerminalPresenceStatus;
+    busy: TerminalBusyStatus;
+  }> {
     let it2api: string;
     try {
       it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
@@ -243,9 +365,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     if (containsActiveBufferMarker(second)) {
       return { presence: "available", busy: "busy" };
     }
-    if (hasVisibleTypingPrompt(second)) {
-      return { presence: "available", busy: "busy" };
-    }
+    // Do NOT use generic typing prompts to avoid false positives (see #116)
     return { presence: "available", busy: "unknown" };
   }
 
@@ -326,17 +446,12 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     if (containsActiveBufferMarker(second)) {
       return { presence: "available", busy: "busy" };
     }
+    // Use cursor-aware detection when available
     const cursorHint = evaluateCursorAwareTypingPrompt(target, paneState, second);
     if (cursorHint === "busy") {
       return { presence: "available", busy: "busy" };
     }
-    if (
-      cursorHint === "unknown" &&
-      paneState.active &&
-      hasVisibleTypingPrompt(second, typingPromptPrefixesForRuntime(target.runtimeKind))
-    ) {
-      return { presence: "available", busy: "busy" };
-    }
+    // Do NOT fall back to generic typing prompts when cursorHint is unknown to avoid false positives (see #116)
     return { presence: "available", busy: "unknown" };
   }
 
@@ -829,4 +944,105 @@ function parseIterm2SessionIds(stdout: string): string[] {
       return match ? match[1] : null;
     })
     .filter((id): id is string => id !== null);
+}
+
+function resolvePythonProbeScript(override?: string): string {
+  if (override) {
+    return override;
+  }
+
+  const scriptRelativePath = path.join("scripts", "iterm2_cursor_probe.py");
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+
+  const addCandidate = (candidate: string): void => {
+    const normalized = path.normalize(candidate);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      candidates.push(normalized);
+    }
+  };
+
+  // Search upward from the current module's directory
+  let currentDir = __dirname;
+  for (let i = 0; i < 5; i++) { // Limit upward search depth
+    addCandidate(path.join(currentDir, scriptRelativePath));
+    addCandidate(path.join(currentDir, "dist", scriptRelativePath));
+    addCandidate(path.join(currentDir, "dist", "src", scriptRelativePath));
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+
+  // Check process working directory and its dist paths
+  addCandidate(path.join(process.cwd(), scriptRelativePath));
+  addCandidate(path.join(process.cwd(), "dist", scriptRelativePath));
+  addCandidate(path.join(process.cwd(), "dist", "src", scriptRelativePath));
+
+  // Check all candidates
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `Unable to locate iterm2_cursor_probe.py. Checked: ${candidates.join(", ")}. ` +
+      "Ensure scripts/iterm2_cursor_probe.py is shipped with the package or copied into dist/ during build."
+  );
+}
+
+function evaluatePythonCursorAwareTypingPrompt(
+  bufferTail: string,
+  cursorPosition: { x: number; y: number },
+  screenHeight: number,
+  startLine: number,
+  runtimeKind: string
+): "busy" | "not_busy" | "unknown" {
+  const lines = bufferTail.split("\n");
+  const lastLineIndex = lines.length - 1;
+
+  // Cursor coordinates are in full-screen rows, while bufferTail only contains
+  // the lines from startLine to end of screen. First ensure the cursor is on the
+  // terminal's last visible row, then map that row into the captured window.
+  if (cursorPosition.y !== screenHeight - 1) {
+    return "not_busy";
+  }
+
+  // Map the cursor position into the captured buffer window using startLine
+  const cursorRowInBuffer = cursorPosition.y - startLine;
+
+  // If the last visible screen row is not represented by the captured tail,
+  // or does not map to the last captured line, we cannot evaluate reliably.
+  if (cursorRowInBuffer < 0 || cursorRowInBuffer > lastLineIndex) {
+    return "unknown";
+  }
+
+  if (cursorRowInBuffer !== lastLineIndex) {
+    return "not_busy";
+  }
+
+  const lastLine = lines[lastLineIndex] || "";
+  const promptPrefix = runtimeTypingPromptPrefix(runtimeKind as TerminalActivationTarget["runtimeKind"]);
+
+  if (!promptPrefix) {
+    return "unknown";
+  }
+
+  // Check if the last line starts with the runtime-specific prompt prefix
+  if (lastLine.startsWith(promptPrefix)) {
+    // Check if cursor is after the prompt prefix
+    if (cursorPosition.x > promptPrefix.length) {
+      const afterPrompt = lastLine.slice(promptPrefix.length).trim();
+      // If there's content after the prompt, user is typing
+      if (afterPrompt.length > 0) {
+        return "busy";
+      }
+    }
+  }
+
+  return "not_busy";
 }

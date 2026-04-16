@@ -268,7 +268,7 @@ test("Iterm2TerminalStateProbe reports unknown when the buffer is stable and qui
   });
 });
 
-test("Iterm2TerminalStateProbe reports busy when the stable buffer shows visible typed input", async () => {
+test("Iterm2TerminalStateProbe reports unknown when the stable buffer shows visible typed input", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
       return {
@@ -291,9 +291,11 @@ test("Iterm2TerminalStateProbe reports busy when the stable buffer shows visible
     sleep: async () => {},
   });
 
+  // After PR #116 tightening, generic typing prompts are no longer used to avoid false positives
+  // The buffer is stable and shows no active markers, so it returns unknown
   assert.deepEqual(await probe.check(makeItermTarget()), {
     presence: "available",
-    busy: "busy",
+    busy: "unknown",
   });
 });
 
@@ -603,13 +605,15 @@ test("TmuxTerminalStateProbe falls back to prompt heuristics when the cursor row
     sleep: async () => {},
   });
 
+  // After PR #116 tightening, when cursor-aware mapping is uncertain we do not
+  // fall back to generic prompt heuristics, to avoid false positives.
   assert.deepEqual(await probe.check(makeTmuxTarget()), {
     presence: "available",
-    busy: "busy",
+    busy: "unknown",
   });
 });
 
-test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadata is unavailable", async () => {
+test("TmuxTerminalStateProbe reports unknown when cursor metadata is unavailable and prompt heuristics would apply", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
       return { stdout: "1 0\n", stderr: "" };
@@ -625,9 +629,11 @@ test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadat
     sleep: async () => {},
   });
 
+  // After PR #116 tightening, when cursor metadata is unavailable, we do NOT fall back to
+  // generic prompt heuristics to avoid false positives
   assert.deepEqual(await probe.check(makeTmuxTarget()), {
     presence: "available",
-    busy: "busy",
+    busy: "unknown",
   });
 });
 
@@ -802,4 +808,148 @@ test("Iterm2TerminalStateProbe supports non-claude iTerm2 targets", () => {
   const probe = new Iterm2TerminalStateProbe();
   const codexTarget = makeItermTarget(); // This has runtimeKind: "codex"
   assert.equal(probe.supports(codexTarget), true);
+});
+
+test("Iterm2TerminalStateProbe with Python API reports busy when cursor is at prompt with input", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        // Simulate Python API response with the cursor on the in-bounds prompt line.
+        return {
+          stdout: JSON.stringify({
+            status: "available",
+            cursor: { x: 10, y: 4 }, // Last line (index 4) in 5-line screen; cursor at last line.
+            screen_height: 5,
+            start_line: 0,
+            lines: [
+              "line 1",
+              "line 2",
+              "line 3",
+              "line 4",
+              "› test input" // Cursor is on this prompt line (index 4), after the entered input.
+            ]
+          }),
+          stderr: ""
+        };
+      }
+      throw new Error("Unexpected command: " + file);
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "busy");
+});
+
+test("Iterm2TerminalStateProbe with Python API reports idle when cursor is not at prompt line", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        // Simulate Python API response with cursor not at last line
+        return {
+          stdout: JSON.stringify({
+            status: "available",
+            cursor: { x: 5, y: 2 }, // Cursor at line 2, not at last line (4)
+            screen_height: 5,
+            start_line: 0,
+            lines: [
+              "line 1",
+              "line 2 with cursor",
+              "line 3",
+              "line 4",
+              "› test input"
+            ]
+          }),
+          stderr: ""
+        };
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "idle");
+});
+
+test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fails", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        throw new Error("Python not available");
+      }
+      // Fall back to it2api
+      if (file === "/tmp/fake-it2api") {
+        if (args[0] === "list-sessions") {
+          return {
+            stdout: `Session "test" id=4F7A2F18-E5F4-4E27-A391-23953DE1F826 (110 x 30)`,
+            stderr: ""
+          };
+        }
+        if (args[0] === "get-buffer") {
+          return {
+            stdout: "more content\n› test input",
+            stderr: ""
+          };
+        }
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      iterm2ApiPath: "/tmp/fake-it2api",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  // After PR #116 tightening, CLI fallback no longer uses generic typing prompts to avoid false positives
+  // The buffer is stable and shows no active markers, so it returns unknown
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "unknown");
+});
+
+test("Iterm2TerminalStateProbe with Python API reports gone when session is gone", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        // Simulate Python API response for gone session
+        return {
+          stdout: JSON.stringify({
+            status: "gone"
+          }),
+          stderr: ""
+        };
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  assert.equal(result.presence, "gone");
+  assert.equal(result.busy, "unknown");
 });
