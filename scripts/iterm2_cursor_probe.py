@@ -40,6 +40,7 @@ def probe_session(connection, session_id):
                     "status": "available",
                     "cursor": {"x": cursor.x, "y": cursor.y},
                     "screen_height": screen.number_of_lines,
+                    "start_line": start_line,
                     "lines": lines
                 }
             except Exception as e:
