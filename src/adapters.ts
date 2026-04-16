@@ -14,7 +14,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
-import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceProfileRegistry } from "./sources/remote_profiles";
+import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceModuleRegistry } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -70,7 +70,7 @@ export class AdapterRegistry {
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
   private readonly homeDir: string;
-  private readonly remoteProfileRegistry: RemoteSourceProfileRegistry;
+  private readonly remoteModuleRegistry: RemoteSourceModuleRegistry;
 
   constructor(
     store: AgentInboxStore,
@@ -78,15 +78,15 @@ export class AdapterRegistry {
     options?: {
       homeDir?: string;
       remoteSourceClient?: UxcRemoteSourceClient;
-      remoteProfileRegistry?: RemoteSourceProfileRegistry;
+      remoteModuleRegistry?: RemoteSourceModuleRegistry;
     },
   ) {
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
-    this.remoteProfileRegistry = options?.remoteProfileRegistry ?? new RemoteSourceProfileRegistry();
+    this.remoteModuleRegistry = options?.remoteModuleRegistry ?? new RemoteSourceModuleRegistry();
     this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
       homeDir: this.homeDir,
       client: options?.remoteSourceClient,
-      profileRegistry: this.remoteProfileRegistry,
+      moduleRegistry: this.remoteModuleRegistry,
     });
   }
 
@@ -166,14 +166,14 @@ export class AdapterRegistry {
   async resolveSourceIdentity(source: SubscriptionSource): Promise<ResolvedSourceIdentity> {
     return resolveSourceIdentity(source, {
       homeDir: this.homeDir,
-      profileRegistry: this.remoteProfileRegistry,
+      moduleRegistry: this.remoteModuleRegistry,
     });
   }
 
   async resolveSourceSchema(source: SubscriptionSource): Promise<ResolvedSourceSchema> {
     return resolveSourceSchema(source, {
       homeDir: this.homeDir,
-      profileRegistry: this.remoteProfileRegistry,
+      moduleRegistry: this.remoteModuleRegistry,
     });
   }
 

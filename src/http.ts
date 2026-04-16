@@ -1358,6 +1358,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("invalid webhook activation target") ||
     message.startsWith("remote_source requires") ||
     message.startsWith("remote_source profile") ||
+    message.startsWith("remote_source module") ||
     message.includes("requires tmuxPaneId") ||
     message.includes("requires iTerm2 session identity") ||
     message.includes("requires a supported terminal context") ||

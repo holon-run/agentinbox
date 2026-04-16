@@ -885,7 +885,7 @@ test("source details keep a wrapped fallback schema when non-identity capability
   }
 });
 
-test("subscription add can expand a remote profile shortcut into standard subscription fields", async () => {
+test("subscription add can expand a remote module shortcut into standard subscription fields", async () => {
   const { store, service, dir } = await makeService();
   try {
     const profileDir = path.join(dir, "source-profiles");
@@ -963,7 +963,7 @@ test("subscription add can expand a remote profile shortcut into standard subscr
   }
 });
 
-test("remote_source profile contract rejects non-function optional hooks", async () => {
+test("remote_source module contract rejects non-function optional hooks", async () => {
   const { store, service, dir } = await makeService();
   try {
     const profileDir = path.join(dir, "source-profiles");
