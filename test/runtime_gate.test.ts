@@ -812,14 +812,15 @@ test("Iterm2TerminalStateProbe with Python API reports busy when cursor is at pr
         return {
           stdout: JSON.stringify({
             status: "available",
-            cursor: { x: 10, y: 4 }, // Last line in `lines`; cursor is within the prompt line content.
+            cursor: { x: 10, y: 4 }, // Last line (index 4) in 5-line screen; cursor at last line.
             screen_height: 5,
             start_line: 0,
             lines: [
               "line 1",
               "line 2",
               "line 3",
-              "› test input" // Cursor is on this prompt line, after the entered input.
+              "line 4",
+              "› test input" // Cursor is on this prompt line (index 4), after the entered input.
             ]
           }),
           stderr: ""
@@ -856,6 +857,7 @@ test("Iterm2TerminalStateProbe with Python API reports idle when cursor is not a
               "line 1",
               "line 2 with cursor",
               "line 3",
+              "line 4",
               "› test input"
             ]
           }),

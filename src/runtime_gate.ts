@@ -250,12 +250,14 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
           const bufferTail = data.lines.join("\n");
           const cursorPosition = { x: data.cursor.x, y: data.cursor.y };
           const screenHeight = data.screen_height;
+          const startLine = data.start_line ?? 0;
 
           // Perform cursor-aware typing detection
           const busyStatus = evaluateCursorAwareTypingPrompt(
             bufferTail,
             cursorPosition,
             screenHeight,
+            startLine,
             runtimeKind
           );
 
@@ -1014,21 +1016,21 @@ function evaluateCursorAwareTypingPrompt(
   bufferTail: string,
   cursorPosition: { x: number; y: number },
   screenHeight: number,
+  startLine: number,
   runtimeKind: string
 ): "busy" | "not_busy" | "unknown" {
   const lines = bufferTail.split("\n");
   const lastLineIndex = lines.length - 1;
 
   // Cursor coordinates are in full-screen rows, while bufferTail only contains
-  // the last visible lines of the screen. First ensure the cursor is on the
+  // the lines from startLine to end of screen. First ensure the cursor is on the
   // terminal's last visible row, then map that row into the captured window.
   if (cursorPosition.y !== screenHeight - 1) {
     return "not_busy";
   }
 
-  // Map the cursor position into the captured buffer window
-  const capturedStartRow = Math.max(0, screenHeight - lines.length);
-  const cursorRowInBuffer = cursorPosition.y - capturedStartRow;
+  // Map the cursor position into the captured buffer window using startLine
+  const cursorRowInBuffer = cursorPosition.y - startLine;
 
   // If the last visible screen row is not represented by the captured tail,
   // or does not map to the last captured line, we cannot evaluate reliably.
