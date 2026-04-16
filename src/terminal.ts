@@ -104,12 +104,16 @@ export function deriveInlineItemPreview(item: ActivationItem, summary?: string |
   }
 
   for (const candidate of candidates) {
-    const preview = normalizeInlinePreview(candidate);
+    const preview = normalizeInlinePreviewText(candidate);
     if (preview) {
       return preview;
     }
   }
   return null;
+}
+
+export function normalizeInlinePreviewText(candidate: string): string | null {
+  return normalizeInlinePreview(candidate);
 }
 
 export function assignedAgentIdFromContext(input: {

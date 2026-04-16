@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-daemon-client";
-import { AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
+import { ActivationItem, AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
+import { normalizeInlinePreviewText } from "../terminal";
 import {
   deriveGithubTrackedResource,
   expandGithubSubscriptionShortcut,
@@ -94,6 +95,7 @@ export interface RemoteSourceProfile {
   expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | null;
   deriveTrackedResource?(filter: SubscriptionFilter, source: SubscriptionSource): { ref: string } | null;
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SubscriptionSource): LifecycleSignal | null;
+  deriveInlinePreview?(item: ActivationItem, source: SubscriptionSource): string | null;
 }
 
 const REMOTE_USER_PROFILE_ROOT_DIR = "source-profiles";
@@ -186,6 +188,7 @@ function validateProfileContract(profile: RemoteSourceProfile, sourcePath: strin
   validateOptionalHook(profile.expandSubscriptionShortcut, "expandSubscriptionShortcut", sourcePath);
   validateOptionalHook(profile.deriveTrackedResource, "deriveTrackedResource", sourcePath);
   validateOptionalHook(profile.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
+  validateOptionalHook(profile.deriveInlinePreview, "deriveInlinePreview", sourcePath);
 }
 
 function validateOptionalHook(value: unknown, name: string, sourcePath: string): void {
@@ -364,6 +367,36 @@ const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
       ],
       eventVariantExamples: ["workflow_run.ci.completed.failure", "workflow_run.nightly_checks.observed"],
     };
+  },
+  deriveInlinePreview(item: ActivationItem): string | null {
+    const repoFullName = asNonEmptyString(item.metadata.repoFullName);
+    const workflowName = asNonEmptyString(item.metadata.name)
+      ?? asNonEmptyString(item.metadata.displayTitle)
+      ?? asNonEmptyString(item.rawPayload.name)
+      ?? asNonEmptyString(item.rawPayload.display_title);
+    const headBranch = asNonEmptyString(item.metadata.headBranch) ?? asNonEmptyString(item.rawPayload.head_branch);
+    const conclusion = asNonEmptyString(item.metadata.conclusion) ?? asNonEmptyString(item.rawPayload.conclusion);
+    const status = asNonEmptyString(item.metadata.status) ?? asNonEmptyString(item.rawPayload.status);
+
+    const parts: string[] = [];
+    if (workflowName) {
+      parts.push(workflowName);
+    } else {
+      parts.push("Workflow run");
+    }
+    if (conclusion) {
+      parts.push(`completed ${conclusion}`);
+    } else if (status) {
+      parts.push(status);
+    }
+    if (repoFullName) {
+      parts.push(`for ${repoFullName}`);
+    }
+    if (headBranch) {
+      parts.push(`on ${headBranch}`);
+    }
+
+    return normalizeInlinePreviewText(parts.join(" "));
   },
   validateConfig(source: SubscriptionSource): void {
     parseGithubCiSourceConfig(source);

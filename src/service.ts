@@ -1853,9 +1853,15 @@ export class AgentInboxService {
           });
           return "deferred";
         }
-        const preview = totalUnackedCount === 1 && input.items.length === 1
-          ? deriveInlineItemPreview(input.items[0], input.summary)
-          : null;
+        let preview: string | null = null;
+        if (totalUnackedCount === 1 && input.items.length === 1) {
+          const singleItem = input.items[0];
+          const source = this.store.getSource(singleItem.sourceId);
+          if (source) {
+            preview = await this.adapters.deriveInlinePreview(source, singleItem);
+          }
+          preview ??= deriveInlineItemPreview(singleItem, input.summary);
+        }
         const prompt = renderAgentPrompt({
           inboxId: inbox.inboxId,
           totalUnackedCount,
