@@ -1,5 +1,5 @@
 import { ManagedSourceEnsureResponse, ManagedStreamReadResponse, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
+import { ActivationItem, AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
@@ -239,6 +239,17 @@ export class RemoteSourceRuntime {
       args: input.args,
       source: profileInputSource(source),
     });
+  }
+
+  async deriveInlinePreview(source: SubscriptionSource, item: ActivationItem): Promise<string | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const profile = await this.profileRegistry.resolve(source, this.homeDir);
+    if (typeof profile.deriveInlinePreview !== "function") {
+      return null;
+    }
+    return profile.deriveInlinePreview(item, profileInputSource(source));
   }
 
   private async syncAll(): Promise<void> {

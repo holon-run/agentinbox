@@ -1,4 +1,5 @@
 import {
+  ActivationItem,
   AppendSourceEventInput,
   DeliveryAttempt,
   DeliveryRequest,
@@ -191,6 +192,13 @@ export class AdapterRegistry {
       return null;
     }
     return this.remoteSource.expandSubscriptionShortcut(source, input);
+  }
+
+  async deriveInlinePreview(source: SubscriptionSource, item: ActivationItem): Promise<string | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.deriveInlinePreview(source, item);
   }
 
   status(): Record<string, unknown> {

@@ -2704,6 +2704,327 @@ test("single non-preview-friendly item falls back to the generic terminal prompt
   }
 });
 
+test("single github_repo_ci item uses source-specific inline preview in the terminal prompt", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-github-ci-preview",
+      tmuxPaneId: "%59",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: {
+        owner: "holon-run",
+        repo: "agentinbox",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceNativeId: "workflow_run:101",
+      sourceId: source.sourceId,
+      eventVariant: "workflow_run.ci.completed.success",
+      metadata: {
+        repoFullName: "holon-run/agentinbox",
+        name: "Node Tests",
+        status: "completed",
+        conclusion: "success",
+        headBranch: "feature/issue-112",
+      },
+      rawPayload: {
+        id: 101,
+        name: "Node Tests",
+        status: "completed",
+        conclusion: "success",
+        head_branch: "feature/issue-112",
+      },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(
+      terminalDispatcher.calls[0]!.prompt,
+      /Preview: Node Tests completed success for holon-run\/agentinbox on feature\/issue-112\./,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("user-defined remote_source profiles can opt into source-specific inline previews", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview-hook.mjs"),
+      `export default {
+  id: "demo.preview-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(rawPayload) {
+    return {
+      sourceNativeId: String(rawPayload.id ?? "evt-remote-preview"),
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload
+    };
+  },
+  deriveInlinePreview(item) {
+    return item.rawPayload.kind === "build" ? "Remote build finished for demo service" : null;
+  }
+};\n`,
+    );
+
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remote-preview-hook",
+      tmuxPaneId: "%60",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo/preview-hook",
+      config: {
+        profilePath: "preview-hook.mjs",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceNativeId: "evt-remote-preview",
+      sourceId: source.sourceId,
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload: {
+        kind: "build",
+        body: "{\"kind\":\"structured\",\"value\":42}",
+      },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(
+      terminalDispatcher.calls[0]!.prompt,
+      /Preview: Remote build finished for demo service\./,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("source-specific preview hook failures fall back to the generic preview", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview-hook-error.mjs"),
+      `export default {
+  id: "demo.preview-hook-error",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(rawPayload) {
+    return {
+      sourceNativeId: String(rawPayload.id ?? "evt-remote-preview-error"),
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload
+    };
+  },
+  deriveInlinePreview() {
+    throw new Error("broken preview hook");
+  }
+};\n`,
+    );
+
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remote-preview-hook-error",
+      tmuxPaneId: "%61",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo/preview-hook-error",
+      config: {
+        profilePath: "preview-hook-error.mjs",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceNativeId: "evt-remote-preview-error",
+      sourceId: source.sourceId,
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload: {
+        message: "Fallback generic preview still works when the source hook crashes.",
+      },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(
+      terminalDispatcher.calls[0]!.prompt,
+      /Preview: Fallback generic preview still works when the source hook crashes\./,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("source-specific previews are normalized at the core call boundary", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview-hook-unbounded.mjs"),
+      `export default {
+  id: "demo.preview-hook-unbounded",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(rawPayload) {
+    return {
+      sourceNativeId: String(rawPayload.id ?? "evt-remote-preview-unbounded"),
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload
+    };
+  },
+  deriveInlinePreview() {
+    return "Line one from source hook\\nLine two should collapse and this sentence is intentionally long so the core normalization path has to truncate it before rendering into the terminal activation prompt.";
+  }
+};\n`,
+    );
+
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remote-preview-unbounded",
+      tmuxPaneId: "%62",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo/preview-hook-unbounded",
+      config: {
+        profilePath: "preview-hook-unbounded.mjs",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceNativeId: "evt-remote-preview-unbounded",
+      sourceId: source.sourceId,
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const prompt = terminalDispatcher.calls[0]!.prompt;
+    assert.match(prompt, /Preview: Line one from source hook Line two should collapse/);
+    assert.doesNotMatch(prompt, /\n/);
+    assert.match(prompt, /\.\.\./);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("preview-aware terminal prompts still dedupe unchanged lease reminders", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { service, dir, store } = await makeService({
