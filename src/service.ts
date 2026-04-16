@@ -60,7 +60,7 @@ import {
   renderAgentPrompt,
   TerminalDispatcher,
 } from "./terminal";
-import { LifecycleSignal } from "./sources/remote_profiles";
+import { LifecycleSignal } from "./sources/remote_modules";
 import { ActivationGate, DefaultActivationGate } from "./runtime_gate";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;

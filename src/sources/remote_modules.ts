@@ -83,7 +83,7 @@ export interface LifecycleSignal {
   occurredAt?: string;
 }
 
-export interface RemoteSourceProfile {
+export interface RemoteSourceModule {
   id: string;
   validateConfig(source: SubscriptionSource): void;
   buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec;
@@ -97,54 +97,54 @@ export interface RemoteSourceProfile {
   deriveInlinePreview?(item: ActivationItem, source: SubscriptionSource): string | null;
 }
 
-const REMOTE_USER_PROFILE_ROOT_DIR = "source-profiles";
-const BUILTIN_PROFILE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot"]);
+const REMOTE_USER_MODULE_ROOT_DIR = "source-profiles";
+const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot"]);
 
-export class RemoteSourceProfileRegistry {
-  private readonly profileCache = new Map<string, RemoteSourceProfile>();
+export class RemoteSourceModuleRegistry {
+  private readonly moduleCache = new Map<string, RemoteSourceModule>();
 
-  resolve(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceProfile> {
+  resolve(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceModule> {
     if (source.sourceType === "github_repo") {
-      return Promise.resolve(GITHUB_REPO_PROFILE);
+      return Promise.resolve(GITHUB_REPO_MODULE);
     }
     if (source.sourceType === "github_repo_ci") {
-      return Promise.resolve(GITHUB_REPO_CI_PROFILE);
+      return Promise.resolve(GITHUB_REPO_CI_MODULE);
     }
     if (source.sourceType === "feishu_bot") {
-      return Promise.resolve(FEISHU_BOT_PROFILE);
+      return Promise.resolve(FEISHU_BOT_MODULE);
     }
     if (source.sourceType !== "remote_source") {
-      throw new Error(`unsupported source type for remote profile: ${source.sourceType}`);
+      throw new Error(`unsupported source type for remote module: ${source.sourceType}`);
     }
-    return this.loadUserProfile(source, homeDir);
+    return this.loadUserModule(source, homeDir);
   }
 
-  private async loadUserProfile(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceProfile> {
+  private async loadUserModule(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceModule> {
     const config = source.config ?? {};
     const profilePath = asNonEmptyString(config.profilePath);
     if (!profilePath) {
-      throw new Error("remote_source requires config.profilePath");
+      throw new Error("remote_source requires config.profilePath (module path)");
     }
 
-    const profileRoot = path.resolve(homeDir, REMOTE_USER_PROFILE_ROOT_DIR);
-    const resolvedPath = resolveAndValidateProfilePath(profileRoot, profilePath);
+    const moduleRoot = path.resolve(homeDir, REMOTE_USER_MODULE_ROOT_DIR);
+    const resolvedPath = resolveAndValidateModulePath(moduleRoot, profilePath);
     const cacheKey = `${resolvedPath}:${source.sourceKey}`;
-    const cached = this.profileCache.get(cacheKey);
+    const cached = this.moduleCache.get(cacheKey);
     if (cached) {
       return cached;
     }
     if (!fs.existsSync(resolvedPath)) {
-      throw new Error(`remote_source profile not found: ${resolvedPath}`);
+      throw new Error(`remote_source module not found: ${resolvedPath}`);
     }
 
     const imported = await dynamicImportModule(pathToFileURL(resolvedPath).href);
-    const profile = ((imported.default ?? imported) as RemoteSourceProfile | undefined);
-    if (!profile || typeof profile !== "object") {
-      throw new Error(`remote_source profile must export default object: ${resolvedPath}`);
+    const module = ((imported.default ?? imported) as RemoteSourceModule | undefined);
+    if (!module || typeof module !== "object") {
+      throw new Error(`remote_source module must export default object: ${resolvedPath}`);
     }
-    validateProfileContract(profile, resolvedPath);
-    this.profileCache.set(cacheKey, profile);
-    return profile;
+    validateModuleContract(module, resolvedPath);
+    this.moduleCache.set(cacheKey, module);
+    return module;
   }
 }
 
@@ -153,7 +153,7 @@ async function dynamicImportModule(moduleUrl: string): Promise<Record<string, un
   return importer(moduleUrl);
 }
 
-export function builtInProfileIdForSourceType(sourceType: SubscriptionSource["sourceType"]): string | null {
+export function builtInModuleIdForSourceType(sourceType: SubscriptionSource["sourceType"]): string | null {
   if (sourceType === "github_repo") {
     return "builtin.github_repo";
   }
@@ -166,44 +166,44 @@ export function builtInProfileIdForSourceType(sourceType: SubscriptionSource["so
   return null;
 }
 
-function validateProfileContract(profile: RemoteSourceProfile, sourcePath: string): void {
-  if (!profile.id || typeof profile.id !== "string") {
-    throw new Error(`remote_source profile id must be a non-empty string: ${sourcePath}`);
+function validateModuleContract(module: RemoteSourceModule, sourcePath: string): void {
+  if (!module.id || typeof module.id !== "string") {
+    throw new Error(`remote_source module id must be a non-empty string: ${sourcePath}`);
   }
-  if (BUILTIN_PROFILE_IDS.has(profile.id)) {
-    throw new Error(`remote_source profile id is reserved: ${profile.id}`);
+  if (BUILTIN_MODULE_IDS.has(module.id)) {
+    throw new Error(`remote_source module id is reserved: ${module.id}`);
   }
-  if (typeof profile.validateConfig !== "function") {
-    throw new Error(`remote_source profile missing validateConfig(): ${sourcePath}`);
+  if (typeof module.validateConfig !== "function") {
+    throw new Error(`remote_source module missing validateConfig(): ${sourcePath}`);
   }
-  if (typeof profile.buildManagedSourceSpec !== "function") {
-    throw new Error(`remote_source profile missing buildManagedSourceSpec(): ${sourcePath}`);
+  if (typeof module.buildManagedSourceSpec !== "function") {
+    throw new Error(`remote_source module missing buildManagedSourceSpec(): ${sourcePath}`);
   }
-  if (typeof profile.mapRawEvent !== "function") {
-    throw new Error(`remote_source profile missing mapRawEvent(): ${sourcePath}`);
+  if (typeof module.mapRawEvent !== "function") {
+    throw new Error(`remote_source module missing mapRawEvent(): ${sourcePath}`);
   }
-  validateOptionalHook(profile.describeCapabilities, "describeCapabilities", sourcePath);
-  validateOptionalHook(profile.listSubscriptionShortcuts, "listSubscriptionShortcuts", sourcePath);
-  validateOptionalHook(profile.expandSubscriptionShortcut, "expandSubscriptionShortcut", sourcePath);
-  validateOptionalHook(profile.deriveTrackedResource, "deriveTrackedResource", sourcePath);
-  validateOptionalHook(profile.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
-  validateOptionalHook(profile.deriveInlinePreview, "deriveInlinePreview", sourcePath);
+  validateOptionalHook(module.describeCapabilities, "describeCapabilities", sourcePath);
+  validateOptionalHook(module.listSubscriptionShortcuts, "listSubscriptionShortcuts", sourcePath);
+  validateOptionalHook(module.expandSubscriptionShortcut, "expandSubscriptionShortcut", sourcePath);
+  validateOptionalHook(module.deriveTrackedResource, "deriveTrackedResource", sourcePath);
+  validateOptionalHook(module.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
+  validateOptionalHook(module.deriveInlinePreview, "deriveInlinePreview", sourcePath);
 }
 
 function validateOptionalHook(value: unknown, name: string, sourcePath: string): void {
   if (value !== undefined && typeof value !== "function") {
-    throw new Error(`remote_source profile ${name} must be a function when provided: ${sourcePath}`);
+    throw new Error(`remote_source module ${name} must be a function when provided: ${sourcePath}`);
   }
 }
 
-function resolveAndValidateProfilePath(profileRoot: string, profilePath: string): string {
+function resolveAndValidateModulePath(moduleRoot: string, profilePath: string): string {
   const resolved = path.isAbsolute(profilePath)
     ? path.resolve(profilePath)
-    : path.resolve(profileRoot, profilePath);
-  const normalizedRoot = ensureTrailingSep(path.resolve(profileRoot));
+    : path.resolve(moduleRoot, profilePath);
+  const normalizedRoot = ensureTrailingSep(path.resolve(moduleRoot));
   const normalizedResolved = path.resolve(resolved);
-  if (!normalizedResolved.startsWith(normalizedRoot) && normalizedResolved !== path.resolve(profileRoot)) {
-    throw new Error(`remote_source profilePath must stay under ${profileRoot}`);
+  if (!normalizedResolved.startsWith(normalizedRoot) && normalizedResolved !== path.resolve(moduleRoot)) {
+    throw new Error(`remote_source profilePath must stay under ${moduleRoot}`);
   }
   return normalizedResolved;
 }
@@ -227,7 +227,7 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
+const GITHUB_REPO_MODULE: RemoteSourceModule = {
   id: "builtin.github_repo",
   describeCapabilities(source: SubscriptionSource): RemoteSourceCapabilityDescription {
     const config = parseGithubSourceConfig(source);
@@ -337,7 +337,7 @@ const GITHUB_REPO_PROFILE: RemoteSourceProfile = {
   },
 };
 
-const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
+const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
   id: "builtin.github_repo_ci",
   describeCapabilities(): RemoteSourceCapabilityDescription {
     return {
@@ -449,7 +449,7 @@ const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
   },
 };
 
-const FEISHU_BOT_PROFILE: RemoteSourceProfile = {
+const FEISHU_BOT_MODULE: RemoteSourceModule = {
   id: "builtin.feishu_bot",
   describeCapabilities(): RemoteSourceCapabilityDescription {
     return {
@@ -510,7 +510,7 @@ const FEISHU_BOT_PROFILE: RemoteSourceProfile = {
   },
 };
 
-export function profileConfigForSource(source: SubscriptionSource): Record<string, unknown> {
+export function moduleConfigForSource(source: SubscriptionSource): Record<string, unknown> {
   const config = asRecord(source.config);
   if (source.sourceType === "remote_source") {
     return asRecord(config.profileConfig);

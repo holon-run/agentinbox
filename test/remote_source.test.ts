@@ -7,7 +7,7 @@ import { AdapterRegistry } from "../src/adapters";
 import { AppendSourceEventInput } from "../src/model";
 import { AgentInboxService } from "../src/service";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
-import { ManagedSourceSpec } from "../src/sources/remote_profiles";
+import { ManagedSourceSpec } from "../src/sources/remote_modules";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 import { nowIso } from "../src/util";
@@ -137,7 +137,7 @@ async function makeService(fake: FakeRemoteSourceClient): Promise<{
   return { dir, store, service, adapters };
 }
 
-test("remote_source with local profile ingests stream events", async () => {
+test("remote_source with local module ingests stream events", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
@@ -234,7 +234,7 @@ test("remote_source profilePath must stay under source-profiles root", async () 
   }
 });
 
-test("github_repo source uses remote runtime builtin profile mapping", async () => {
+test("github_repo source uses remote runtime builtin module mapping", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
@@ -417,7 +417,7 @@ test("github_repo pull request subscriptions retire through the generic lifecycl
   }
 });
 
-test("github_repo_ci builtin profile emits status transitions for one workflow run id", async () => {
+test("github_repo_ci builtin module emits status transitions for one workflow run id", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {

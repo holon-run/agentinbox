@@ -14,7 +14,7 @@ without building a provider-specific adapter first.
 
 `remote_source` is the generic external-source runtime surface.
 
-It uses a local profile module to define:
+It uses a local module to define:
 
 - managed source spec (`source.ensure`)
 - raw event mapping (`stream.read` payload -> AgentInbox event)
@@ -32,7 +32,7 @@ instance schema discovery:
 Configuration fields:
 
 - `profilePath` (required): path under `$AGENTINBOX_HOME/source-profiles`
-- `profileConfig` (optional): profile-specific config object
+- `profileConfig` (optional): module-specific config object
 
 ## `github_repo`
 

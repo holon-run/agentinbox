@@ -3,7 +3,7 @@ import { ActivationItem, AppendSourceEventInput, SourcePollResult, SubscriptionS
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
-import { ExpandedSubscriptionInput, LifecycleSignal, ManagedSourceSpec, RemoteSourceProfileRegistry } from "./remote_profiles";
+import { ExpandedSubscriptionInput, LifecycleSignal, ManagedSourceSpec, RemoteSourceModuleRegistry } from "./remote_modules";
 
 const REMOTE_SOURCE_TYPES = new Set<SubscriptionSource["sourceType"]>([
   "remote_source",
@@ -84,7 +84,7 @@ export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
 }
 
 export class RemoteSourceRuntime {
-  private readonly profileRegistry: RemoteSourceProfileRegistry;
+  private readonly moduleRegistry: RemoteSourceModuleRegistry;
   private readonly client: UxcRemoteSourceClient;
   private interval: NodeJS.Timeout | null = null;
   private readonly inFlight = new Set<string>();
@@ -96,12 +96,12 @@ export class RemoteSourceRuntime {
     private readonly store: AgentInboxStore,
     private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
     options?: {
-      profileRegistry?: RemoteSourceProfileRegistry;
+      moduleRegistry?: RemoteSourceModuleRegistry;
       client?: UxcRemoteSourceClient;
       homeDir?: string;
     },
   ) {
-    this.profileRegistry = options?.profileRegistry ?? new RemoteSourceProfileRegistry();
+    this.moduleRegistry = options?.moduleRegistry ?? new RemoteSourceModuleRegistry();
     this.client = options?.client ?? new RpcUxcRemoteSourceClient();
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
   }
@@ -117,10 +117,10 @@ export class RemoteSourceRuntime {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return;
     }
-    const profile = await this.profileRegistry.resolve(source, this.homeDir);
-    const profileSource = profileInputSource(source);
-    profile.validateConfig(profileSource);
-    profile.buildManagedSourceSpec(profileSource);
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    const moduleSource = moduleInputSource(source);
+    module.validateConfig(moduleSource);
+    module.buildManagedSourceSpec(moduleSource);
   }
 
   async start(): Promise<void> {
@@ -216,11 +216,11 @@ export class RemoteSourceRuntime {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
-    const profile = await this.profileRegistry.resolve(source, this.homeDir);
-    if (typeof profile.projectLifecycleSignal !== "function") {
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.projectLifecycleSignal !== "function") {
       return null;
     }
-    return profile.projectLifecycleSignal(rawPayload, profileInputSource(source));
+    return module.projectLifecycleSignal(rawPayload, moduleInputSource(source));
   }
 
   async expandSubscriptionShortcut(
@@ -230,14 +230,14 @@ export class RemoteSourceRuntime {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
-    const profile = await this.profileRegistry.resolve(source, this.homeDir);
-    if (typeof profile.expandSubscriptionShortcut !== "function") {
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.expandSubscriptionShortcut !== "function") {
       return null;
     }
-    return profile.expandSubscriptionShortcut({
+    return module.expandSubscriptionShortcut({
       name: input.name,
       args: input.args,
-      source: profileInputSource(source),
+      source: moduleInputSource(source),
     });
   }
 
@@ -245,11 +245,11 @@ export class RemoteSourceRuntime {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
-    const profile = await this.profileRegistry.resolve(source, this.homeDir);
-    if (typeof profile.deriveInlinePreview !== "function") {
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.deriveInlinePreview !== "function") {
       return null;
     }
-    return profile.deriveInlinePreview(item, profileInputSource(source));
+    return module.deriveInlinePreview(item, moduleInputSource(source));
   }
 
   private async syncAll(): Promise<void> {
@@ -307,10 +307,10 @@ export class RemoteSourceRuntime {
         }
       }
 
-      const profile = await this.profileRegistry.resolve(source, this.homeDir);
-      const profileSource = profileInputSource(source);
-      profile.validateConfig(profileSource);
-      const spec = profile.buildManagedSourceSpec(profileSource);
+      const module = await this.moduleRegistry.resolve(source, this.homeDir);
+      const moduleSource = moduleInputSource(source);
+      module.validateConfig(moduleSource);
+      const spec = module.buildManagedSourceSpec(moduleSource);
       const binding = managedBindingForSource(source);
       const ensured = await this.client.sourceEnsure({
         namespace: binding.namespace,
@@ -333,7 +333,7 @@ export class RemoteSourceRuntime {
         if (Object.keys(rawPayload).length === 0) {
           continue;
         }
-        const mapped = profile.mapRawEvent(rawPayload, profileSource);
+        const mapped = module.mapRawEvent(rawPayload, moduleSource);
         if (!mapped) {
           continue;
         }
@@ -402,7 +402,7 @@ export class RemoteSourceRuntime {
   }
 }
 
-function profileInputSource(source: SubscriptionSource): SubscriptionSource {
+function moduleInputSource(source: SubscriptionSource): SubscriptionSource {
   if (source.sourceType !== "remote_source") {
     return source;
   }

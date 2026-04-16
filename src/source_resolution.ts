@@ -1,11 +1,11 @@
 import { resolveAgentInboxHome } from "./paths";
 import { ResolvedSourceIdentity, ResolvedSourceSchema, SourceSchema, SubscriptionSource } from "./model";
-import { RemoteSourceProfile, RemoteSourceProfileRegistry, builtInProfileIdForSourceType, profileConfigForSource } from "./sources/remote_profiles";
+import { RemoteSourceModule, RemoteSourceModuleRegistry, builtInModuleIdForSourceType, moduleConfigForSource } from "./sources/remote_modules";
 import { getSourceSchema } from "./source_schema";
 
 export interface ResolveSourceContext {
   homeDir?: string;
-  profileRegistry?: RemoteSourceProfileRegistry;
+  moduleRegistry?: RemoteSourceModuleRegistry;
 }
 
 export async function resolveSourceIdentity(
@@ -20,7 +20,7 @@ export async function resolveSourceIdentity(
     };
   }
 
-  const builtinImplementationId = builtInProfileIdForSourceType(source.sourceType);
+  const builtinImplementationId = builtInModuleIdForSourceType(source.sourceType);
   if (builtinImplementationId) {
     return {
       hostType: "remote_source",
@@ -33,16 +33,16 @@ export async function resolveSourceIdentity(
     throw new Error(`unsupported source type for source resolution: ${source.sourceType}`);
   }
 
-  const profileRegistry = context.profileRegistry ?? new RemoteSourceProfileRegistry();
+  const moduleRegistry = context.moduleRegistry ?? new RemoteSourceModuleRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
-  const profile = await profileRegistry.resolve(source, homeDir);
-  const capabilityDescription = typeof profile.describeCapabilities === "function"
-    ? profile.describeCapabilities(profileInputSource(source))
+  const module = await moduleRegistry.resolve(source, homeDir);
+  const capabilityDescription = typeof module.describeCapabilities === "function"
+    ? module.describeCapabilities(moduleInputSource(source))
     : undefined;
   return {
     hostType: "remote_source",
-    sourceKind: capabilityDescription?.sourceKind?.trim() || `remote:${profile.id}`,
-    implementationId: profile.id,
+    sourceKind: capabilityDescription?.sourceKind?.trim() || `remote:${module.id}`,
+    implementationId: module.id,
   };
 }
 
@@ -50,17 +50,17 @@ export async function resolveSourceSchema(
   source: SubscriptionSource,
   context: ResolveSourceContext = {},
 ): Promise<ResolvedSourceSchema> {
-  const profileRegistry = context.profileRegistry ?? new RemoteSourceProfileRegistry();
+  const moduleRegistry = context.moduleRegistry ?? new RemoteSourceModuleRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
-  const resolvedContext: ResolveSourceContext = { ...context, profileRegistry, homeDir };
+  const resolvedContext: ResolveSourceContext = { ...context, moduleRegistry, homeDir };
   const identity = await resolveSourceIdentity(source, resolvedContext);
   const staticSchema = getSourceSchema(source.sourceType);
-  let capabilityDescription: ReturnType<NonNullable<RemoteSourceProfile["describeCapabilities"]>> | undefined;
-  let profile: RemoteSourceProfile | null = null;
+  let capabilityDescription: ReturnType<NonNullable<RemoteSourceModule["describeCapabilities"]>> | undefined;
+  let module: RemoteSourceModule | null = null;
   if (identity.hostType === "remote_source") {
-    profile = await profileRegistry.resolve(source, homeDir);
-    capabilityDescription = typeof profile.describeCapabilities === "function"
-      ? profile.describeCapabilities(profileInputSource(source))
+    module = await moduleRegistry.resolve(source, homeDir);
+    capabilityDescription = typeof module.describeCapabilities === "function"
+      ? module.describeCapabilities(moduleInputSource(source))
       : undefined;
   }
   return withResolvedIdentity(
@@ -76,10 +76,10 @@ export async function resolveSourceSchema(
     identity.hostType === "remote_source"
       ? {
           aliases: capabilityDescription?.aliases,
-          supportsTrackedResourceRef: typeof profile?.deriveTrackedResource === "function",
-          supportsLifecycleSignals: typeof profile?.projectLifecycleSignal === "function",
-          shortcuts: typeof profile?.listSubscriptionShortcuts === "function"
-            ? profile.listSubscriptionShortcuts(profileInputSource(source))
+          supportsTrackedResourceRef: typeof module?.deriveTrackedResource === "function",
+          supportsLifecycleSignals: typeof module?.projectLifecycleSignal === "function",
+          shortcuts: typeof module?.listSubscriptionShortcuts === "function"
+            ? module.listSubscriptionShortcuts(moduleInputSource(source))
             : [],
         }
       : undefined,
@@ -122,12 +122,12 @@ export function withResolvedIdentity(
   };
 }
 
-function profileInputSource(source: SubscriptionSource): SubscriptionSource {
+function moduleInputSource(source: SubscriptionSource): SubscriptionSource {
   if (source.sourceType !== "remote_source") {
     return source;
   }
   return {
     ...source,
-    config: profileConfigForSource(source),
+    config: moduleConfigForSource(source),
   };
 }

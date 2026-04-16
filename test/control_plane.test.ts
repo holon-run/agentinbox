@@ -2542,12 +2542,12 @@ test("control plane source details degrade when remote_source resolution fails b
       assert.equal(details.statusCode, 200);
       assert.equal(details.data.source.sourceId, sourceId);
       assert.equal(details.data.resolvedIdentity, null);
-      assert.match(details.data.resolutionError, /remote_source profile not found/);
+      assert.match(details.data.resolutionError, /remote_source module not found/);
       assert.equal(details.data.schema.sourceType, "remote_source");
 
       const schema = await client.request<{ error: string }>(`/sources/${encodeURIComponent(sourceId)}/schema`, undefined, "GET");
       assert.equal(schema.statusCode, 400);
-      assert.match(schema.data.error, /remote_source profile not found/);
+      assert.match(schema.data.error, /remote_source module not found/);
     } finally {
       await started.close();
     }
