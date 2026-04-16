@@ -6,8 +6,8 @@ import os from "node:os";
 import { TerminalActivationTarget } from "./model";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_ITERM2_SAMPLE_DELAY_MS = 250;
-const DEFAULT_TMUX_SAMPLE_DELAY_MS = 250;
+const DEFAULT_ITERM2_SAMPLE_DELAY_MS = 900;
+const DEFAULT_TMUX_SAMPLE_DELAY_MS = 900;
 const ACTIVE_BUFFER_MARKERS = [
   "esc to interrupt",
   "Working (",
@@ -15,6 +15,7 @@ const ACTIVE_BUFFER_MARKERS = [
 ];
 const TYPING_PROMPT_PREFIXES = [
   "› ",
+  "❯ ",
   "> ",
 ];
 
@@ -326,22 +327,41 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     if (containsActiveBufferMarker(second)) {
       return { presence: "available", busy: "busy" };
     }
-    if (paneState.active && hasVisibleTypingPrompt(second)) {
+    const cursorHint = evaluateCursorAwareTypingPrompt(target, paneState, second);
+    if (cursorHint === "busy") {
+      return { presence: "available", busy: "busy" };
+    }
+    if (cursorHint === "unknown" && paneState.active && hasVisibleTypingPrompt(second)) {
       return { presence: "available", busy: "busy" };
     }
     return { presence: "available", busy: "unknown" };
   }
 
-  private async readPaneState(paneId: string): Promise<{ active: boolean; dead: boolean } | "missing" | "unknown"> {
+  private async readPaneState(paneId: string): Promise<{
+    active: boolean;
+    dead: boolean;
+    cursorX: number | null;
+    cursorY: number | null;
+    height: number | null;
+  } | "missing" | "unknown"> {
     try {
-      const result = await this.execAsync("tmux", ["display-message", "-p", "-t", paneId, "#{pane_active} #{pane_dead}"]);
-      const [active, dead] = result.stdout.trim().split(/\s+/, 2);
+      const result = await this.execAsync("tmux", [
+        "display-message",
+        "-p",
+        "-t",
+        paneId,
+        "#{pane_active} #{pane_dead} #{cursor_x} #{cursor_y} #{pane_height}",
+      ]);
+      const [active, dead, cursorX, cursorY, height] = result.stdout.trim().split(/\s+/, 5);
       if (!active || !dead) {
         return "unknown";
       }
       return {
         active: active === "1",
         dead: dead === "1",
+        cursorX: parseOptionalInt(cursorX),
+        cursorY: parseOptionalInt(cursorY),
+        height: parseOptionalInt(height),
       };
     } catch (error) {
       if (isTmuxMissingPaneError(error)) {
@@ -380,6 +400,58 @@ function hasVisibleTypingPrompt(bufferTail: string): boolean {
     }
   }
   return false;
+}
+
+function evaluateCursorAwareTypingPrompt(
+  target: TerminalActivationTarget,
+  paneState: { cursorX: number | null; cursorY: number | null; height: number | null },
+  bufferTail: string,
+): "busy" | "not_busy" | "unknown" {
+  const prefix = runtimeTypingPromptPrefix(target.runtimeKind);
+  if (!prefix) {
+    return "unknown";
+  }
+  if (paneState.cursorX == null || paneState.cursorY == null || paneState.height == null) {
+    return "unknown";
+  }
+
+  const lines = bufferTail
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trimEnd());
+  if (lines.length === 0) {
+    return "unknown";
+  }
+
+  const captureStartRow = Math.max(0, paneState.height - lines.length);
+  const lineIndex = paneState.cursorY - captureStartRow;
+  if (lineIndex < 0 || lineIndex >= lines.length) {
+    return "not_busy";
+  }
+
+  const line = lines[lineIndex] ?? "";
+  if (!line.startsWith(prefix)) {
+    return "not_busy";
+  }
+  return paneState.cursorX > prefix.length ? "busy" : "not_busy";
+}
+
+function runtimeTypingPromptPrefix(runtimeKind: TerminalActivationTarget["runtimeKind"]): string | null {
+  if (runtimeKind === "codex") {
+    return "› ";
+  }
+  if (runtimeKind === "claude_code") {
+    return "❯ ";
+  }
+  return null;
+}
+
+function parseOptionalInt(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function normalizeBufferTail(buffer: string): string | null {

@@ -483,7 +483,7 @@ test("TmuxTerminalStateProbe reports busy when the buffer tail changes", async (
   const buffers = ["first snapshot", "second snapshot"];
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
-      return { stdout: "1 0\n", stderr: "" };
+      return { stdout: "1 0 0 27 28\n", stderr: "" };
     }
     if (args[0] === "capture-pane") {
       return { stdout: `${buffers.shift() ?? "second snapshot"}\n`, stderr: "" };
@@ -502,7 +502,7 @@ test("TmuxTerminalStateProbe reports busy when the buffer tail changes", async (
 test("TmuxTerminalStateProbe reports busy when the stable buffer shows a codex activity marker", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
-      return { stdout: "1 0\n", stderr: "" };
+      return { stdout: "1 0 0 27 28\n", stderr: "" };
     }
     if (args[0] === "capture-pane") {
       return {
@@ -521,7 +521,73 @@ test("TmuxTerminalStateProbe reports busy when the stable buffer shows a codex a
   });
 });
 
-test("TmuxTerminalStateProbe reports busy when the active pane shows typed prompt input", async () => {
+test("TmuxTerminalStateProbe reports busy when the cursor is past a codex prompt prefix on the input row", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0 6 27 28\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "question text\n\n› abcdefg\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
+test("TmuxTerminalStateProbe does not mark busy from cursor hint when the cursor is still inside the prompt prefix", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0 1 27 28\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "question text\n\n› abcdefg\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "unknown",
+  });
+});
+
+test("TmuxTerminalStateProbe does not mark busy from cursor hint when the cursor row is not on the prompt line", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0 6 26 28\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "question text\n\n› abcdefg\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "unknown",
+  });
+});
+
+test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadata is unavailable", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
       return { stdout: "1 0\n", stderr: "" };
@@ -546,7 +612,7 @@ test("TmuxTerminalStateProbe reports busy when the active pane shows typed promp
 test("TmuxTerminalStateProbe reports unknown when the pane is stable and prompt is empty", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
-      return { stdout: "1 0\n", stderr: "" };
+      return { stdout: "1 0 0 27 28\n", stderr: "" };
     }
     if (args[0] === "capture-pane") {
       return {
