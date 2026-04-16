@@ -316,8 +316,8 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             }
           }
 
-          // Return the cursor-aware detection result
-          return { presence: "available", busy: busyStatus };
+          // This should never be reached as all cases are handled above
+          return { presence: "available", busy: "unknown" };
         }
 
         // If we don't have cursor data, return unknown to trigger fallback
