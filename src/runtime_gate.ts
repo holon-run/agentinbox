@@ -253,7 +253,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
           const startLine = data.start_line ?? 0;
 
           // Perform cursor-aware typing detection
-          const busyStatus = evaluateCursorAwareTypingPrompt(
+          const busyStatus = evaluatePythonCursorAwareTypingPrompt(
             bufferTail,
             cursorPosition,
             screenHeight,
@@ -995,17 +995,7 @@ function resolvePythonProbeScript(override?: string): string {
   );
 }
 
-function runtimeTypingPromptPrefix(runtimeKind: TerminalActivationTarget["runtimeKind"]): string | null {
-  if (runtimeKind === "codex") {
-    return "› ";
-  }
-  if (runtimeKind === "claude_code") {
-    return "❯ ";
-  }
-  return null;
-}
-
-function evaluateCursorAwareTypingPrompt(
+function evaluatePythonCursorAwareTypingPrompt(
   bufferTail: string,
   cursorPosition: { x: number; y: number },
   screenHeight: number,

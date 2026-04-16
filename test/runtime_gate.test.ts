@@ -523,7 +523,6 @@ test("TmuxTerminalStateProbe reports busy when the stable buffer shows a codex a
   });
 });
 
-<<<<<<< HEAD
 test("TmuxTerminalStateProbe reports busy when the cursor is past a codex prompt prefix on the input row", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
@@ -606,9 +605,11 @@ test("TmuxTerminalStateProbe falls back to prompt heuristics when the cursor row
     sleep: async () => {},
   });
 
+  // After PR #116 tightening, when cursor-aware mapping is uncertain we do not
+  // fall back to generic prompt heuristics, to avoid false positives.
   assert.deepEqual(await probe.check(makeTmuxTarget()), {
     presence: "available",
-    busy: "busy",
+    busy: "unknown",
   });
 });
 
