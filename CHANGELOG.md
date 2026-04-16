@@ -12,6 +12,18 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.5.0] - 2026-04-16
+
+### Added
+
+- Added inline single-item terminal previews so agents can often understand a lone preview-friendly inbox item without an extra `inbox read` round-trip.
+
+### Fixed
+
+- Fixed repeated terminal reminder spam by suppressing re-prompts when the effective unacked inbox state has not changed.
+- Updated Drizzle development dependencies to clear the current audit warning set without changing the published runtime dependency surface.
+- Upgraded GitHub workflow actions to Node 24-compatible runtimes to remove the Node 20 action-runtime deprecation path from CI and release automation.
+
 ## [0.4.0] - 2026-04-15
 
 ### Added
