@@ -56,6 +56,7 @@ import {
   assignedAgentIdFromContext,
   deriveInlineItemPreview,
   detectTerminalContext,
+  normalizeInlinePreviewText,
   renderAgentPrompt,
   TerminalDispatcher,
 } from "./terminal";
@@ -1859,7 +1860,8 @@ export class AgentInboxService {
           const source = this.store.getSource(singleItem.sourceId);
           if (source) {
             try {
-              preview = await this.adapters.deriveInlinePreview(source, singleItem);
+              const sourcePreview = await this.adapters.deriveInlinePreview(source, singleItem);
+              preview = typeof sourcePreview === "string" ? normalizeInlinePreviewText(sourcePreview) : null;
             } catch {
               preview = null;
             }

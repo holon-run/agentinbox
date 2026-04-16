@@ -2941,6 +2941,90 @@ test("source-specific preview hook failures fall back to the generic preview", a
   }
 });
 
+test("source-specific previews are normalized at the core call boundary", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview-hook-unbounded.mjs"),
+      `export default {
+  id: "demo.preview-hook-unbounded",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(rawPayload) {
+    return {
+      sourceNativeId: String(rawPayload.id ?? "evt-remote-preview-unbounded"),
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload
+    };
+  },
+  deriveInlinePreview() {
+    return "Line one from source hook\\nLine two should collapse and this sentence is intentionally long so the core normalization path has to truncate it before rendering into the terminal activation prompt.";
+  }
+};\n`,
+    );
+
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remote-preview-unbounded",
+      tmuxPaneId: "%62",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo/preview-hook-unbounded",
+      config: {
+        profilePath: "preview-hook-unbounded.mjs",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceNativeId: "evt-remote-preview-unbounded",
+      sourceId: source.sourceId,
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const prompt = terminalDispatcher.calls[0]!.prompt;
+    assert.match(prompt, /Preview: Line one from source hook Line two should collapse/);
+    assert.doesNotMatch(prompt, /\n/);
+    assert.match(prompt, /\.\.\./);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("preview-aware terminal prompts still dedupe unchanged lease reminders", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { service, dir, store } = await makeService({

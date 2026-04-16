@@ -3,7 +3,6 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-daemon-client";
 import { ActivationItem, AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
-import { normalizeInlinePreviewText } from "../terminal";
 import {
   deriveGithubTrackedResource,
   expandGithubSubscriptionShortcut,
@@ -396,7 +395,7 @@ const GITHUB_REPO_CI_PROFILE: RemoteSourceProfile = {
       parts.push(`on ${headBranch}`);
     }
 
-    return normalizeInlinePreviewText(parts.join(" "));
+    return parts.join(" ");
   },
   validateConfig(source: SubscriptionSource): void {
     parseGithubCiSourceConfig(source);
