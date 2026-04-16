@@ -6,6 +6,8 @@ import { getSourceSchema } from "./source_schema";
 export interface ResolveSourceContext {
   homeDir?: string;
   moduleRegistry?: RemoteSourceModuleRegistry;
+  // Deprecated compatibility alias for callers that still pass the old option name.
+  profileRegistry?: RemoteSourceModuleRegistry;
 }
 
 export async function resolveSourceIdentity(
@@ -33,7 +35,7 @@ export async function resolveSourceIdentity(
     throw new Error(`unsupported source type for source resolution: ${source.sourceType}`);
   }
 
-  const moduleRegistry = context.moduleRegistry ?? new RemoteSourceModuleRegistry();
+  const moduleRegistry = context.moduleRegistry ?? context.profileRegistry ?? new RemoteSourceModuleRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
   const module = await moduleRegistry.resolve(source, homeDir);
   const capabilityDescription = typeof module.describeCapabilities === "function"
@@ -50,7 +52,7 @@ export async function resolveSourceSchema(
   source: SubscriptionSource,
   context: ResolveSourceContext = {},
 ): Promise<ResolvedSourceSchema> {
-  const moduleRegistry = context.moduleRegistry ?? new RemoteSourceModuleRegistry();
+  const moduleRegistry = context.moduleRegistry ?? context.profileRegistry ?? new RemoteSourceModuleRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
   const resolvedContext: ResolveSourceContext = { ...context, moduleRegistry, homeDir };
   const identity = await resolveSourceIdentity(source, resolvedContext);

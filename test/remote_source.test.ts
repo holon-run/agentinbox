@@ -6,8 +6,10 @@ import assert from "node:assert/strict";
 import { AdapterRegistry } from "../src/adapters";
 import { AppendSourceEventInput } from "../src/model";
 import { AgentInboxService } from "../src/service";
+import { resolveSourceIdentity } from "../src/source_resolution";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { ManagedSourceSpec } from "../src/sources/remote_modules";
+import { RemoteSourceProfileRegistry, builtInProfileIdForSourceType, profileConfigForSource } from "../src/sources/remote_profiles";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 import { nowIso } from "../src/util";
@@ -597,6 +599,67 @@ test("remote_source remove --with-subscriptions stops remote binding and deletes
     await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("deprecated remote profile exports still alias the module contract", async () => {
+  const registry = new RemoteSourceProfileRegistry();
+  assert.ok(registry instanceof RemoteSourceProfileRegistry);
+  assert.equal(builtInProfileIdForSourceType("github_repo"), "builtin.github_repo");
+  assert.deepEqual(
+    profileConfigForSource({
+      sourceId: "src_compat",
+      sourceType: "remote_source",
+      sourceKey: "compat",
+      configRef: null,
+      config: { profileConfig: { answer: 42 } },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    }),
+    { answer: 42 },
+  );
+});
+
+test("resolveSourceIdentity still honors deprecated profileRegistry context", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-source-compat-"));
+  try {
+    const profileDir = path.join(homeDir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    const modulePath = path.join(profileDir, "compat.mjs");
+    fs.writeFileSync(modulePath, `
+      export default {
+        id: "demo.compat",
+        validateConfig() {},
+        buildManagedSourceSpec() { return { endpoint: "https://example.invalid", mode: "poll" }; },
+        mapRawEvent() { return null; },
+        describeCapabilities() { return { sourceKind: "remote:compat-demo" }; },
+      };
+    `);
+
+    const identity = await resolveSourceIdentity({
+      sourceId: "src_compat_identity",
+      sourceType: "remote_source",
+      sourceKey: "compat-demo",
+      configRef: null,
+      config: { profilePath: "compat.mjs" },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    }, {
+      homeDir,
+      profileRegistry: new RemoteSourceProfileRegistry(),
+    });
+
+    assert.deepEqual(identity, {
+      hostType: "remote_source",
+      sourceKind: "remote:compat-demo",
+      implementationId: "demo.compat",
+    });
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
 
