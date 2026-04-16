@@ -14,6 +14,10 @@
   2026-04-16 · Keep outbound delivery in AgentInbox, but standardize handle routing and source-specific operations instead of forcing all providers into one generic send action.
   <!-- mdorigin:index kind=article -->
 
+- [Source Hosts And Streams](./source-hosts-and-streams.md)
+  2026-04-16 · Split provider/account hosting from concrete feeds so AgentInbox can support many provider streams without exploding top-level source kinds.
+  <!-- mdorigin:index kind=article -->
+
 - [Source Kinds And Resolved Schemas](./source-kinds-and-resolved-schemas.md)
   2026-04-13 · Separate runtime host types from user-facing source kinds, make source capability discovery implementation-backed through resolved per-source schemas, and define the UXC/AgentInbox boundary for remote-hosted sources.
   <!-- mdorigin:index kind=article -->
