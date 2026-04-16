@@ -137,6 +137,41 @@ async function makeService(options?: {
   return { store, service, dir };
 }
 
+async function makeServiceFromDbPath(
+  dbPath: string,
+  dir: string,
+  options?: {
+    dispatcher?: ActivationDispatcher;
+    terminalDispatcher?: TerminalDispatcher;
+    activationGate?: ActivationGate;
+    activationWindowMs?: number;
+    activationMaxItems?: number;
+  },
+): Promise<{ store: AgentInboxStore; service: AgentInboxService }> {
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
+    homeDir: dir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(
+    store,
+    adapters,
+    options?.dispatcher,
+    new SqliteEventBusBackend(store),
+    {
+      windowMs: options?.activationWindowMs,
+      maxItems: options?.activationMaxItems,
+    },
+    options?.terminalDispatcher ?? new TerminalDispatcher(async () => ({
+      stdout: "",
+      stderr: "",
+    })),
+    options?.activationGate,
+  );
+  return { store, service };
+}
+
 async function registerTmuxAgent(service: AgentInboxService, suffix: string): Promise<{ agentId: string; targetId: string }> {
   const registered = service.registerAgent({
     backend: "tmux",
@@ -2055,6 +2090,63 @@ test("ack through matches visible inbox order for same-timestamp items", async (
   } finally {
     await service.stop();
     store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ack through still follows visible order when older binaries left inbox_sequence null", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "same-ts-null-seq");
+    const inboxId = (service.getInboxDetailsByAgent(alpha.agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
+
+    for (const event of ["evt-1", "evt-2", "evt-3"]) {
+      store.insertInboxItem({
+        itemId: `item-${event}`,
+        sourceId: "src-manual",
+        sourceNativeId: event,
+        eventVariant: "message.created",
+        inboxId,
+        occurredAt: "2026-04-01T00:00:00.000Z",
+        metadata: {},
+        rawPayload: { text: event },
+        deliveryHandle: null,
+        ackedAt: null,
+      });
+    }
+
+    await service.stop();
+    store.close();
+
+    const dbPath = path.join(dir, "agentinbox.sqlite");
+    const SQL = await initSqlJs({
+      locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
+    });
+    const db = new SQL.Database(fs.readFileSync(dbPath));
+    db.exec(`update inbox_items set inbox_sequence = null where inbox_id = '${inboxId}';`);
+    fs.writeFileSync(dbPath, Buffer.from(db.export()));
+    db.close();
+
+    const reopened = await makeServiceFromDbPath(dbPath, dir);
+
+    const visible = reopened.service.listInboxItems(alpha.agentId);
+    assert.deepEqual(visible.map((item) => item.sourceNativeId), ["evt-1", "evt-2", "evt-3"]);
+
+    const ack = reopened.service.ackInboxItemsThrough(alpha.agentId, visible[1]!.itemId);
+    assert.equal(ack.acked, 2);
+
+    const unread = reopened.service.listInboxItems(alpha.agentId);
+    assert.deepEqual(unread.map((item) => item.sourceNativeId), ["evt-3"]);
+
+    await reopened.service.stop();
+    reopened.store.close();
+  } finally {
+    try {
+      await service.stop();
+    } catch {}
+    try {
+      store.close();
+    } catch {}
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
