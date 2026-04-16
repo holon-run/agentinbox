@@ -139,6 +139,7 @@ export const inboxItems = sqliteTable("inbox_items", {
   sourceNativeId: text("source_native_id").notNull(),
   eventVariant: text("event_variant").notNull(),
   inboxId: text("inbox_id").notNull(),
+  inboxSequence: integer("inbox_sequence"),
   occurredAt: text("occurred_at").notNull(),
   metadataJson: text("metadata_json").notNull(),
   rawPayloadJson: text("raw_payload_json").notNull(),
@@ -147,8 +148,10 @@ export const inboxItems = sqliteTable("inbox_items", {
 }, (table) => ({
   sourceNativeEventInboxUnique: uniqueIndex("idx_inbox_items_source_native_event_inbox")
     .on(table.sourceId, table.sourceNativeId, table.eventVariant, table.inboxId),
+  inboxSequenceUnique: uniqueIndex("idx_inbox_items_inbox_sequence").on(table.inboxSequence),
   ackedAtIdx: index("idx_inbox_items_acked_at").on(table.ackedAt),
   inboxAckedAtIdx: index("idx_inbox_items_inbox_acked_at").on(table.inboxId, table.ackedAt),
+  inboxSequenceIdx: index("idx_inbox_items_inbox_sequence_order").on(table.inboxId, table.inboxSequence),
   sourceOccurredAtIdx: index("idx_inbox_items_source_occurred_at").on(table.sourceId, table.occurredAt),
 }));
 

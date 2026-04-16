@@ -1053,6 +1053,15 @@ export class AgentInboxStore {
     );
     const inserted = this.changes() > before;
     if (inserted) {
+      const rowId = this.lastInsertRowId();
+      this.db.run(
+        `
+        update inbox_items
+        set inbox_sequence = ?
+        where rowid = ? and inbox_sequence is null
+      `,
+        [rowId, rowId],
+      );
       this.persist();
     }
     return inserted;
@@ -1069,18 +1078,18 @@ export class AgentInboxStore {
 
     if (options?.afterItemId) {
       const anchor = this.getOne(
-        "select occurred_at, item_id from inbox_items where inbox_id = ? and item_id = ?",
+        "select inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
         [inboxId, options.afterItemId],
       );
       if (!anchor) {
         throw new Error(`unknown inbox item: ${options.afterItemId}`);
       }
-      filters.push("((occurred_at > ?) or (occurred_at = ? and item_id > ?))");
-      params.push(String(anchor.occurred_at), String(anchor.occurred_at), String(anchor.item_id));
+      filters.push("inbox_sequence > ?");
+      params.push(Number(anchor.inbox_sequence));
     }
 
     const rows = this.getAll(
-      `select * from inbox_items where ${filters.join(" and ")} order by occurred_at asc, item_id asc`,
+      `select * from inbox_items where ${filters.join(" and ")} order by inbox_sequence asc`,
       params,
     );
     return rows.map((row) => this.mapInboxItem(row));
@@ -1107,7 +1116,7 @@ export class AgentInboxStore {
 
   ackItemsThrough(inboxId: string, itemId: string, ackedAt: string): number {
     const anchor = this.getOne(
-      "select occurred_at, item_id from inbox_items where inbox_id = ? and item_id = ?",
+      "select inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
       [inboxId, itemId],
     );
     if (!anchor) {
@@ -1119,9 +1128,9 @@ export class AgentInboxStore {
       set acked_at = ?
       where inbox_id = ?
         and acked_at is null
-        and ((occurred_at < ?) or (occurred_at = ? and item_id <= ?))
+        and inbox_sequence <= ?
     `,
-      [ackedAt, inboxId, String(anchor.occurred_at), String(anchor.occurred_at), String(anchor.item_id)],
+      [ackedAt, inboxId, Number(anchor.inbox_sequence)],
     );
     const changes = this.changes();
     if (changes > 0) {
