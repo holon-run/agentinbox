@@ -587,6 +587,28 @@ test("TmuxTerminalStateProbe does not mark busy from cursor hint when the cursor
   });
 });
 
+test("TmuxTerminalStateProbe falls back to prompt heuristics when the cursor row is outside the captured tail", async () => {
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0 6 10 28\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "question text\n\n› abcdefg\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
 test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadata is unavailable", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
@@ -604,6 +626,30 @@ test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadat
   });
 
   assert.deepEqual(await probe.check(makeTmuxTarget()), {
+    presence: "available",
+    busy: "busy",
+  });
+});
+
+test("TmuxTerminalStateProbe reports busy when the cursor is past a claude_code prompt prefix on the input row", async () => {
+  const target = makeTmuxTarget();
+  target.runtimeKind = "claude_code";
+  const probe = new TmuxTerminalStateProbe(async (_file, args) => {
+    if (args[0] === "display-message") {
+      return { stdout: "1 0 7 27 28\n", stderr: "" };
+    }
+    if (args[0] === "capture-pane") {
+      return {
+        stdout: "question text\n\n❯ rewrite this\n",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected command: ${args.join(" ")}`);
+  }, {
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(await probe.check(target), {
     presence: "available",
     busy: "busy",
   });
