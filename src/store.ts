@@ -1078,18 +1078,18 @@ export class AgentInboxStore {
 
     if (options?.afterItemId) {
       const anchor = this.getOne(
-        "select inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
+        "select coalesce(inbox_sequence, rowid) as inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
         [inboxId, options.afterItemId],
       );
       if (!anchor) {
         throw new Error(`unknown inbox item: ${options.afterItemId}`);
       }
-      filters.push("inbox_sequence > ?");
+      filters.push("coalesce(inbox_sequence, rowid) > ?");
       params.push(Number(anchor.inbox_sequence));
     }
 
     const rows = this.getAll(
-      `select * from inbox_items where ${filters.join(" and ")} order by inbox_sequence asc`,
+      `select * from inbox_items where ${filters.join(" and ")} order by coalesce(inbox_sequence, rowid) asc`,
       params,
     );
     return rows.map((row) => this.mapInboxItem(row));
@@ -1116,7 +1116,7 @@ export class AgentInboxStore {
 
   ackItemsThrough(inboxId: string, itemId: string, ackedAt: string): number {
     const anchor = this.getOne(
-      "select inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
+      "select coalesce(inbox_sequence, rowid) as inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
       [inboxId, itemId],
     );
     if (!anchor) {
@@ -1128,7 +1128,7 @@ export class AgentInboxStore {
       set acked_at = ?
       where inbox_id = ?
         and acked_at is null
-        and inbox_sequence <= ?
+        and coalesce(inbox_sequence, rowid) <= ?
     `,
       [ackedAt, inboxId, Number(anchor.inbox_sequence)],
     );
