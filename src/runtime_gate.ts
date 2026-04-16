@@ -15,7 +15,6 @@ const ACTIVE_BUFFER_MARKERS = [
 ];
 const TYPING_PROMPT_PREFIXES = [
   "› ",
-  "❯ ",
   "> ",
 ];
 
@@ -331,7 +330,11 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     if (cursorHint === "busy") {
       return { presence: "available", busy: "busy" };
     }
-    if (cursorHint === "unknown" && paneState.active && hasVisibleTypingPrompt(second)) {
+    if (
+      cursorHint === "unknown" &&
+      paneState.active &&
+      hasVisibleTypingPrompt(second, typingPromptPrefixesForRuntime(target.runtimeKind))
+    ) {
       return { presence: "available", busy: "busy" };
     }
     return { presence: "available", busy: "unknown" };
@@ -385,7 +388,7 @@ function containsActiveBufferMarker(bufferTail: string): boolean {
   return ACTIVE_BUFFER_MARKERS.some((marker) => bufferTail.includes(marker));
 }
 
-function hasVisibleTypingPrompt(bufferTail: string): boolean {
+function hasVisibleTypingPrompt(bufferTail: string, prefixes: readonly string[] = TYPING_PROMPT_PREFIXES): boolean {
   const lines = bufferTail
     .split("\n")
     .map((line) => line.trimEnd())
@@ -394,7 +397,7 @@ function hasVisibleTypingPrompt(bufferTail: string): boolean {
   if (!lastLine) {
     return false;
   }
-  for (const prefix of TYPING_PROMPT_PREFIXES) {
+  for (const prefix of prefixes) {
     if (lastLine.startsWith(prefix) && lastLine.slice(prefix.length).trim().length > 0) {
       return true;
     }
@@ -426,7 +429,7 @@ function evaluateCursorAwareTypingPrompt(
   const captureStartRow = Math.max(0, paneState.height - lines.length);
   const lineIndex = paneState.cursorY - captureStartRow;
   if (lineIndex < 0 || lineIndex >= lines.length) {
-    return "not_busy";
+    return "unknown";
   }
 
   const line = lines[lineIndex] ?? "";
@@ -444,6 +447,16 @@ function runtimeTypingPromptPrefix(runtimeKind: TerminalActivationTarget["runtim
     return "❯ ";
   }
   return null;
+}
+
+function typingPromptPrefixesForRuntime(runtimeKind: TerminalActivationTarget["runtimeKind"]): readonly string[] {
+  if (runtimeKind === "codex") {
+    return ["› "];
+  }
+  if (runtimeKind === "claude_code") {
+    return ["❯ ", "› "];
+  }
+  return TYPING_PROMPT_PREFIXES;
 }
 
 function parseOptionalInt(value: string | undefined): number | null {
