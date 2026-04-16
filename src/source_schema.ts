@@ -20,7 +20,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
     eventVariantExamples: [],
     configFields: [
       { name: "profilePath", type: "string", required: true, description: "Local module path under $AGENTINBOX_HOME/source-profiles." },
-      { name: "profileConfig", type: "object", required: false, description: "Profile-specific configuration passed to validate/spec/map hooks." },
+      { name: "profileConfig", type: "object", required: false, description: "Module-specific configuration passed to validate/spec/map hooks." },
     ],
   },
   github_repo: {
