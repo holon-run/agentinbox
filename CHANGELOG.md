@@ -12,6 +12,18 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.6.0] - 2026-04-16
+
+### Added
+
+- Added source-specific activation previews so remote implementations can render better single-item terminal previews without bypassing core preview guardrails.
+- Added iTerm2 Python API cursor-aware terminal activity detection to improve input-aware terminal gating when Python probe support is available.
+
+### Fixed
+
+- Improved terminal activity gating heuristics so cursor-aware typing checks and longer buffer-change sampling reduce notification interruptions while a terminal is actively being used.
+- Fixed inbox `ack --through` ordering so reads, watches, and through-acks use the same durable sequence even when multiple inbox items share the same timestamp.
+
 ## [0.5.0] - 2026-04-16
 
 ### Added
