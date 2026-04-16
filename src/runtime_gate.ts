@@ -290,7 +290,8 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             return { presence: "available", busy: "idle" };
           }
 
-          // If cursor-aware detection is uncertain, fall back to buffer change detection
+          // If cursor-aware detection is uncertain, fall back to buffer change detection only
+          // Do NOT use generic typing prompts to avoid false positives (see #116)
           if (busyStatus === "unknown") {
             await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
             const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
@@ -310,10 +311,9 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
               return { presence: "available", busy: "busy" };
             }
 
-            // Only apply generic typing prompts as fallback when cursor-aware detection is uncertain
-            if (hasVisibleTypingPrompt(bufferTail)) {
-              return { presence: "available", busy: "busy" };
-            }
+            // Return unknown when cursor-aware detection is uncertain
+            // Do NOT fall back to generic typing prompts to avoid false positives
+            return { presence: "available", busy: "unknown" };
           }
 
           // This should never be reached as all cases are handled above
@@ -365,9 +365,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     if (containsActiveBufferMarker(second)) {
       return { presence: "available", busy: "busy" };
     }
-    if (hasVisibleTypingPrompt(second)) {
-      return { presence: "available", busy: "busy" };
-    }
+    // Do NOT use generic typing prompts to avoid false positives (see #116)
     return { presence: "available", busy: "unknown" };
   }
 
@@ -448,17 +446,12 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     if (containsActiveBufferMarker(second)) {
       return { presence: "available", busy: "busy" };
     }
+    // Use cursor-aware detection when available
     const cursorHint = evaluateCursorAwareTypingPrompt(target, paneState, second);
     if (cursorHint === "busy") {
       return { presence: "available", busy: "busy" };
     }
-    if (
-      cursorHint === "unknown" &&
-      paneState.active &&
-      hasVisibleTypingPrompt(second, typingPromptPrefixesForRuntime(target.runtimeKind))
-    ) {
-      return { presence: "available", busy: "busy" };
-    }
+    // Do NOT fall back to generic typing prompts when cursorHint is unknown to avoid false positives (see #116)
     return { presence: "available", busy: "unknown" };
   }
 
