@@ -808,17 +808,18 @@ test("Iterm2TerminalStateProbe with Python API reports busy when cursor is at pr
   const probe = new Iterm2TerminalStateProbe(
     async (file, args) => {
       if (file === "python3") {
-        // Simulate Python API response with cursor at prompt with input
+        // Simulate Python API response with the cursor on the in-bounds prompt line.
         return {
           stdout: JSON.stringify({
             status: "available",
-            cursor: { x: 10, y: 4 }, // Cursor after "› " (2 chars) + "test" (4 chars) + extra
+            cursor: { x: 10, y: 4 }, // Last line in `lines`; cursor is within the prompt line content.
             screen_height: 5,
+            start_line: 0,
             lines: [
               "line 1",
               "line 2",
               "line 3",
-              "› test input" // Cursor is at position 10, after "test"
+              "› test input" // Cursor is on this prompt line, after the entered input.
             ]
           }),
           stderr: ""
@@ -840,7 +841,7 @@ test("Iterm2TerminalStateProbe with Python API reports busy when cursor is at pr
   assert.equal(result.busy, "busy");
 });
 
-test("Iterm2TerminalStateProbe with Python API reports unknown when cursor is not at prompt line", async () => {
+test("Iterm2TerminalStateProbe with Python API reports idle when cursor is not at prompt line", async () => {
   const probe = new Iterm2TerminalStateProbe(
     async (file, args) => {
       if (file === "python3") {
@@ -850,6 +851,7 @@ test("Iterm2TerminalStateProbe with Python API reports unknown when cursor is no
             status: "available",
             cursor: { x: 5, y: 2 }, // Cursor at line 2, not at last line (4)
             screen_height: 5,
+            start_line: 0,
             lines: [
               "line 1",
               "line 2 with cursor",
@@ -873,7 +875,7 @@ test("Iterm2TerminalStateProbe with Python API reports unknown when cursor is no
   const result = await probe.check(target);
 
   assert.equal(result.presence, "available");
-  assert.equal(result.busy, "unknown");
+  assert.equal(result.busy, "idle");
 });
 
 test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fails", async () => {
@@ -892,7 +894,7 @@ test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fai
         }
         if (args[0] === "get-buffer") {
           return {
-            stdout: "› test input\nmore content",
+            stdout: "more content\n› test input",
             stderr: ""
           };
         }
@@ -910,7 +912,7 @@ test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fai
   const target = makeItermTarget();
   const result = await probe.check(target);
 
-  // Should fall back to CLI which reports busy due to typing prompt
+  // Should fall back to CLI which reports busy due to typing prompt on last line
   assert.equal(result.presence, "available");
   assert.equal(result.busy, "busy");
 });

@@ -264,6 +264,30 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             return { presence: "available", busy: "busy" };
           }
 
+          // If cursor-aware detection is certain it's not busy, don't apply prompt heuristics
+          if (busyStatus === "not_busy") {
+            // Still check for buffer changes and active markers
+            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+            const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
+              env: { ...process.env, PYTHONIOENCODING: "utf-8" }
+            });
+            const secondData = JSON.parse(secondResult.stdout);
+
+            if (secondData.status === "available" && secondData.lines) {
+              const secondBufferTail = secondData.lines.join("\n");
+              if (bufferTail !== secondBufferTail) {
+                return { presence: "available", busy: "busy" };
+              }
+            }
+
+            // Check for active buffer markers
+            if (containsActiveBufferMarker(bufferTail)) {
+              return { presence: "available", busy: "busy" };
+            }
+
+            return { presence: "available", busy: "idle" };
+          }
+
           // If cursor-aware detection is uncertain, fall back to buffer change detection
           if (busyStatus === "unknown") {
             await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
@@ -278,16 +302,16 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
                 return { presence: "available", busy: "busy" };
               }
             }
-          }
 
-          // Check for active buffer markers
-          if (containsActiveBufferMarker(bufferTail)) {
-            return { presence: "available", busy: "busy" };
-          }
+            // Check for active buffer markers
+            if (containsActiveBufferMarker(bufferTail)) {
+              return { presence: "available", busy: "busy" };
+            }
 
-          // Check for generic typing prompts as fallback
-          if (hasVisibleTypingPrompt(bufferTail)) {
-            return { presence: "available", busy: "busy" };
+            // Only apply generic typing prompts as fallback when cursor-aware detection is uncertain
+            if (hasVisibleTypingPrompt(bufferTail)) {
+              return { presence: "available", busy: "busy" };
+            }
           }
 
           // Return the cursor-aware detection result
@@ -931,22 +955,49 @@ function resolvePythonProbeScript(override?: string): string {
   if (override) {
     return override;
   }
-  const candidates = [
-    // Check relative to the project root
-    path.join(__dirname, "..", "scripts", "iterm2_cursor_probe.py"),
-    // Check installed location
-    path.join(process.cwd(), "scripts", "iterm2_cursor_probe.py"),
-    // Check development location
-    "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox/scripts/iterm2_cursor_probe.py",
-  ];
+
+  const scriptRelativePath = path.join("scripts", "iterm2_cursor_probe.py");
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+
+  const addCandidate = (candidate: string): void => {
+    const normalized = path.normalize(candidate);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      candidates.push(normalized);
+    }
+  };
+
+  // Search upward from the current module's directory
+  let currentDir = __dirname;
+  for (let i = 0; i < 5; i++) { // Limit upward search depth
+    addCandidate(path.join(currentDir, scriptRelativePath));
+    addCandidate(path.join(currentDir, "dist", scriptRelativePath));
+    addCandidate(path.join(currentDir, "dist", "src", scriptRelativePath));
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      break;
+    }
+    currentDir = parentDir;
+  }
+
+  // Check process working directory and its dist paths
+  addCandidate(path.join(process.cwd(), scriptRelativePath));
+  addCandidate(path.join(process.cwd(), "dist", scriptRelativePath));
+  addCandidate(path.join(process.cwd(), "dist", "src", scriptRelativePath));
+
+  // Check all candidates
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
-  // Return the first candidate even if it doesn't exist
-  // This allows tests to mock the script execution
-  return candidates[0];
+
+  throw new Error(
+    `Unable to locate iterm2_cursor_probe.py. Checked: ${candidates.join(", ")}. ` +
+      "Ensure scripts/iterm2_cursor_probe.py is shipped with the package or copied into dist/ during build."
+  );
 }
 
 function runtimeTypingPromptPrefix(runtimeKind: TerminalActivationTarget["runtimeKind"]): string | null {
@@ -964,18 +1015,29 @@ function evaluateCursorAwareTypingPrompt(
   cursorPosition: { x: number; y: number },
   screenHeight: number,
   runtimeKind: string
-): TerminalBusyStatus {
+): "busy" | "not_busy" | "unknown" {
   const lines = bufferTail.split("\n");
   const lastLineIndex = lines.length - 1;
 
-  // If cursor row is beyond captured buffer, return unknown
-  if (cursorPosition.y > lastLineIndex) {
+  // Cursor coordinates are in full-screen rows, while bufferTail only contains
+  // the last visible lines of the screen. First ensure the cursor is on the
+  // terminal's last visible row, then map that row into the captured window.
+  if (cursorPosition.y !== screenHeight - 1) {
+    return "not_busy";
+  }
+
+  // Map the cursor position into the captured buffer window
+  const capturedStartRow = Math.max(0, screenHeight - lines.length);
+  const cursorRowInBuffer = cursorPosition.y - capturedStartRow;
+
+  // If the last visible screen row is not represented by the captured tail,
+  // or does not map to the last captured line, we cannot evaluate reliably.
+  if (cursorRowInBuffer < 0 || cursorRowInBuffer > lastLineIndex) {
     return "unknown";
   }
 
-  // Check if cursor is on the last visible line
-  if (cursorPosition.y < lastLineIndex) {
-    return "unknown";
+  if (cursorRowInBuffer !== lastLineIndex) {
+    return "not_busy";
   }
 
   const lastLine = lines[lastLineIndex] || "";
@@ -997,5 +1059,5 @@ function evaluateCursorAwareTypingPrompt(
     }
   }
 
-  return "unknown";
+  return "not_busy";
 }
