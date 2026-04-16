@@ -1858,7 +1858,11 @@ export class AgentInboxService {
           const singleItem = input.items[0];
           const source = this.store.getSource(singleItem.sourceId);
           if (source) {
-            preview = await this.adapters.deriveInlinePreview(source, singleItem);
+            try {
+              preview = await this.adapters.deriveInlinePreview(source, singleItem);
+            } catch {
+              preview = null;
+            }
           }
           preview ??= deriveInlineItemPreview(singleItem, input.summary);
         }

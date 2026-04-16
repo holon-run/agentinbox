@@ -2855,6 +2855,92 @@ test("user-defined remote_source profiles can opt into source-specific inline pr
   }
 });
 
+test("source-specific preview hook failures fall back to the generic preview", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "preview-hook-error.mjs"),
+      `export default {
+  id: "demo.preview-hook-error",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      operation_id: "get:/events",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(rawPayload) {
+    return {
+      sourceNativeId: String(rawPayload.id ?? "evt-remote-preview-error"),
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload
+    };
+  },
+  deriveInlinePreview() {
+    throw new Error("broken preview hook");
+  }
+};\n`,
+    );
+
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-remote-preview-hook-error",
+      tmuxPaneId: "%61",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo/preview-hook-error",
+      config: {
+        profilePath: "preview-hook-error.mjs",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceNativeId: "evt-remote-preview-error",
+      sourceId: source.sourceId,
+      eventVariant: "demo.event",
+      metadata: {},
+      rawPayload: {
+        message: "Fallback generic preview still works when the source hook crashes.",
+      },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(
+      terminalDispatcher.calls[0]!.prompt,
+      /Preview: Fallback generic preview still works when the source hook crashes\./,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("preview-aware terminal prompts still dedupe unchanged lease reminders", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { service, dir, store } = await makeService({
