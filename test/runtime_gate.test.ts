@@ -803,3 +803,142 @@ test("Iterm2TerminalStateProbe supports non-claude iTerm2 targets", () => {
   const codexTarget = makeItermTarget(); // This has runtimeKind: "codex"
   assert.equal(probe.supports(codexTarget), true);
 });
+
+test("Iterm2TerminalStateProbe with Python API reports busy when cursor is at prompt with input", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        // Simulate Python API response with cursor at prompt with input
+        return {
+          stdout: JSON.stringify({
+            status: "available",
+            cursor: { x: 10, y: 4 }, // Cursor after "› " (2 chars) + "test" (4 chars) + extra
+            screen_height: 5,
+            lines: [
+              "line 1",
+              "line 2",
+              "line 3",
+              "› test input" // Cursor is at position 10, after "test"
+            ]
+          }),
+          stderr: ""
+        };
+      }
+      throw new Error("Unexpected command: " + file);
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "busy");
+});
+
+test("Iterm2TerminalStateProbe with Python API reports unknown when cursor is not at prompt line", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        // Simulate Python API response with cursor not at last line
+        return {
+          stdout: JSON.stringify({
+            status: "available",
+            cursor: { x: 5, y: 2 }, // Cursor at line 2, not at last line (4)
+            screen_height: 5,
+            lines: [
+              "line 1",
+              "line 2 with cursor",
+              "line 3",
+              "› test input"
+            ]
+          }),
+          stderr: ""
+        };
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "unknown");
+});
+
+test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fails", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        throw new Error("Python not available");
+      }
+      // Fall back to it2api
+      if (file === "/tmp/fake-it2api") {
+        if (args[0] === "list-sessions") {
+          return {
+            stdout: `Session "test" id=4F7A2F18-E5F4-4E27-A391-23953DE1F826 (110 x 30)`,
+            stderr: ""
+          };
+        }
+        if (args[0] === "get-buffer") {
+          return {
+            stdout: "› test input\nmore content",
+            stderr: ""
+          };
+        }
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      iterm2ApiPath: "/tmp/fake-it2api",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  // Should fall back to CLI which reports busy due to typing prompt
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "busy");
+});
+
+test("Iterm2TerminalStateProbe with Python API reports gone when session is gone", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file, args) => {
+      if (file === "python3") {
+        // Simulate Python API response for gone session
+        return {
+          stdout: JSON.stringify({
+            status: "gone"
+          }),
+          stderr: ""
+        };
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {}
+    }
+  );
+
+  const target = makeItermTarget();
+  const result = await probe.check(target);
+
+  assert.equal(result.presence, "gone");
+  assert.equal(result.busy, "unknown");
+});
