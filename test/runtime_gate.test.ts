@@ -268,7 +268,7 @@ test("Iterm2TerminalStateProbe reports unknown when the buffer is stable and qui
   });
 });
 
-test("Iterm2TerminalStateProbe reports busy when the stable buffer shows visible typed input", async () => {
+test("Iterm2TerminalStateProbe reports unknown when the stable buffer shows visible typed input", async () => {
   const probe = new Iterm2TerminalStateProbe(async (_file, args) => {
     if (args[0] === "list-sessions") {
       return {
@@ -291,9 +291,11 @@ test("Iterm2TerminalStateProbe reports busy when the stable buffer shows visible
     sleep: async () => {},
   });
 
+  // After PR #116 tightening, generic typing prompts are no longer used to avoid false positives
+  // The buffer is stable and shows no active markers, so it returns unknown
   assert.deepEqual(await probe.check(makeItermTarget()), {
     presence: "available",
-    busy: "busy",
+    busy: "unknown",
   });
 });
 
@@ -521,6 +523,7 @@ test("TmuxTerminalStateProbe reports busy when the stable buffer shows a codex a
   });
 });
 
+<<<<<<< HEAD
 test("TmuxTerminalStateProbe reports busy when the cursor is past a codex prompt prefix on the input row", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
@@ -609,7 +612,7 @@ test("TmuxTerminalStateProbe falls back to prompt heuristics when the cursor row
   });
 });
 
-test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadata is unavailable", async () => {
+test("TmuxTerminalStateProbe reports unknown when cursor metadata is unavailable and prompt heuristics would apply", async () => {
   const probe = new TmuxTerminalStateProbe(async (_file, args) => {
     if (args[0] === "display-message") {
       return { stdout: "1 0\n", stderr: "" };
@@ -625,9 +628,11 @@ test("TmuxTerminalStateProbe falls back to prompt heuristics when cursor metadat
     sleep: async () => {},
   });
 
+  // After PR #116 tightening, when cursor metadata is unavailable, we do NOT fall back to
+  // generic prompt heuristics to avoid false positives
   assert.deepEqual(await probe.check(makeTmuxTarget()), {
     presence: "available",
-    busy: "busy",
+    busy: "unknown",
   });
 });
 
@@ -914,9 +919,10 @@ test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fai
   const target = makeItermTarget();
   const result = await probe.check(target);
 
-  // Should fall back to CLI which reports busy due to typing prompt on last line
+  // After PR #116 tightening, CLI fallback no longer uses generic typing prompts to avoid false positives
+  // The buffer is stable and shows no active markers, so it returns unknown
   assert.equal(result.presence, "available");
-  assert.equal(result.busy, "busy");
+  assert.equal(result.busy, "unknown");
 });
 
 test("Iterm2TerminalStateProbe with Python API reports gone when session is gone", async () => {
