@@ -189,8 +189,10 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     private readonly execAsync: ExecFileAsyncLike = execFileAsync,
     private readonly options: {
       iterm2ApiPath?: string;
+      pythonScriptPath?: string;
       sampleDelayMs?: number;
       sleep?: (ms: number) => Promise<void>;
+      enablePythonProbe?: boolean;
     } = {},
   ) {}
 
@@ -214,6 +216,100 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       return { presence: "unknown", busy: "unknown" };
     }
 
+    // Try Python API probe first (if enabled)
+    if (this.options.enablePythonProbe !== false) {
+      const pythonResult = await this.tryPythonApiProbe(sessionId, target.runtimeKind);
+      if (pythonResult && pythonResult.presence !== "unknown") {
+        return pythonResult;
+      }
+    }
+
+    // Fallback to command-line tools
+    return this.checkWithCommandLineTools(sessionId);
+  }
+
+  private async tryPythonApiProbe(
+    sessionId: string,
+    runtimeKind: string
+  ): Promise<{ presence: TerminalPresenceStatus; busy: TerminalBusyStatus } | null> {
+    try {
+      const scriptPath = this.options.pythonScriptPath ?? resolvePythonProbeScript();
+      const result = await this.execAsync("python3", [scriptPath, sessionId], {
+        env: { ...process.env, PYTHONIOENCODING: "utf-8" }
+      });
+
+      const data = JSON.parse(result.stdout);
+
+      if (data.status === "gone") {
+        return { presence: "gone", busy: "unknown" };
+      }
+
+      if (data.status === "available") {
+        // If we have cursor and lines data, use cursor-aware detection
+        if (data.cursor && data.lines) {
+          const bufferTail = data.lines.join("\n");
+          const cursorPosition = { x: data.cursor.x, y: data.cursor.y };
+          const screenHeight = data.screen_height;
+
+          // Perform cursor-aware typing detection
+          const busyStatus = evaluateCursorAwareTypingPrompt(
+            bufferTail,
+            cursorPosition,
+            screenHeight,
+            runtimeKind
+          );
+
+          // If cursor-aware detection indicates busy, return immediately
+          if (busyStatus === "busy") {
+            return { presence: "available", busy: "busy" };
+          }
+
+          // If cursor-aware detection is uncertain, fall back to buffer change detection
+          if (busyStatus === "unknown") {
+            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+            const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
+              env: { ...process.env, PYTHONIOENCODING: "utf-8" }
+            });
+            const secondData = JSON.parse(secondResult.stdout);
+
+            if (secondData.status === "available" && secondData.lines) {
+              const secondBufferTail = secondData.lines.join("\n");
+              if (bufferTail !== secondBufferTail) {
+                return { presence: "available", busy: "busy" };
+              }
+            }
+          }
+
+          // Check for active buffer markers
+          if (containsActiveBufferMarker(bufferTail)) {
+            return { presence: "available", busy: "busy" };
+          }
+
+          // Check for generic typing prompts as fallback
+          if (hasVisibleTypingPrompt(bufferTail)) {
+            return { presence: "available", busy: "busy" };
+          }
+
+          // Return the cursor-aware detection result
+          return { presence: "available", busy: busyStatus };
+        }
+
+        // If we don't have cursor data, return unknown to trigger fallback
+        return null;
+      }
+
+      // Any other status means we should fall back
+      return null;
+    } catch {
+      // Python API probe failed, fall back to command-line tools
+      return null;
+    }
+  }
+
+  private async checkWithCommandLineTools(sessionId: string): Promise<{
+    presence: TerminalPresenceStatus;
+    busy: TerminalBusyStatus;
+  }> {
     let it2api: string;
     try {
       it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
@@ -829,4 +925,77 @@ function parseIterm2SessionIds(stdout: string): string[] {
       return match ? match[1] : null;
     })
     .filter((id): id is string => id !== null);
+}
+
+function resolvePythonProbeScript(override?: string): string {
+  if (override) {
+    return override;
+  }
+  const candidates = [
+    // Check relative to the project root
+    path.join(__dirname, "..", "scripts", "iterm2_cursor_probe.py"),
+    // Check installed location
+    path.join(process.cwd(), "scripts", "iterm2_cursor_probe.py"),
+    // Check development location
+    "/Users/jolestar/opensource/src/github.com/holon-run/agentinbox/scripts/iterm2_cursor_probe.py",
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  // Return the first candidate even if it doesn't exist
+  // This allows tests to mock the script execution
+  return candidates[0];
+}
+
+function runtimeTypingPromptPrefix(runtimeKind: TerminalActivationTarget["runtimeKind"]): string | null {
+  if (runtimeKind === "codex") {
+    return "› ";
+  }
+  if (runtimeKind === "claude_code") {
+    return "❯ ";
+  }
+  return null;
+}
+
+function evaluateCursorAwareTypingPrompt(
+  bufferTail: string,
+  cursorPosition: { x: number; y: number },
+  screenHeight: number,
+  runtimeKind: string
+): TerminalBusyStatus {
+  const lines = bufferTail.split("\n");
+  const lastLineIndex = lines.length - 1;
+
+  // If cursor row is beyond captured buffer, return unknown
+  if (cursorPosition.y > lastLineIndex) {
+    return "unknown";
+  }
+
+  // Check if cursor is on the last visible line
+  if (cursorPosition.y < lastLineIndex) {
+    return "unknown";
+  }
+
+  const lastLine = lines[lastLineIndex] || "";
+  const promptPrefix = runtimeTypingPromptPrefix(runtimeKind as TerminalActivationTarget["runtimeKind"]);
+
+  if (!promptPrefix) {
+    return "unknown";
+  }
+
+  // Check if the last line starts with the runtime-specific prompt prefix
+  if (lastLine.startsWith(promptPrefix)) {
+    // Check if cursor is after the prompt prefix
+    if (cursorPosition.x > promptPrefix.length) {
+      const afterPrompt = lastLine.slice(promptPrefix.length).trim();
+      // If there's content after the prompt, user is typing
+      if (afterPrompt.length > 0) {
+        return "busy";
+      }
+    }
+  }
+
+  return "unknown";
 }
