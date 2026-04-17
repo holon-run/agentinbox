@@ -1337,6 +1337,7 @@ export class AgentInboxService {
 
   async sendDelivery(request: DeliveryRequest): Promise<DeliveryAttempt & { note: string }> {
     const handle = resolveDeliveryHandle(request);
+    const source = resolveDeliverySource(this.store, request.sourceId, handle);
     const attempt: DeliveryAttempt = {
       deliveryId: generateId("dlv"),
       provider: handle.provider,
@@ -1349,8 +1350,9 @@ export class AgentInboxService {
       status: "accepted",
       createdAt: nowIso(),
     };
-    const adapter = this.adapters.deliveryAdapterFor(handle.provider);
-    const result = await adapter.send(request, attempt);
+    const result = source
+      ? await this.sendCanonicalDeliveryViaModule(source, handle, request.payload, attempt)
+      : await this.adapters.deliveryAdapterFor(handle.provider).send(request, attempt);
     const storedAttempt = { ...attempt, status: result.status };
     this.store.insertDelivery(storedAttempt);
     return { ...storedAttempt, note: result.note };
@@ -1390,6 +1392,21 @@ export class AgentInboxService {
     const storedAttempt = { ...attempt, status: result.status };
     this.store.insertDelivery(storedAttempt);
     return { ...storedAttempt, note: result.note, operation: request.operation };
+  }
+
+  private async sendCanonicalDeliveryViaModule(
+    source: SubscriptionSource,
+    handle: DeliveryHandle,
+    payload: Record<string, unknown>,
+    attempt: DeliveryAttempt,
+  ): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    const operations = await this.adapters.listDeliveryOperations(source, handle);
+    const canonicalOperation = operations.find((operation) => operation.canonicalTextAlias);
+    if (!canonicalOperation) {
+      throw new Error(`deliver send is not supported for ${handle.provider}/${handle.surface}; use deliver invoke`);
+    }
+    const input = payload.text != null ? { ...payload, body: String(payload.text) } : payload;
+    return this.adapters.invokeDeliveryOperation(source, handle, canonicalOperation.name, input, attempt);
   }
 
   status(): Record<string, unknown> {

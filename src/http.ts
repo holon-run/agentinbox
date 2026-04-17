@@ -1414,11 +1414,13 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("sources/events requires") ||
     message.startsWith("source remove requires") ||
     message.startsWith("delivery requires") ||
+    message.startsWith("deliver send is not supported") ||
     message.startsWith("deliveryHandle requires") ||
     message.startsWith("delivery operations are not supported") ||
     message.startsWith("unknown GitHub delivery operation") ||
     message.startsWith("unknown Feishu delivery operation") ||
     message.startsWith("invalid GitHub targetRef") ||
+    message.includes("requires input.text") ||
     message.includes("requires input.body") ||
     message.startsWith("subscriptions/reset requires") ||
     message.startsWith("agents requires") ||

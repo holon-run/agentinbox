@@ -389,6 +389,17 @@ test("control plane validates sources/events occurredAt and deliveries/send requ
       });
       assert.equal(invalidDelivery.statusCode, 400);
       assert.equal(typeof invalidDelivery.data.error, "string");
+
+      const mismatchedSend = await client.request<{ error: string }>("/deliveries/send", {
+        sourceId: sourceResponse.data.sourceId,
+        provider: "github",
+        surface: "issue_comment",
+        targetRef: "holon-run/agentinbox#111",
+        kind: "comment",
+        payload: { text: "hello" },
+      });
+      assert.equal(mismatchedSend.statusCode, 400);
+      assert.match(mismatchedSend.data.error, /deliver send is not supported/);
     } finally {
       await started.close();
     }

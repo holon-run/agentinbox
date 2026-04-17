@@ -112,6 +112,14 @@ export function feishuDeliveryOperationsForHandle(handle: DeliveryHandle): Deliv
       required: ["text"],
       properties: {
         text: { type: "string", minLength: 1 },
+        endpoint: { type: "string", minLength: 1 },
+        schemaUrl: { type: "string", minLength: 1 },
+        schema_url: { type: "string", minLength: 1 },
+        uxcAuth: { type: "string", minLength: 1 },
+        auth: { type: "string", minLength: 1 },
+        replyInThread: { type: "boolean" },
+        reply_in_thread: { type: "boolean" },
+        uuid: { type: "string", minLength: 1 },
       },
     },
     canonicalTextAlias: true,
@@ -127,8 +135,12 @@ export async function invokeFeishuDeliveryOperation(
   if (operation !== "send_text") {
     throw new Error(`unknown Feishu delivery operation: ${operation}`);
   }
+  const text = asString(input.text);
+  if (!text || text.trim().length === 0) {
+    throw new Error("send_text requires input.text");
+  }
   const config = parseDeliveryConfig(input);
-  const message = normalizeDeliveryMessage(input);
+  const message = normalizeDeliveryMessage({ text });
 
   if (handle.surface === "message_reply") {
     await client.replyToMessage({
