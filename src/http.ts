@@ -1352,7 +1352,46 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.getInboxDetailsByAgent(decodeURIComponent(params.agentId));
   });
 
-  app.get("/agents/:agentId/inbox/items", {
+  app.get("/agents/:agentId/inbox/entries", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          after_entry_id: { type: "string" },
+          include_acked: { type: "string", enum: ["true", "false"] },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["entries"],
+          properties: {
+            entries: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const query = request.query as { after_entry_id?: string; include_acked?: "true" | "false" };
+    return {
+      entries: service.listInboxItems(decodeURIComponent(params.agentId), {
+        afterEntryId: query.after_entry_id,
+        includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
+      }),
+    };
+  });
+
+  app.get("/agents/:agentId/inbox/raw-items", {
     schema: {
       tags: ["inbox"],
       params: {
@@ -1384,7 +1423,7 @@ function buildFastifyServer(service: AgentInboxService) {
     const params = request.params as { agentId: string };
     const query = request.query as { after_item_id?: string; include_acked?: "true" | "false" };
     return {
-      items: service.listInboxItems(decodeURIComponent(params.agentId), {
+      items: service.listRawInboxItems(decodeURIComponent(params.agentId), {
         afterItemId: query.after_item_id,
         includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
       }),
@@ -1439,7 +1478,7 @@ function buildFastifyServer(service: AgentInboxService) {
         type: "object",
         additionalProperties: false,
         properties: {
-          after_item_id: { type: "string" },
+          after_entry_id: { type: "string" },
           include_acked: { type: "string", enum: ["true", "false"] },
           heartbeat_ms: { type: "string", pattern: "^[1-9][0-9]*$" },
         },
@@ -1451,13 +1490,13 @@ function buildFastifyServer(service: AgentInboxService) {
   }, async (request, reply) => {
     const params = request.params as { agentId: string };
     const query = request.query as {
-      after_item_id?: string;
+      after_entry_id?: string;
       include_acked?: "true" | "false";
       heartbeat_ms?: string;
     };
     const agentId = decodeURIComponent(params.agentId);
     const watchOptions: WatchInboxOptions = {
-      afterItemId: query.after_item_id,
+      afterEntryId: query.after_entry_id,
       includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
       heartbeatMs: query.heartbeat_ms ? Number(query.heartbeat_ms) : undefined,
     };
@@ -1476,7 +1515,7 @@ function buildFastifyServer(service: AgentInboxService) {
     sendSse(raw, "items", {
       event: "items",
       agentId,
-      items: session.initialItems,
+      entries: session.initialItems,
     });
     session.start();
 
@@ -1532,9 +1571,9 @@ function buildFastifyServer(service: AgentInboxService) {
           {
             type: "object",
             additionalProperties: false,
-            required: ["itemIds"],
+            required: ["entryIds"],
             properties: {
-              itemIds: {
+              entryIds: {
                 type: "array",
                 minItems: 1,
                 items: { type: "string", minLength: 1 },
@@ -1544,9 +1583,9 @@ function buildFastifyServer(service: AgentInboxService) {
           {
             type: "object",
             additionalProperties: false,
-            required: ["throughItemId"],
+            required: ["throughEntryId"],
             properties: {
-              throughItemId: { type: "string", minLength: 1 },
+              throughEntryId: { type: "string", minLength: 1 },
             },
           },
           {
@@ -1567,15 +1606,69 @@ function buildFastifyServer(service: AgentInboxService) {
   }, async (request) => {
     const params = request.params as { agentId: string };
     const body = request.body as {
-      itemIds?: string[];
-      throughItemId?: string;
+      entryIds?: string[];
+      throughEntryId?: string;
       all?: boolean;
     };
     return service.ackInbox(decodeURIComponent(params.agentId), {
-      itemIds: body.itemIds ?? [],
-      throughItemId: body.throughItemId ?? null,
+      itemIds: body.entryIds ?? [],
+      throughItemId: body.throughEntryId ?? null,
       all: body.all ?? false,
     });
+  });
+
+  app.get("/agents/:agentId/inbox/policy", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.getInboxAggregationPolicy(decodeURIComponent(params.agentId));
+  });
+
+  app.post("/agents/:agentId/inbox/policy", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean" },
+          windowMs: { type: "integer", minimum: 1 },
+          maxItems: { type: "integer", minimum: 1 },
+          maxThreadAgeMs: { type: "integer", minimum: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const body = request.body as {
+      enabled?: boolean;
+      windowMs?: number;
+      maxItems?: number;
+      maxThreadAgeMs?: number;
+    };
+    return service.updateInboxAggregationPolicy(decodeURIComponent(params.agentId), body);
   });
 
   app.post("/deliveries/send", {

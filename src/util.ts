@@ -50,3 +50,27 @@ export function asObject(value: unknown): Record<string, unknown> {
 export function jsonResponse(data: unknown): string {
   return JSON.stringify(data, null, 2);
 }
+
+export function formatEntryRef(entryId: number): string {
+  return `ent_${entryId}`;
+}
+
+export function parseEntryRef(ref: string): number {
+  const match = /^ent_(\d+)$/.exec(ref.trim());
+  if (!match) {
+    throw new Error(`invalid inbox entry id: ${ref}`);
+  }
+  return Number(match[1]);
+}
+
+export function formatThreadRef(threadId: number): string {
+  return `thr_${threadId}`;
+}
+
+export function parseThreadRef(ref: string): number {
+  const match = /^thr_(\d+)$/.exec(ref.trim());
+  if (!match) {
+    throw new Error(`invalid digest thread id: ${ref}`);
+  }
+  return Number(match[1]);
+}

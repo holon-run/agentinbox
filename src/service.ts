@@ -16,8 +16,11 @@ import {
   DeliveryOperationDescriptor,
   DeliveryRequest,
   Inbox,
+  InboxAggregationPolicy,
+  InboxEntry,
   InboxItem,
   InboxWatchEvent,
+  NotificationGrouping,
   NotificationPolicy,
   PreviewSourceSchemaInput,
   RegisterAgentInput,
@@ -55,7 +58,7 @@ import {
   streamKeyForSource,
   toAppendResult,
 } from "./backend";
-import { generateId, nowIso } from "./util";
+import { formatEntryRef, generateId, nowIso } from "./util";
 import { getSourceSchema } from "./source_schema";
 import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
@@ -82,6 +85,9 @@ const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;
 const DEFAULT_IDLE_SOURCE_GRACE_MS = 5 * 60 * 1000;
+const DEFAULT_INBOX_AGGREGATION_WINDOW_MS = 30 * 1000;
+const DEFAULT_INBOX_AGGREGATION_MAX_ITEMS = 20;
+const DEFAULT_INBOX_AGGREGATION_MAX_THREAD_AGE_MS = 24 * 60 * 60 * 1000;
 const DIRECT_INBOX_SOURCE_ID = "__agentinbox_direct_text__";
 const DIRECT_INBOX_EVENT_VARIANT = "agentinbox.direct_text_message";
 const TIMER_INBOX_SOURCE_ID = "__agentinbox_timer__";
@@ -102,20 +108,20 @@ interface BufferedNotification {
     subscriptionId: string | null;
     sourceId: string;
     summary: string;
-    item: ActivationItem;
+    entry: InboxEntry;
   }>;
   timer: NodeJS.Timeout | null;
   inFlight: boolean;
 }
 
 interface InboxWatcher {
-  onItems(items: InboxItem[]): void;
+  onItems(entries: InboxEntry[]): void;
 }
 
 type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline" | "deferred" | "suppressed";
 
 export interface InboxWatchSession {
-  initialItems: InboxItem[];
+  initialItems: InboxEntry[];
   start(): void;
   close(): void;
 }
@@ -189,12 +195,14 @@ export class AgentInboxService {
     this.stopping = false;
     this.syncInterval = setInterval(() => {
       void this.syncAllSubscriptions();
+      void this.syncPendingDigestThreads();
       void this.syncActivationDispatchStates();
       void this.runAckedInboxGcIfDue();
       void this.syncLifecycleGc();
     }, DEFAULT_SYNC_INTERVAL_MS);
     this.refreshTimersOnStart();
     await this.syncAllSubscriptions();
+    await this.syncPendingDigestThreads();
     await this.syncActivationDispatchStates();
     await this.runAckedInboxGcIfDue(true);
     await this.syncLifecycleGc();
@@ -1062,8 +1070,28 @@ export class AgentInboxService {
     };
   }
 
-  listInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {
+  listInboxItems(agentId: string, options?: WatchInboxOptions): InboxEntry[] {
+    return this.store.listInboxEntries(this.ensureInboxForAgent(agentId).inboxId, options);
+  }
+
+  listRawInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {
     return this.store.listInboxItems(this.ensureInboxForAgent(agentId).inboxId, options);
+  }
+
+  getInboxAggregationPolicy(agentId: string): InboxAggregationPolicy {
+    const inbox = this.ensureInboxForAgent(agentId);
+    return inboxAggregationPolicy(inbox);
+  }
+
+  updateInboxAggregationPolicy(agentId: string, input: InboxAggregationPolicy): InboxAggregationPolicy {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const updated = this.store.updateInboxAggregationPolicy(inbox.inboxId, {
+      enabled: input.enabled,
+      windowMs: input.windowMs,
+      maxItems: input.maxItems,
+      maxThreadAgeMs: input.maxThreadAgeMs,
+    });
+    return inboxAggregationPolicy(updated);
   }
 
   async addDirectInboxTextMessage(
@@ -1159,19 +1187,12 @@ export class AgentInboxService {
         activated: false,
       };
     }
-    this.notifyInboxWatchers(agentId, [item]);
+    const entry = this.store.createInboxItemEntry(inbox.inboxId, item, {
+      summary: input.summary,
+      subscriptionIds: [],
+    });
+    this.notifyInboxWatchers(agentId, [entry]);
 
-    const activationItem: ActivationItem = {
-      itemId: item.itemId,
-      sourceId: item.sourceId,
-      sourceNativeId: item.sourceNativeId,
-      eventVariant: item.eventVariant,
-      inboxId: item.inboxId,
-      occurredAt: item.occurredAt,
-      metadata: item.metadata,
-      rawPayload: item.rawPayload,
-      deliveryHandle: item.deliveryHandle,
-    };
     const targets = this.store.listActivationTargetsForAgent(agentId).filter((target) => target.status === "active");
     for (const target of targets) {
       this.enqueueActivationTarget(target, {
@@ -1179,7 +1200,7 @@ export class AgentInboxService {
         subscriptionId: null,
         sourceId: input.sourceId,
         summary: input.summary,
-        item: activationItem,
+        entry,
       });
     }
 
@@ -1190,33 +1211,154 @@ export class AgentInboxService {
     };
   }
 
+  private async materializeInboxEntryForItem(input: {
+    agentId: string;
+    inbox: Inbox;
+    source: SubscriptionSource | null;
+    subscriptionId: string | null;
+    item: InboxItem;
+    summary: string;
+  }): Promise<InboxEntry[]> {
+    const activationItem = activationItemFromInboxItem(input.item);
+    const policy = inboxAggregationPolicy(input.inbox);
+    if (!policy.enabled || !input.source) {
+      return [this.store.createInboxItemEntry(input.inbox.inboxId, input.item, {
+        summary: input.summary,
+        subscriptionIds: input.subscriptionId ? [input.subscriptionId] : [],
+      })];
+    }
+
+    const grouping = await this.adapters.deriveNotificationGrouping(input.source, activationItem);
+    if (!grouping?.groupable || !grouping.resourceRef || !grouping.eventFamily) {
+      return [this.store.createInboxItemEntry(input.inbox.inboxId, input.item, {
+        summary: input.summary,
+        subscriptionIds: input.subscriptionId ? [input.subscriptionId] : [],
+      })];
+    }
+
+    const groupKey = digestGroupKey(input.source.sourceId, grouping.resourceRef, grouping.eventFamily);
+    let thread = this.store.getOpenDigestThread(input.inbox.inboxId, groupKey);
+    const now = nowIso();
+    if (thread && Date.parse(thread.createdAt) + (policy.maxThreadAgeMs ?? DEFAULT_INBOX_AGGREGATION_MAX_THREAD_AGE_MS) <= Date.now()) {
+      this.store.closeDigestThread(thread.threadId, now);
+      thread = null;
+    }
+    const flushAfterAt = new Date(Date.now() + (policy.windowMs ?? DEFAULT_INBOX_AGGREGATION_WINDOW_MS)).toISOString();
+    if (!thread) {
+      thread = this.store.createDigestThread({
+        inboxId: input.inbox.inboxId,
+        sourceId: input.source.sourceId,
+        groupKey,
+        resourceRef: grouping.resourceRef,
+        eventFamily: grouping.eventFamily,
+        summary: grouping.summaryHint ?? input.summary,
+        firstItemAt: input.item.occurredAt,
+        flushAfterAt,
+        createdAt: now,
+      });
+    } else {
+      thread = this.store.addItemToDigestThread(
+        thread.threadId,
+        input.item.itemId,
+        input.item.occurredAt,
+        grouping.summaryHint ?? thread.summary,
+        flushAfterAt,
+      );
+    }
+    if (!thread || this.store.listUnackedInboxItemsForDigestThread(thread.threadId).find((entry) => entry.itemId === input.item.itemId) == null) {
+      thread = this.store.addItemToDigestThread(
+        thread.threadId,
+        input.item.itemId,
+        input.item.occurredAt,
+        grouping.summaryHint ?? thread.summary,
+        flushAfterAt,
+      );
+    }
+
+    const unacked = this.store.listUnackedInboxItemsForDigestThread(thread.threadId);
+    const shouldFlush = grouping.flushClass === "immediate" || unacked.length >= (policy.maxItems ?? DEFAULT_INBOX_AGGREGATION_MAX_ITEMS);
+    if (!shouldFlush) {
+      return [];
+    }
+    const entry = await this.flushDigestThread(input.source, thread.threadId, grouping);
+    return entry ? [entry] : [];
+  }
+
+  private async flushDigestThread(
+    source: SubscriptionSource,
+    threadId: number,
+    groupingHint?: NotificationGrouping | null,
+  ): Promise<InboxEntry | null> {
+    const thread = this.store.getDigestThread(threadId);
+    if (!thread || thread.status !== "open") {
+      return null;
+    }
+    const items = this.store.listUnackedInboxItemsForDigestThread(threadId);
+    if (items.length === 0) {
+      this.store.closeDigestThread(threadId, nowIso());
+      return null;
+    }
+    const activationItems = items.map((item) => activationItemFromInboxItem(item));
+    const grouping: NotificationGrouping = groupingHint ?? {
+      groupable: true,
+      resourceRef: thread.resourceRef,
+      eventFamily: thread.eventFamily,
+      summaryHint: thread.summary,
+      flushClass: "normal",
+    };
+    const moduleSummary = await this.adapters.summarizeDigestThread(source, activationItems, grouping);
+    const summary = moduleSummary ?? `${items.length} ${thread.summary}`;
+    const sourceIds = uniqueSorted(items.map((item) => item.sourceId));
+    const subscriptionIds = uniqueSortedNullable(
+      items.map((item) => typeof item.metadata.subscriptionId === "string" ? item.metadata.subscriptionId : null),
+    );
+    const firstItemAt = items[0]!.occurredAt;
+    const lastItemAt = items[items.length - 1]!.occurredAt;
+    const deliveryHandle = sharedDeliveryHandle(items);
+    return this.store.materializeDigestSnapshot({
+      threadId,
+      inboxId: thread.inboxId,
+      groupKey: thread.groupKey,
+      resourceRef: thread.resourceRef,
+      eventFamily: thread.eventFamily,
+      summary,
+      sourceIds,
+      subscriptionIds,
+      itemIds: items.map((item) => item.itemId),
+      firstItemAt,
+      lastItemAt,
+      deliveryHandleJson: deliveryHandle ? JSON.stringify(deliveryHandle) : null,
+      createdAt: nowIso(),
+    });
+  }
+
   watchInbox(
     agentId: string,
     options: WatchInboxOptions,
     onEvent: (event: InboxWatchEvent) => void,
   ): InboxWatchSession {
     const inbox = this.ensureInboxForAgent(agentId);
-    const pendingItems: InboxItem[] = [];
+    const pendingItems: InboxEntry[] = [];
     let started = false;
 
-    const emitItems = (items: InboxItem[]) => {
-      if (items.length === 0) {
+    const emitItems = (entries: InboxEntry[]) => {
+      if (entries.length === 0) {
         return;
       }
       onEvent({
         event: "items",
         agentId,
-        items,
+        entries,
       });
     };
 
     const watcher: InboxWatcher = {
-      onItems: (items) => {
+      onItems: (entries) => {
         if (!started) {
-          pendingItems.push(...items);
+          pendingItems.push(...entries);
           return;
         }
-        emitItems(items);
+        emitItems(entries);
       },
     };
 
@@ -1227,10 +1369,10 @@ export class AgentInboxService {
     }
     watchers.add(watcher);
 
-    let initialItems: InboxItem[];
+    let initialItems: InboxEntry[];
     try {
-      initialItems = this.store.listInboxItems(inbox.inboxId, {
-        afterItemId: options.afterItemId,
+      initialItems = this.store.listInboxEntries(inbox.inboxId, {
+        afterEntryId: options.afterEntryId ?? options.afterItemId,
         includeAcked: options.includeAcked ?? false,
       });
     } catch (error) {
@@ -1241,7 +1383,7 @@ export class AgentInboxService {
       throw error;
     }
 
-    const initialItemIds = new Set(initialItems.map((item) => item.itemId));
+    const initialItemIds = new Set(initialItems.map((item) => item.entryId));
     return {
       initialItems,
       start: () => {
@@ -1249,7 +1391,7 @@ export class AgentInboxService {
           return;
         }
         started = true;
-        const replayItems = pendingItems.filter((item) => !initialItemIds.has(item.itemId));
+        const replayItems = pendingItems.filter((item) => !initialItemIds.has(item.entryId));
         pendingItems.length = 0;
         emitItems(replayItems);
       },
@@ -1266,39 +1408,39 @@ export class AgentInboxService {
     };
   }
 
-  ackInboxItems(agentId: string, itemIds: string[]): { acked: number } {
+  async ackInboxItems(agentId: string, itemIds: string[]): Promise<{ acked: number }> {
     const inbox = this.ensureInboxForAgent(agentId);
-    const acked = this.store.ackItems(inbox.inboxId, itemIds, nowIso());
-    if (acked > 0) {
-      void this.handleInboxAckEffects(agentId);
+    const acked = this.store.ackInboxEntries(inbox.inboxId, itemIds, nowIso());
+    if (acked.ackedEntries > 0 || acked.ackedItems > 0) {
+      await this.handleInboxAckEffects(agentId);
     }
-    return { acked };
+    return { acked: acked.ackedEntries };
   }
 
-  ackInboxItemsThrough(agentId: string, itemId: string): { acked: number } {
+  async ackInboxItemsThrough(agentId: string, itemId: string): Promise<{ acked: number }> {
     const inbox = this.ensureInboxForAgent(agentId);
-    const acked = this.store.ackItemsThrough(inbox.inboxId, itemId, nowIso());
-    if (acked > 0) {
-      void this.handleInboxAckEffects(agentId);
+    const acked = this.store.ackInboxEntriesThrough(inbox.inboxId, itemId, nowIso());
+    if (acked.ackedEntries > 0 || acked.ackedItems > 0) {
+      await this.handleInboxAckEffects(agentId);
     }
-    return { acked };
+    return { acked: acked.ackedEntries };
   }
 
-  ackAllInboxItems(agentId: string): { acked: number } {
+  async ackAllInboxItems(agentId: string): Promise<{ acked: number }> {
     const inbox = this.ensureInboxForAgent(agentId);
-    const itemIds = this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => item.itemId);
-    const acked = this.store.ackItems(inbox.inboxId, itemIds, nowIso());
-    if (acked > 0) {
-      void this.handleInboxAckEffects(agentId);
+    const itemIds = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }).map((item) => item.entryId);
+    const acked = this.store.ackInboxEntries(inbox.inboxId, itemIds, nowIso());
+    if (acked.ackedEntries > 0 || acked.ackedItems > 0) {
+      await this.handleInboxAckEffects(agentId);
     }
-    return { acked };
+    return { acked: acked.ackedEntries };
   }
 
-  ackInbox(agentId: string, input: {
+  async ackInbox(agentId: string, input: {
     itemIds?: string[];
     throughItemId?: string | null;
     all?: boolean;
-  }): { acked: number } {
+  }): Promise<{ acked: number }> {
     if (input.all) {
       return this.ackAllInboxItems(agentId);
     }
@@ -1377,7 +1519,7 @@ export class AgentInboxService {
       let matched = 0;
       let inboxItemsCreated = 0;
       let lastProcessedOffset: number | null = null;
-      const insertedItems: InboxItem[] = [];
+      const insertedEntries: InboxEntry[] = [];
       const lifecycleSignals = new Map<string, LifecycleSignal>();
       try {
         for (const event of batch.events) {
@@ -1401,7 +1543,12 @@ export class AgentInboxService {
             eventVariant: event.eventVariant,
             inboxId: inbox.inboxId,
             occurredAt: event.occurredAt,
-            metadata: { ...event.metadata, matchReason: match.reason, agentId: subscription.agentId },
+            metadata: {
+              ...event.metadata,
+              matchReason: match.reason,
+              agentId: subscription.agentId,
+              subscriptionId: subscription.subscriptionId,
+            },
             rawPayload: event.rawPayload,
             deliveryHandle: event.deliveryHandle as DeliveryHandle | null,
             ackedAt: null,
@@ -1411,32 +1558,30 @@ export class AgentInboxService {
             continue;
           }
           inboxItemsCreated += 1;
-          insertedItems.push(item);
-
-          const activationItem: ActivationItem = {
-            itemId: item.itemId,
-            sourceId: item.sourceId,
-            sourceNativeId: item.sourceNativeId,
-            eventVariant: item.eventVariant,
-            inboxId: item.inboxId,
-            occurredAt: item.occurredAt,
-            metadata: item.metadata,
-            rawPayload: item.rawPayload,
-            deliveryHandle: item.deliveryHandle,
-          };
-          for (const target of targets) {
-            this.enqueueActivationTarget(target, {
-              agentId: subscription.agentId,
-              subscriptionId: subscription.subscriptionId,
-              sourceId: source.sourceId,
-              summary: summarizeSourceEvent(source.sourceType, source.sourceKey, event.eventVariant),
-              item: activationItem,
-            });
+          const entries = await this.materializeInboxEntryForItem({
+            agentId: subscription.agentId,
+            inbox,
+            source,
+            subscriptionId: subscription.subscriptionId,
+            item,
+            summary: summarizeSourceEvent(source.sourceType, source.sourceKey, event.eventVariant),
+          });
+          insertedEntries.push(...entries);
+          for (const entry of entries) {
+            for (const target of targets) {
+              this.enqueueActivationTarget(target, {
+                agentId: subscription.agentId,
+                subscriptionId: subscription.subscriptionId,
+                sourceId: source.sourceId,
+                summary: entry.summary,
+                entry,
+              });
+            }
           }
         }
       } catch (error) {
-        if (insertedItems.length > 0) {
-          this.notifyInboxWatchers(subscription.agentId, insertedItems);
+        if (insertedEntries.length > 0) {
+          this.notifyInboxWatchers(subscription.agentId, insertedEntries);
         }
         if (lastProcessedOffset != null) {
           await this.backend.commit({
@@ -1447,8 +1592,8 @@ export class AgentInboxService {
         throw error;
       }
 
-      if (insertedItems.length > 0) {
-        this.notifyInboxWatchers(subscription.agentId, insertedItems);
+      if (insertedEntries.length > 0) {
+        this.notifyInboxWatchers(subscription.agentId, insertedEntries);
       }
       if (lastProcessedOffset != null) {
         await this.backend.commit({
@@ -1674,7 +1819,7 @@ export class AgentInboxService {
     });
   }
 
-  private notifyInboxWatchers(agentId: string, items: InboxItem[]): void {
+  private notifyInboxWatchers(agentId: string, items: InboxEntry[]): void {
     const watchers = this.inboxWatchers.get(agentId);
     if (!watchers || watchers.size === 0) {
       return;
@@ -1778,7 +1923,7 @@ export class AgentInboxService {
       subscriptionId: string | null;
       sourceId: string;
       summary: string;
-      item: ActivationItem;
+      entry: InboxEntry;
     },
   ): void {
     const key = notificationBufferKey(target.agentId, target.targetId);
@@ -1798,7 +1943,7 @@ export class AgentInboxService {
       subscriptionId: input.subscriptionId,
       sourceId: input.sourceId,
       summary: input.summary,
-      item: input.item,
+      entry: input.entry,
     });
 
     if (!buffer.timer && !buffer.inFlight) {
@@ -1882,17 +2027,7 @@ export class AgentInboxService {
       const shouldAttemptDispatch = !state || (state.status === "dirty" && state.leaseExpiresAt == null);
       if (shouldAttemptDispatch) {
         const inbox = this.ensureInboxForAgent(buffer.agentId);
-        const unackedItems = this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => ({
-          itemId: item.itemId,
-          sourceId: item.sourceId,
-          sourceNativeId: item.sourceNativeId,
-          eventVariant: item.eventVariant,
-          inboxId: item.inboxId,
-          occurredAt: item.occurredAt,
-          metadata: item.metadata,
-          rawPayload: item.rawPayload,
-          deliveryHandle: item.deliveryHandle,
-        }));
+        const unackedItems = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
         const dispatched = await this.dispatchActivationTarget({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
@@ -1905,7 +2040,7 @@ export class AgentInboxService {
           sourceIds: state
             ? uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)])
             : uniqueSorted(entries.map((entry) => entry.sourceId)),
-          items: unackedItems,
+          entries: unackedItems,
         });
         if (dispatched === "retryable_failure") {
           if (state && state.status === "dirty" && state.leaseExpiresAt == null) {
@@ -1964,9 +2099,31 @@ export class AgentInboxService {
   }
 
   private async handleInboxAckEffects(agentId: string): Promise<void> {
+    await this.reconcileDigestThreadsForInbox(this.ensureInboxForAgent(agentId).inboxId);
     const states = this.store.listActivationDispatchStatesForAgent(agentId);
     for (const state of states) {
       await this.maybeDispatchActivationTarget(agentId, state.targetId, "ack");
+    }
+  }
+
+  private async reconcileDigestThreadsForInbox(inboxId: string): Promise<void> {
+    for (const thread of this.store.listOpenDigestThreadsForInbox(inboxId)) {
+      const source = this.store.getSource(thread.sourceId);
+      if (!source) {
+        this.store.closeDigestThread(thread.threadId, nowIso());
+        continue;
+      }
+      const items = this.store.listUnackedInboxItemsForDigestThread(thread.threadId);
+      if (items.length === 0) {
+        this.store.closeDigestThread(thread.threadId, nowIso());
+        continue;
+      }
+      const head = thread.latestEntryId != null ? this.store.getInboxEntry(formatEntryRef(thread.latestEntryId)) : null;
+      const currentIds = items.map((item) => item.itemId);
+      const headIds = head?.itemIds ?? [];
+      if (!sameStringArray(currentIds, headIds)) {
+        await this.flushDigestThread(source, thread.threadId);
+      }
     }
   }
 
@@ -1982,7 +2139,7 @@ export class AgentInboxService {
 
     const target = this.getActivationTarget(targetId);
     const inbox = this.ensureInboxForAgent(agentId);
-    const unacked = this.store.countInboxItems(inbox.inboxId, false);
+    const unacked = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }).length;
     if (unacked === 0) {
       this.store.deleteActivationDispatchState(agentId, targetId);
       return;
@@ -2023,17 +2180,7 @@ export class AgentInboxService {
       summary: state.pendingSummary,
       subscriptionIds: state.pendingSubscriptionIds,
       sourceIds: state.pendingSourceIds,
-      items: this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => ({
-        itemId: item.itemId,
-        sourceId: item.sourceId,
-        sourceNativeId: item.sourceNativeId,
-        eventVariant: item.eventVariant,
-        inboxId: item.inboxId,
-        occurredAt: item.occurredAt,
-        metadata: item.metadata,
-        rawPayload: item.rawPayload,
-        deliveryHandle: item.deliveryHandle,
-      })),
+      entries: this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }),
     });
 
     if (dispatched === "offline") {
@@ -2058,7 +2205,7 @@ export class AgentInboxService {
     summary: string | null;
     subscriptionIds: string[];
     sourceIds: string[];
-    items: ActivationItem[];
+    entries: InboxEntry[];
   }): Promise<ActivationDispatchOutcome> {
     const target = this.getActivationTarget(input.targetId);
     if (target.status === "offline") {
@@ -2067,7 +2214,7 @@ export class AgentInboxService {
     const state = this.store.getActivationDispatchState(input.agentId, input.targetId);
     const inbox = this.ensureInboxForAgent(input.agentId);
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
-    const totalUnackedCount = input.totalUnackedCount ?? this.store.countInboxItems(inbox.inboxId, false);
+    const totalUnackedCount = input.totalUnackedCount ?? this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }).length;
     const notificationPolicy = notificationPolicyForTarget(target);
     if (!meetsNotificationThreshold(notificationPolicy, totalUnackedCount)) {
       this.logger.debug("activation.dispatch_suppressed", {
@@ -2136,8 +2283,8 @@ export class AgentInboxService {
           return "deferred";
         }
         let preview: string | null = null;
-        if (totalUnackedCount === 1 && input.items.length === 1) {
-          const singleItem = input.items[0];
+        if (totalUnackedCount === 1 && input.entries.length === 1 && input.entries[0]?.kind === "item") {
+          const singleItem = input.entries[0].item;
           const source = this.store.getSource(singleItem.sourceId);
           if (source) {
             try {
@@ -2156,7 +2303,7 @@ export class AgentInboxService {
           preview,
         });
         terminalPrompt = prompt;
-        const promptFingerprint = terminalReminderFingerprint(prompt, input.items);
+        const promptFingerprint = terminalReminderFingerprint(prompt, input.entries);
         if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
           this.logger.debug("activation.dispatch_suppressed", {
             agentId: input.agentId,
@@ -2200,9 +2347,15 @@ export class AgentInboxService {
           targetKind: target.kind,
           subscriptionIds: input.subscriptionIds,
           sourceIds: input.sourceIds,
+          newEntryCount: input.entries.length,
           newItemCount: input.newItemCount,
           summary,
-          items: target.mode === "activation_with_items" && input.items.length > 0 ? input.items : undefined,
+          items: target.mode === "activation_with_items"
+            ? input.entries
+              .filter((entry): entry is Extract<InboxEntry, { kind: "item" }> => entry.kind === "item")
+              .map((entry) => entry.item)
+            : undefined,
+          entries: target.mode === "activation_with_items" && input.entries.length > 0 ? input.entries : undefined,
           createdAt: nowIso(),
           deliveredAt: null,
         };
@@ -2219,7 +2372,7 @@ export class AgentInboxService {
         status: "notified",
         leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
         lastNotifiedFingerprint: target.kind === "terminal"
-          ? terminalReminderFingerprint(terminalPrompt ?? "", input.items)
+          ? terminalReminderFingerprint(terminalPrompt ?? "", input.entries)
           : state?.lastNotifiedFingerprint ?? null,
         pendingNewItemCount: 0,
         pendingSummary: null,
@@ -2561,6 +2714,43 @@ export class AgentInboxService {
         await this.maybeDispatchActivationTarget(state.agentId, state.targetId, "lease");
       } catch (error) {
         console.warn(`activation target lease sync failed for ${state.targetId}/${state.agentId}:`, error);
+      }
+    }
+  }
+
+  private async syncPendingDigestThreads(force = false): Promise<void> {
+    const now = nowIso();
+    const threads = force
+      ? this.store.listOpenDigestThreads()
+      : this.store.listDueDigestThreads(now);
+    for (const thread of threads) {
+      try {
+        const source = this.store.getSource(thread.sourceId);
+        if (!source) {
+          this.store.closeDigestThread(thread.threadId, now);
+          continue;
+        }
+        const entry = await this.flushDigestThread(source, thread.threadId);
+        if (!entry) {
+          continue;
+        }
+        const inbox = this.store.getInbox(thread.inboxId);
+        if (!inbox) {
+          continue;
+        }
+        this.notifyInboxWatchers(inbox.ownerAgentId, [entry]);
+        const targets = this.store.listActivationTargetsForAgent(inbox.ownerAgentId).filter((target) => target.status === "active");
+        for (const target of targets) {
+          this.enqueueActivationTarget(target, {
+            agentId: inbox.ownerAgentId,
+            subscriptionId: null,
+            sourceId: thread.sourceId,
+            summary: entry.summary,
+            entry,
+          });
+        }
+      } catch (error) {
+        console.warn(`digest thread flush failed for ${thread.threadId}:`, error);
       }
     }
   }
@@ -2987,11 +3177,67 @@ function notificationPolicyForTarget(target: ActivationTarget): NotificationPoli
   };
 }
 
+function inboxAggregationPolicy(inbox: Inbox): Required<InboxAggregationPolicy> {
+  return {
+    enabled: inbox.aggregationEnabled ?? false,
+    windowMs: inbox.aggregationWindowMs ?? DEFAULT_INBOX_AGGREGATION_WINDOW_MS,
+    maxItems: inbox.aggregationMaxItems ?? DEFAULT_INBOX_AGGREGATION_MAX_ITEMS,
+    maxThreadAgeMs: inbox.aggregationMaxThreadAgeMs ?? DEFAULT_INBOX_AGGREGATION_MAX_THREAD_AGE_MS,
+  };
+}
+
 function meetsNotificationThreshold(policy: NotificationPolicy, totalUnackedCount: number): boolean {
   if (policy.minUnackedItems == null) {
     return true;
   }
   return totalUnackedCount >= policy.minUnackedItems;
+}
+
+function activationItemFromInboxItem(item: InboxItem): ActivationItem {
+  return {
+    itemId: item.itemId,
+    sourceId: item.sourceId,
+    sourceNativeId: item.sourceNativeId,
+    eventVariant: item.eventVariant,
+    inboxId: item.inboxId,
+    occurredAt: item.occurredAt,
+    metadata: item.metadata,
+    rawPayload: item.rawPayload,
+    deliveryHandle: item.deliveryHandle,
+  };
+}
+
+function digestGroupKey(sourceId: string, resourceRef: string, eventFamily: string): string {
+  return `${sourceId}::${resourceRef}::${eventFamily}`;
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameDeliveryHandle(left: DeliveryHandle | null | undefined, right: DeliveryHandle | null | undefined): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function sharedDeliveryHandle(items: InboxItem[]): DeliveryHandle | null {
+  const first = items[0]?.deliveryHandle ?? null;
+  if (!first) {
+    return null;
+  }
+  for (const item of items.slice(1)) {
+    if (!sameDeliveryHandle(first, item.deliveryHandle ?? null)) {
+      return null;
+    }
+  }
+  return first;
 }
 
 function normalizeWebhookActivationMode(mode: AddWebhookActivationTargetInput["activationMode"]): WebhookActivationTarget["mode"] {
@@ -3071,11 +3317,11 @@ function latestSummary(entries: Array<{ summary: string | null }>): string | nul
   return null;
 }
 
-function terminalReminderFingerprint(prompt: string, items: ActivationItem[]): string {
+function terminalReminderFingerprint(prompt: string, items: InboxEntry[]): string {
   const payload = JSON.stringify({
     prompt,
     itemIds: items
-      .map((item) => item.itemId)
+      .map((item) => item.entryId)
       .sort((left, right) => left.localeCompare(right)),
   });
   return createHash("sha256").update(payload).digest("hex");

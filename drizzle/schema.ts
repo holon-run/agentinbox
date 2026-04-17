@@ -78,6 +78,10 @@ export const agents = sqliteTable("agents", {
 export const inboxes = sqliteTable("inboxes", {
   inboxId: text("inbox_id").primaryKey(),
   ownerAgentId: text("owner_agent_id").notNull(),
+  aggregationEnabled: integer("aggregation_enabled"),
+  aggregationWindowMs: integer("aggregation_window_ms"),
+  aggregationMaxItems: integer("aggregation_max_items"),
+  aggregationMaxThreadAgeMs: integer("aggregation_max_thread_age_ms"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({
   ownerAgentIdUnique: uniqueIndex("idx_inboxes_owner_agent_id").on(table.ownerAgentId),
@@ -172,6 +176,71 @@ export const inboxItems = sqliteTable("inbox_items", {
   inboxAckedAtIdx: index("idx_inbox_items_inbox_acked_at").on(table.inboxId, table.ackedAt),
   inboxSequenceIdx: index("idx_inbox_items_inbox_sequence_order").on(table.inboxId, table.inboxSequence),
   sourceOccurredAtIdx: index("idx_inbox_items_source_occurred_at").on(table.sourceId, table.occurredAt),
+}));
+
+export const digestThreads = sqliteTable("digest_threads", {
+  threadId: integer("thread_id").primaryKey({ autoIncrement: true }),
+  inboxId: text("inbox_id").notNull(),
+  sourceId: text("source_id").notNull(),
+  groupKey: text("group_key").notNull(),
+  resourceRef: text("resource_ref"),
+  eventFamily: text("event_family"),
+  latestRevision: integer("latest_revision").notNull(),
+  latestEntryId: integer("latest_entry_id"),
+  status: text("status").notNull(),
+  summary: text("summary").notNull(),
+  firstItemAt: text("first_item_at").notNull(),
+  lastItemAt: text("last_item_at").notNull(),
+  flushAfterAt: text("flush_after_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  inboxStatusIdx: index("idx_digest_threads_inbox_status").on(table.inboxId, table.status),
+  groupStatusIdx: index("idx_digest_threads_group_status").on(table.inboxId, table.groupKey, table.status),
+  flushIdx: index("idx_digest_threads_flush_after").on(table.status, table.flushAfterAt),
+}));
+
+export const inboxEntries = sqliteTable("inbox_entries", {
+  entryId: integer("entry_id").primaryKey({ autoIncrement: true }),
+  inboxId: text("inbox_id").notNull(),
+  kind: text("kind").notNull(),
+  sequence: integer("sequence").notNull(),
+  threadId: integer("thread_id"),
+  revision: integer("revision"),
+  groupKey: text("group_key"),
+  resourceRef: text("resource_ref"),
+  eventFamily: text("event_family"),
+  itemJson: text("item_json"),
+  count: integer("count").notNull(),
+  summary: text("summary").notNull(),
+  firstItemAt: text("first_item_at").notNull(),
+  lastItemAt: text("last_item_at").notNull(),
+  sourceIdsJson: text("source_ids_json").notNull(),
+  subscriptionIdsJson: text("subscription_ids_json").notNull(),
+  deliveryHandleJson: text("delivery_handle_json"),
+  ackedAt: text("acked_at"),
+  supersededAt: text("superseded_at"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  sequenceUnique: uniqueIndex("idx_inbox_entries_sequence").on(table.sequence),
+  inboxVisibleIdx: index("idx_inbox_entries_inbox_visible").on(table.inboxId, table.ackedAt, table.supersededAt, table.sequence),
+  threadRevisionIdx: index("idx_inbox_entries_thread_revision").on(table.threadId, table.revision),
+}));
+
+export const inboxEntryItems = sqliteTable("inbox_entry_items", {
+  entryId: integer("entry_id").notNull(),
+  itemId: text("item_id").notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.entryId, table.itemId] }),
+  itemIdx: index("idx_inbox_entry_items_item").on(table.itemId),
+}));
+
+export const digestThreadItems = sqliteTable("digest_thread_items", {
+  threadId: integer("thread_id").notNull(),
+  itemId: text("item_id").notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.threadId, table.itemId] }),
+  itemIdx: index("idx_digest_thread_items_item").on(table.itemId),
 }));
 
 export const activations = sqliteTable("activations", {

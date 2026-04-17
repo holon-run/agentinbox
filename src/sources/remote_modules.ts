@@ -9,6 +9,7 @@ import {
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  NotificationGrouping,
   SourceSchemaField,
   SubscriptionFilter,
   SubscriptionSource,
@@ -123,8 +124,10 @@ export interface RemoteSourceModule {
   deriveTrackedResource?(filter: SubscriptionFilter, source: SubscriptionSource): { ref: string } | null;
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SubscriptionSource): LifecycleSignal | null;
   deriveInlinePreview?(item: ActivationItem, source: SubscriptionSource): string | null;
+  deriveNotificationGrouping?(item: ActivationItem, source: SubscriptionSource): NotificationGrouping | null;
   listDeliveryOperations?(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[];
   invokeDeliveryOperation?(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }>;
+  summarizeDigestThread?(items: ActivationItem[], source: SubscriptionSource, grouping: NotificationGrouping): string | null;
 }
 
 const REMOTE_USER_MODULE_ROOT_DIR = "source-profiles";
@@ -219,8 +222,10 @@ function validateModuleContract(module: RemoteSourceModule, sourcePath: string):
   validateOptionalHook(module.deriveTrackedResource, "deriveTrackedResource", sourcePath);
   validateOptionalHook(module.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
   validateOptionalHook(module.deriveInlinePreview, "deriveInlinePreview", sourcePath);
+  validateOptionalHook(module.deriveNotificationGrouping, "deriveNotificationGrouping", sourcePath);
   validateOptionalHook(module.listDeliveryOperations, "listDeliveryOperations", sourcePath);
   validateOptionalHook(module.invokeDeliveryOperation, "invokeDeliveryOperation", sourcePath);
+  validateOptionalHook(module.summarizeDigestThread, "summarizeDigestThread", sourcePath);
 }
 
 function validateOptionalHook(value: unknown, name: string, sourcePath: string): void {
@@ -330,6 +335,54 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
   deriveTrackedResource(filter: SubscriptionFilter): { ref: string } | null {
     return deriveGithubTrackedResource(filter);
   },
+  deriveNotificationGrouping(item: ActivationItem): NotificationGrouping | null {
+    const number = typeof item.metadata.number === "number" ? item.metadata.number : null;
+    if (!number) {
+      return null;
+    }
+    const variant = item.eventVariant;
+    if (variant.startsWith("PullRequestReviewCommentEvent.")) {
+      return {
+        groupable: true,
+        resourceRef: `pr:${number}`,
+        eventFamily: "review_comments",
+        summaryHint: `review comments on PR #${number}`,
+      };
+    }
+    if (variant.startsWith("PullRequestReviewEvent.")) {
+      return {
+        groupable: true,
+        resourceRef: `pr:${number}`,
+        eventFamily: "reviews",
+        summaryHint: `reviews on PR #${number}`,
+      };
+    }
+    if (variant.startsWith("IssueCommentEvent.")) {
+      return {
+        groupable: true,
+        resourceRef: item.metadata.isPullRequest === true ? `pr:${number}` : `issue:${number}`,
+        eventFamily: "comments",
+        summaryHint: item.metadata.isPullRequest === true ? `comments on PR #${number}` : `comments on issue #${number}`,
+      };
+    }
+    if (variant.startsWith("PullRequestEvent.closed")) {
+      return {
+        groupable: true,
+        resourceRef: `pr:${number}`,
+        eventFamily: "lifecycle",
+        summaryHint: `PR #${number} lifecycle updates`,
+        flushClass: "immediate",
+      };
+    }
+    return null;
+  },
+  summarizeDigestThread(items: ActivationItem[], _source: SubscriptionSource, grouping: NotificationGrouping): string | null {
+    if (!grouping.summaryHint || items.length === 0) {
+      return null;
+    }
+    const count = items.length;
+    return `${count} ${grouping.summaryHint}`;
+  },
   projectLifecycleSignal(rawPayload: Record<string, unknown>) {
     return projectGithubLifecycleSignal(rawPayload);
   },
@@ -435,6 +488,27 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
     }
 
     return parts.join(" ");
+  },
+  deriveNotificationGrouping(item: ActivationItem): NotificationGrouping | null {
+    const workflowRunId = typeof item.metadata.workflowRunId === "number" ? item.metadata.workflowRunId : null;
+    if (!workflowRunId) {
+      return null;
+    }
+    const conclusion = asNonEmptyString(item.metadata.conclusion);
+    const status = asNonEmptyString(item.metadata.status);
+    return {
+      groupable: true,
+      resourceRef: `workflow_run:${workflowRunId}`,
+      eventFamily: "ci_updates",
+      summaryHint: `CI updates for run #${workflowRunId}`,
+      flushClass: conclusion || status === "completed" ? "immediate" : "normal",
+    };
+  },
+  summarizeDigestThread(items: ActivationItem[], _source: SubscriptionSource, grouping: NotificationGrouping): string | null {
+    if (!grouping.summaryHint || items.length === 0) {
+      return null;
+    }
+    return `${items.length} ${grouping.summaryHint}`;
   },
   validateConfig(source: SubscriptionSource): void {
     parseGithubCiSourceConfig(source);

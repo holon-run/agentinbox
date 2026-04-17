@@ -1,5 +1,5 @@
 import { ManagedSourceEnsureResponse, ManagedStreamReadResponse, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { ActivationItem, AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
+import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePollResult, SubscriptionSource } from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
@@ -252,6 +252,32 @@ export class RemoteSourceRuntime {
       return null;
     }
     return module.deriveInlinePreview(item, moduleInputSource(source));
+  }
+
+  async deriveNotificationGrouping(source: SubscriptionSource, item: ActivationItem): Promise<NotificationGrouping | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.deriveNotificationGrouping !== "function") {
+      return null;
+    }
+    return module.deriveNotificationGrouping(item, moduleInputSource(source));
+  }
+
+  async summarizeDigestThread(
+    source: SubscriptionSource,
+    items: ActivationItem[],
+    grouping: NotificationGrouping,
+  ): Promise<string | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.summarizeDigestThread !== "function") {
+      return null;
+    }
+    return module.summarizeDigestThread(items, moduleInputSource(source), grouping);
   }
 
   private async syncAll(): Promise<void> {

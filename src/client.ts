@@ -24,8 +24,8 @@ export class AgentInboxClient {
 
   watchInbox(agentId: string, options: WatchInboxOptions = {}): AsyncIterable<InboxWatchEvent> {
     const query = new URLSearchParams();
-    if (options.afterItemId) {
-      query.set("after_item_id", options.afterItemId);
+    if (options.afterEntryId ?? options.afterItemId) {
+      query.set("after_entry_id", options.afterEntryId ?? options.afterItemId ?? "");
     }
     if (options.includeAcked) {
       query.set("include_acked", "true");

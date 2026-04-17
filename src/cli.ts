@@ -654,9 +654,28 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
+    const allowedFlags = ["--agent-id", "--after-entry", "--include-acked"];
+    if (positionalArgs(args, ["--agent-id", "--after-entry"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
+      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked]");
+    }
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const query = buildQuery({
+      after_entry_id: takeFlagValue(normalized, "--after-entry"),
+      include_acked: hasFlag(normalized, "--include-acked") ? "true" : undefined,
+    });
+    const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/entries${query}`, undefined, "GET");
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
+  if (command === "inbox" && normalized[1] === "read-raw") {
+    const args = normalized.slice(2);
     const allowedFlags = ["--agent-id", "--after-item", "--include-acked"];
     if (positionalArgs(args, ["--agent-id", "--after-item"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
-      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-item ID] [--include-acked]");
+      throw new Error("usage: agentinbox inbox read-raw [--agent-id ID] [--after-item ID] [--include-acked]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -666,7 +685,7 @@ async function main(): Promise<void> {
       after_item_id: takeFlagValue(normalized, "--after-item"),
       include_acked: hasFlag(normalized, "--include-acked") ? "true" : undefined,
     });
-    const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/items${query}`, undefined, "GET");
+    const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/raw-items${query}`, undefined, "GET");
     console.log(jsonResponse(withCommandMetadata(response.data, selection)));
     return;
   }
@@ -691,8 +710,8 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "watch") {
     const args = normalized.slice(2);
-    if (positionalArgs(args, ["--agent-id", "--after-item", "--heartbeat-ms"]).length > 0) {
-      throw new Error("usage: agentinbox inbox watch [--agent-id ID] [--after-item ID] [--include-acked] [--heartbeat-ms N]");
+    if (positionalArgs(args, ["--agent-id", "--after-entry", "--heartbeat-ms"]).length > 0) {
+      throw new Error("usage: agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -705,7 +724,7 @@ async function main(): Promise<void> {
       console.log(jsonResponse(metadata));
     }
     for await (const event of client.watchInbox(selection.agentId, {
-      afterItemId: takeFlagValue(normalized, "--after-item"),
+      afterEntryId: takeFlagValue(normalized, "--after-entry"),
       includeAcked: hasFlag(normalized, "--include-acked"),
       heartbeatMs: parseOptionalNumber(takeFlagValue(normalized, "--heartbeat-ms")),
     })) {
@@ -719,12 +738,12 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "ack") {
     const args = normalized.slice(2);
-    const itemId = takeFlagValue(normalized, "--item");
+    const itemId = takeFlagValue(normalized, "--entry");
     const throughItemId = takeFlagValue(normalized, "--through");
     const ackAll = hasFlag(normalized, "--all");
     const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughItemId)) + Number(ackAll);
-    if (positionalArgs(args, ["--agent-id", "--item", "--through"]).length > 0 || modeCount !== 1) {
-      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <itemId> | --item <itemId> | --all)");
+    if (positionalArgs(args, ["--agent-id", "--entry", "--through"]).length > 0 || modeCount !== 1) {
+      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -733,7 +752,41 @@ async function main(): Promise<void> {
     const response = await requestRemote<Record<string, unknown>>(
       client,
       `/agents/${encodeURIComponent(selection.agentId)}/inbox/ack`,
-      ackAll ? { all: true } : (throughItemId ? { throughItemId } : { itemIds: [itemId] }),
+      ackAll ? { all: true } : (throughItemId ? { throughEntryId: throughItemId } : { entryIds: [itemId] }),
+    );
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
+  if (command === "inbox" && normalized[1] === "policy" && normalized[2] === "show") {
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const response = await requestRemote<Record<string, unknown>>(
+      client,
+      `/agents/${encodeURIComponent(selection.agentId)}/inbox/policy`,
+      undefined,
+      "GET",
+    );
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
+  if (command === "inbox" && normalized[1] === "policy" && normalized[2] === "set") {
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const response = await requestRemote<Record<string, unknown>>(
+      client,
+      `/agents/${encodeURIComponent(selection.agentId)}/inbox/policy`,
+      {
+        enabled: hasFlag(normalized, "--enabled") ? true : (hasFlag(normalized, "--disabled") ? false : undefined),
+        windowMs: parseOptionalNumber(takeFlagValue(normalized, "--window-ms")),
+        maxItems: parseOptionalNumber(takeFlagValue(normalized, "--max-items")),
+        maxThreadAgeMs: parseOptionalNumber(takeFlagValue(normalized, "--max-thread-age-ms")),
+      },
     );
     console.log(jsonResponse(withCommandMetadata(response.data, selection)));
     return;
@@ -1337,10 +1390,13 @@ Usage:
 Usage:
   agentinbox inbox list
   agentinbox inbox show <agentId>
-  agentinbox inbox read [--agent-id ID] [--after-item ID] [--include-acked]
+  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked]
+  agentinbox inbox read-raw [--agent-id ID] [--after-item ID] [--include-acked]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
-  agentinbox inbox watch [--agent-id ID] [--after-item ID] [--include-acked] [--heartbeat-ms N]
-  agentinbox inbox ack [--agent-id ID] (--through <itemId> | --item <itemId> | --all)
+  agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]
+  agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)
+  agentinbox inbox policy show [--agent-id ID]
+  agentinbox inbox policy set [--agent-id ID] [--enabled|--disabled] [--window-ms N] [--max-items N] [--max-thread-age-ms N]
   agentinbox inbox compact <agentId>
 `,
     deliver: `agentinbox deliver

@@ -5,6 +5,7 @@ import {
   DeliveryRequest,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  NotificationGrouping,
   SubscriptionSource,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
@@ -205,6 +206,24 @@ export class AdapterRegistry {
       return null;
     }
     return this.remoteSource.deriveInlinePreview(source, item);
+  }
+
+  async deriveNotificationGrouping(source: SubscriptionSource, item: ActivationItem): Promise<NotificationGrouping | null> {
+    if (compatSourceTypeForStream(source) === "local_event") {
+      return null;
+    }
+    return this.remoteSource.deriveNotificationGrouping(source, item);
+  }
+
+  async summarizeDigestThread(
+    source: SubscriptionSource,
+    items: ActivationItem[],
+    grouping: NotificationGrouping,
+  ): Promise<string | null> {
+    if (compatSourceTypeForStream(source) === "local_event") {
+      return null;
+    }
+    return this.remoteSource.summarizeDigestThread(source, items, grouping);
   }
 
   async listDeliveryOperations(

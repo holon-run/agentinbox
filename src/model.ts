@@ -84,6 +84,10 @@ export interface Agent {
 export interface Inbox {
   inboxId: string;
   ownerAgentId: string;
+  aggregationEnabled?: boolean;
+  aggregationWindowMs?: number | null;
+  aggregationMaxItems?: number | null;
+  aggregationMaxThreadAgeMs?: number | null;
   createdAt: string;
 }
 
@@ -115,6 +119,13 @@ export interface SubscriptionLifecycleRetirement {
 export interface NotificationPolicy {
   notifyLeaseMs: number;
   minUnackedItems?: number | null;
+}
+
+export interface InboxAggregationPolicy {
+  enabled?: boolean;
+  windowMs?: number | null;
+  maxItems?: number | null;
+  maxThreadAgeMs?: number | null;
 }
 
 interface ActivationTargetBase {
@@ -193,6 +204,56 @@ export interface ActivationItem {
   deliveryHandle?: DeliveryHandle | null;
 }
 
+export type InboxEntryKind = "item" | "digest_snapshot";
+
+interface InboxEntryBase {
+  entryId: string;
+  inboxId: string;
+  kind: InboxEntryKind;
+  sequence: number;
+  itemId: string;
+  sourceId?: string;
+  sourceNativeId?: string;
+  eventVariant?: string;
+  occurredAt?: string;
+  metadata?: Record<string, unknown>;
+  rawPayload?: Record<string, unknown>;
+  summary: string;
+  count: number;
+  itemIds: string[];
+  sourceIds: string[];
+  subscriptionIds: string[];
+  firstItemAt: string;
+  lastItemAt: string;
+  deliveryHandle?: DeliveryHandle | null;
+  ackedAt?: string | null;
+  supersededAt?: string | null;
+}
+
+export interface InboxItemEntry extends InboxEntryBase {
+  kind: "item";
+  item: ActivationItem;
+}
+
+export interface DigestSnapshotEntry extends InboxEntryBase {
+  kind: "digest_snapshot";
+  threadId: string;
+  revision: number;
+  groupKey: string;
+  resourceRef?: string | null;
+  eventFamily?: string | null;
+}
+
+export type InboxEntry = InboxItemEntry | DigestSnapshotEntry;
+
+export interface NotificationGrouping {
+  groupable: boolean;
+  resourceRef?: string | null;
+  eventFamily?: string | null;
+  summaryHint?: string | null;
+  flushClass?: "normal" | "immediate";
+}
+
 export interface Activation {
   kind: "agentinbox.activation";
   activationId: string;
@@ -202,9 +263,11 @@ export interface Activation {
   targetKind: ActivationTargetKind;
   subscriptionIds: string[];
   sourceIds: string[];
+  newEntryCount: number;
   newItemCount: number;
   summary: string;
   items?: ActivationItem[];
+  entries?: InboxEntry[];
   createdAt: string;
   deliveredAt?: string | null;
 }
@@ -476,6 +539,7 @@ export interface SubscriptionPollResult {
 }
 
 export interface ListInboxItemsOptions {
+  afterEntryId?: string;
   afterItemId?: string;
   includeAcked?: boolean;
 }
@@ -487,7 +551,7 @@ export interface WatchInboxOptions extends ListInboxItemsOptions {
 export interface InboxWatchItemsEvent {
   event: "items";
   agentId: string;
-  items: InboxItem[];
+  entries: InboxEntry[];
 }
 
 export interface InboxWatchHeartbeatEvent {

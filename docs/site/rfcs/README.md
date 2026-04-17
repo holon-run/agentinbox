@@ -3,6 +3,7 @@
 - [Event Filtering](./event-filtering.md)
 - [Source Kinds And Resolved Schemas](./source-kinds-and-resolved-schemas.md)
 - [Subscription Lifecycle And Terminal Auto-Retire](./subscription-lifecycle-and-terminal-retire.md)
+- [Inbox Digests And Threaded Notification Entries](./inbox-digests-and-threaded-notification-entries.md)
 
 <!-- INDEX:START -->
 
@@ -12,6 +13,10 @@
 
 - [Delivery Handles And Source-Specific Operations](./delivery-handles-and-operations.md)
   2026-04-16 · Keep outbound delivery in AgentInbox, but standardize handle routing and source-specific operations instead of forcing all providers into one generic send action.
+  <!-- mdorigin:index kind=article -->
+
+- [Inbox Digests And Threaded Notification Entries](./inbox-digests-and-threaded-notification-entries.md)
+  2026-04-17 · Reduce bursty notification noise by keeping raw inbox items immutable, while materializing agent-facing digest threads and immutable digest snapshots for read, activation, and ack.
   <!-- mdorigin:index kind=article -->
 
 - [Source Hosts And Streams](./source-hosts-and-streams.md)
