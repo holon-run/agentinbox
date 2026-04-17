@@ -97,11 +97,12 @@ export class RemoteSourceRuntime {
     private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
     options?: {
       moduleRegistry?: RemoteSourceModuleRegistry;
+      profileRegistry?: RemoteSourceModuleRegistry;
       client?: UxcRemoteSourceClient;
       homeDir?: string;
     },
   ) {
-    this.moduleRegistry = options?.moduleRegistry ?? new RemoteSourceModuleRegistry();
+    this.moduleRegistry = options?.moduleRegistry ?? options?.profileRegistry ?? new RemoteSourceModuleRegistry();
     this.client = options?.client ?? new RpcUxcRemoteSourceClient();
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
   }
