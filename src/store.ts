@@ -369,6 +369,7 @@ export class AgentInboxStore {
         ],
       );
     });
+    this.persist();
   }
 
   listSources(): SubscriptionSource[] {
