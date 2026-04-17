@@ -2040,7 +2040,7 @@ test("inbox read defaults to unacked items and ack through clears a processed ba
     const allItems = service.listInboxItems(alpha.agentId, { includeAcked: true });
     assert.equal(allItems.length, 3);
 
-    const ack = service.ackInboxItemsThrough(alpha.agentId, allItems[1].itemId);
+    const ack = await service.ackInboxItemsThrough(alpha.agentId, allItems[1].itemId);
     assert.equal(ack.acked, 2);
 
     const unread = service.listInboxItems(alpha.agentId);
@@ -2087,7 +2087,7 @@ test("ack through matches visible inbox order for same-timestamp items", async (
     const allItems = service.listInboxItems(alpha.agentId, { includeAcked: true });
     assert.deepEqual(allItems.map((item) => item.sourceNativeId), ["evt-1", "evt-2", "evt-3", "evt-4"]);
 
-    const ack = service.ackInboxItemsThrough(alpha.agentId, allItems[2]!.itemId);
+    const ack = await service.ackInboxItemsThrough(alpha.agentId, allItems[2]!.itemId);
     assert.equal(ack.acked, 3);
 
     const unread = service.listInboxItems(alpha.agentId);
@@ -2137,7 +2137,7 @@ test("ack through still follows visible order when older binaries left inbox_seq
     const visible = reopened.service.listInboxItems(alpha.agentId);
     assert.deepEqual(visible.map((item) => item.sourceNativeId), ["evt-1", "evt-2", "evt-3"]);
 
-    const ack = reopened.service.ackInboxItemsThrough(alpha.agentId, visible[1]!.itemId);
+    const ack = await reopened.service.ackInboxItemsThrough(alpha.agentId, visible[1]!.itemId);
     assert.equal(ack.acked, 2);
 
     const unread = reopened.service.listInboxItems(alpha.agentId);
@@ -2153,6 +2153,182 @@ test("ack through still follows visible order when older binaries left inbox_seq
       store.close();
     } catch {}
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy afterItemId paging still works against entry-backed inbox reads", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "after-item");
+    const inboxId = (service.getInboxDetailsByAgent(alpha.agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
+
+    store.insertInboxItem({
+      itemId: "item-after-1",
+      sourceId: "src-after",
+      sourceNativeId: "evt-after-1",
+      eventVariant: "message.created",
+      inboxId,
+      occurredAt: "2026-04-01T00:00:00Z",
+      metadata: {},
+      rawPayload: { message: "first" },
+      deliveryHandle: null,
+      ackedAt: null,
+    });
+    store.insertInboxItem({
+      itemId: "item-after-2",
+      sourceId: "src-after",
+      sourceNativeId: "evt-after-2",
+      eventVariant: "message.created",
+      inboxId,
+      occurredAt: "2026-04-01T00:00:01Z",
+      metadata: {},
+      rawPayload: { message: "second" },
+      deliveryHandle: null,
+      ackedAt: null,
+    });
+    (store as unknown as { ensureInboxEntryBackfill(): void }).ensureInboxEntryBackfill();
+
+    const visible = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(visible.length, 2);
+
+    const afterFirst = service.listInboxItems(alpha.agentId, {
+      includeAcked: true,
+      afterItemId: visible[0]!.itemId,
+    });
+    assert.equal(afterFirst.length, 1);
+    assert.equal(afterFirst[0]!.itemId, "item-after-2");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("github bursts materialize digest snapshot entries when inbox aggregation is enabled", async () => {
+  const { service, store } = await makeService();
+  try {
+    const agent = await service.registerAgent({
+      runtimeKind: "codex",
+      backend: "tmux",
+      tmuxPaneId: "%agg",
+    });
+    service.updateInboxAggregationPolicy(agent.agent.agentId, {
+      enabled: true,
+      windowMs: 30_000,
+      maxItems: 20,
+      maxThreadAgeMs: 60_000,
+    });
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: {},
+      cleanupPolicy: { mode: "manual" },
+      startPolicy: "earliest",
+    });
+
+    for (let index = 1; index <= 3; index += 1) {
+      await service.appendSourceEvent({
+        sourceId: source.sourceId,
+        sourceNativeId: `github-review-${index}`,
+        eventVariant: "PullRequestReviewCommentEvent.created",
+        metadata: {
+          number: 135,
+          isPullRequest: true,
+          repoFullName: "holon-run/agentinbox",
+        },
+        rawPayload: { id: index, type: "PullRequestReviewCommentEvent", action: "created" },
+      });
+    }
+
+    await service.pollSubscription(subscription.subscriptionId);
+    await (service as any).syncPendingDigestThreads(true);
+
+    const entries = service.listInboxItems(agent.agent.agentId);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.kind, "digest_snapshot");
+    assert.equal(entries[0]?.count, 3);
+    assert.equal(entries[0]?.itemIds.length, 3);
+    assert.match(entries[0]?.summary ?? "", /review comments on PR #135/);
+  } finally {
+    await service.stop();
+    store.close();
+  }
+});
+
+test("acking an older digest snapshot rematerializes a newer visible snapshot", async () => {
+  const { service, store } = await makeService();
+  try {
+    const agent = await service.registerAgent({
+      runtimeKind: "codex",
+      backend: "tmux",
+      tmuxPaneId: "%agg-ack",
+    });
+    service.updateInboxAggregationPolicy(agent.agent.agentId, {
+      enabled: true,
+      windowMs: 30_000,
+      maxItems: 20,
+      maxThreadAgeMs: 60_000,
+    });
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: {},
+      cleanupPolicy: { mode: "manual" },
+      startPolicy: "earliest",
+    });
+
+    for (let index = 1; index <= 2; index += 1) {
+      await service.appendSourceEvent({
+        sourceId: source.sourceId,
+        sourceNativeId: `github-review-a-${index}`,
+        eventVariant: "PullRequestReviewCommentEvent.created",
+        metadata: { number: 136, isPullRequest: true },
+        rawPayload: { id: index, type: "PullRequestReviewCommentEvent", action: "created" },
+      });
+    }
+    await service.pollSubscription(subscription.subscriptionId);
+    await (service as any).syncPendingDigestThreads(true);
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "github-review-a-3",
+      eventVariant: "PullRequestReviewCommentEvent.created",
+      metadata: { number: 136, isPullRequest: true },
+      rawPayload: { id: 3, type: "PullRequestReviewCommentEvent", action: "created" },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await (service as any).syncPendingDigestThreads(true);
+
+    const inbox = store.getInboxByAgentId(agent.agent.agentId)!;
+    const history = store.listInboxEntries(inbox.inboxId, { includeAcked: true })
+      .filter((entry) => entry.kind === "digest_snapshot");
+    assert.equal(history.length >= 2, true);
+    const older = history[0]!;
+    const visibleBefore = service.listInboxItems(agent.agent.agentId);
+    assert.equal(visibleBefore.length, 1);
+    assert.equal(visibleBefore[0]?.count, 3);
+
+    const ack = await service.ackInboxItems(agent.agent.agentId, [older.entryId]);
+    assert.equal(ack.acked, 1);
+
+    const visibleAfter = service.listInboxItems(agent.agent.agentId);
+    assert.equal(visibleAfter.length, 1);
+    assert.equal(visibleAfter[0]?.kind, "digest_snapshot");
+    assert.equal(visibleAfter[0]?.count, 1);
+    assert.equal(visibleAfter[0]?.itemIds.length, 1);
+  } finally {
+    await service.stop();
+    store.close();
   }
 });
 
@@ -2457,13 +2633,13 @@ test("compact and gc remove only acked inbox items older than retention", async 
 
     const compact = service.compactInbox(alpha.agentId);
     assert.equal(compact.deleted, 1);
-    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
-    assert.equal(service.listInboxItems(beta.agentId, { includeAcked: true }).length, 1);
+    assert.equal(service.listRawInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
+    assert.equal(service.listRawInboxItems(beta.agentId, { includeAcked: true }).length, 1);
 
     const gc = service.gcAckedInboxItems();
     assert.equal(gc.deleted, 1);
-    assert.equal(service.listInboxItems(beta.agentId, { includeAcked: true }).length, 0);
-    assert.equal(service.listInboxItems(alpha.agentId).length, 1);
+    assert.equal(service.listRawInboxItems(beta.agentId, { includeAcked: true }).length, 0);
+    assert.equal(service.listRawInboxItems(alpha.agentId).length, 1);
   } finally {
     await service.stop();
     store.close();
@@ -2529,7 +2705,7 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
     assert.equal(dispatcher.calls.length, 1);
     assert.equal(terminalDispatcher.calls.length, 1);
 
-    const ack = service.ackAllInboxItems(registered.agent.agentId);
+    const ack = await service.ackAllInboxItems(registered.agent.agentId);
     assert.equal(ack.acked, 2);
 
     await service.appendSourceEventByCaller(source.sourceId, {
@@ -2769,7 +2945,7 @@ test("terminal activation prompts use the current unacked inbox total", async ()
     const allItems = service.listInboxItems(registered.agent.agentId, { includeAcked: false });
     assert.equal(allItems.length, 2);
 
-    const ack = service.ackInboxItemsThrough(registered.agent.agentId, allItems[0]!.itemId);
+    const ack = await service.ackInboxItemsThrough(registered.agent.agentId, allItems[0]!.itemId);
     assert.equal(ack.acked, 1);
     await sleep(40);
 
@@ -3423,7 +3599,7 @@ test("terminal reminder fingerprints use the canonical unacked item set", async 
 
     const allItems = service.listInboxItems(registered.agent.agentId, { includeAcked: false });
     assert.equal(allItems.length, 2);
-    service.ackInboxItemsThrough(registered.agent.agentId, allItems[0]!.itemId);
+    await service.ackInboxItemsThrough(registered.agent.agentId, allItems[0]!.itemId);
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 2);

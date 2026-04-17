@@ -963,7 +963,7 @@ test("cli inbox read rejects unsupported flags like --ack", () => {
   try {
     const read = runCli(["inbox", "read", "--ack"], env);
     assert.notEqual(read.status, 0);
-    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-item ID] \[--include-acked]/);
+    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-entry ID] \[--include-acked]/);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -1003,10 +1003,10 @@ test("cli inbox send writes a direct text message into the target inbox", () => 
 
     const read = runCli(["inbox", "read", "--agent-id", registered.agent.agentId, "--include-acked"], env);
     assert.equal(read.status, 0, read.stderr);
-    const payload = JSON.parse(read.stdout) as { items: Array<{ itemId: string; rawPayload: Record<string, unknown> }> };
-    assert.equal(payload.items.length, 1);
-    assert.equal(payload.items[0].itemId, delivered.itemId);
-    assert.deepEqual(payload.items[0].rawPayload, {
+    const payload = JSON.parse(read.stdout) as { entries: Array<{ itemId: string; rawPayload: Record<string, unknown> }> };
+    assert.equal(payload.entries.length, 1);
+    assert.equal(payload.entries[0].itemId, delivered.itemId);
+    assert.deepEqual(payload.entries[0].rawPayload, {
       type: "direct_text_message",
       message: "Review PR #51 CI failure and push a fix.",
       sender: "local-script",
@@ -2003,36 +2003,36 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(activation.targetKind, "webhook");
       assert.equal(activation.newItemCount, 1);
 
-      const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/items`,
+      const inboxResponse = await client.request<{ entries: Array<{ entryId: string }> }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/entries`,
         undefined,
         "GET",
       );
       assert.equal(inboxResponse.statusCode, 200);
-      assert.equal(inboxResponse.data.items.length, 1);
+      assert.equal(inboxResponse.data.entries.length, 1);
 
       const ackResponse = await client.request<{ acked: number }>(
         `/agents/${encodeURIComponent(agentId)}/inbox/ack`,
-        { throughItemId: inboxResponse.data.items[0].itemId },
+        { throughEntryId: inboxResponse.data.entries[0].entryId },
       );
       assert.equal(ackResponse.statusCode, 200);
       assert.equal(ackResponse.data.acked, 1);
 
-      const unreadAfterAck = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/items`,
+      const unreadAfterAck = await client.request<{ entries: Array<{ entryId: string }> }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/entries`,
         undefined,
         "GET",
       );
       assert.equal(unreadAfterAck.statusCode, 200);
-      assert.equal(unreadAfterAck.data.items.length, 0);
+      assert.equal(unreadAfterAck.data.entries.length, 0);
 
-      const historyAfterAck = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+      const historyAfterAck = await client.request<{ entries: Array<{ entryId: string }> }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/entries?include_acked=true`,
         undefined,
         "GET",
       );
       assert.equal(historyAfterAck.statusCode, 200);
-      assert.equal(historyAfterAck.data.items.length, 1);
+      assert.equal(historyAfterAck.data.entries.length, 1);
 
       const removeSubscriptionResponse = await client.request<{ removed: boolean; subscriptionId: string }>(
         `/subscriptions/${encodeURIComponent(subscriptionResponse.data.subscriptionId)}`,
@@ -2157,7 +2157,7 @@ test("control plane accepts direct inbox text messages and rejects blank payload
       assert.equal(activation.items?.[0]?.eventVariant, "agentinbox.direct_text_message");
 
       const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        `/agents/${encodeURIComponent(agentId)}/inbox/raw-items?include_acked=true`,
         undefined,
         "GET",
       );
@@ -2327,7 +2327,7 @@ test("control plane exposes timer lifecycle endpoints and timer firing writes in
 
       await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
       const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        `/agents/${encodeURIComponent(agentId)}/inbox/raw-items?include_acked=true`,
         undefined,
         "GET",
       );
@@ -2435,7 +2435,7 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
       assert.equal(compactResponse.data.deleted, 1);
 
       const compactRead = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/items?include_acked=true`,
+        `/agents/${encodeURIComponent(agentId)}/inbox/raw-items?include_acked=true`,
         undefined,
         "GET",
       );

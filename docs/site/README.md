@@ -24,6 +24,7 @@ webhook targets.
 ## RFCs
 
 - [Event Filtering RFC](./rfcs/event-filtering.md)
+- [Inbox Digests And Threaded Notification Entries](./rfcs/inbox-digests-and-threaded-notification-entries.md)
 
 ## Current Status
 
