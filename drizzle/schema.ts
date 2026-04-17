@@ -78,7 +78,7 @@ export const agents = sqliteTable("agents", {
 export const inboxes = sqliteTable("inboxes", {
   inboxId: text("inbox_id").primaryKey(),
   ownerAgentId: text("owner_agent_id").notNull(),
-  aggregationEnabled: integer("aggregation_enabled"),
+  aggregationEnabled: integer("aggregation_enabled").notNull().default(0),
   aggregationWindowMs: integer("aggregation_window_ms"),
   aggregationMaxItems: integer("aggregation_max_items"),
   aggregationMaxThreadAgeMs: integer("aggregation_max_thread_age_ms"),

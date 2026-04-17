@@ -2156,6 +2156,54 @@ test("ack through still follows visible order when older binaries left inbox_seq
   }
 });
 
+test("legacy afterItemId paging still works against entry-backed inbox reads", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "after-item");
+    const inboxId = (service.getInboxDetailsByAgent(alpha.agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
+
+    store.insertInboxItem({
+      itemId: "item-after-1",
+      sourceId: "src-after",
+      sourceNativeId: "evt-after-1",
+      eventVariant: "message.created",
+      inboxId,
+      occurredAt: "2026-04-01T00:00:00Z",
+      metadata: {},
+      rawPayload: { message: "first" },
+      deliveryHandle: null,
+      ackedAt: null,
+    });
+    store.insertInboxItem({
+      itemId: "item-after-2",
+      sourceId: "src-after",
+      sourceNativeId: "evt-after-2",
+      eventVariant: "message.created",
+      inboxId,
+      occurredAt: "2026-04-01T00:00:01Z",
+      metadata: {},
+      rawPayload: { message: "second" },
+      deliveryHandle: null,
+      ackedAt: null,
+    });
+    (store as unknown as { ensureInboxEntryBackfill(): void }).ensureInboxEntryBackfill();
+
+    const visible = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(visible.length, 2);
+
+    const afterFirst = service.listInboxItems(alpha.agentId, {
+      includeAcked: true,
+      afterItemId: visible[0]!.itemId,
+    });
+    assert.equal(afterFirst.length, 1);
+    assert.equal(afterFirst[0]!.itemId, "item-after-2");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("github bursts materialize digest snapshot entries when inbox aggregation is enabled", async () => {
   const { service, store } = await makeService();
   try {
@@ -2585,13 +2633,13 @@ test("compact and gc remove only acked inbox items older than retention", async 
 
     const compact = service.compactInbox(alpha.agentId);
     assert.equal(compact.deleted, 1);
-    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
-    assert.equal(service.listInboxItems(beta.agentId, { includeAcked: true }).length, 1);
+    assert.equal(service.listRawInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
+    assert.equal(service.listRawInboxItems(beta.agentId, { includeAcked: true }).length, 1);
 
     const gc = service.gcAckedInboxItems();
     assert.equal(gc.deleted, 1);
-    assert.equal(service.listInboxItems(beta.agentId, { includeAcked: true }).length, 0);
-    assert.equal(service.listInboxItems(alpha.agentId).length, 1);
+    assert.equal(service.listRawInboxItems(beta.agentId, { includeAcked: true }).length, 0);
+    assert.equal(service.listRawInboxItems(alpha.agentId).length, 1);
   } finally {
     await service.stop();
     store.close();

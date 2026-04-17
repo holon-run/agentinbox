@@ -1003,10 +1003,10 @@ test("cli inbox send writes a direct text message into the target inbox", () => 
 
     const read = runCli(["inbox", "read", "--agent-id", registered.agent.agentId, "--include-acked"], env);
     assert.equal(read.status, 0, read.stderr);
-    const payload = JSON.parse(read.stdout) as { items: Array<{ itemId: string; rawPayload: Record<string, unknown> }> };
-    assert.equal(payload.items.length, 1);
-    assert.equal(payload.items[0].itemId, delivered.itemId);
-    assert.deepEqual(payload.items[0].rawPayload, {
+    const payload = JSON.parse(read.stdout) as { entries: Array<{ itemId: string; rawPayload: Record<string, unknown> }> };
+    assert.equal(payload.entries.length, 1);
+    assert.equal(payload.entries[0].itemId, delivered.itemId);
+    assert.deepEqual(payload.entries[0].rawPayload, {
       type: "direct_text_message",
       message: "Review PR #51 CI failure and push a fix.",
       sender: "local-script",

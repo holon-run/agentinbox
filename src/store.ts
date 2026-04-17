@@ -1352,14 +1352,31 @@ export class AgentInboxStore {
       filters.push("acked_at is null");
       filters.push("superseded_at is null");
     }
-    const afterRef = options?.afterEntryId ?? options?.afterItemId ?? undefined;
-    if (afterRef) {
+    if (options?.afterEntryId) {
       const anchor = this.getOne(
         "select sequence from inbox_entries where inbox_id = ? and entry_id = ?",
-        [inboxId, parseEntryRef(afterRef)],
+        [inboxId, parseEntryRef(options.afterEntryId)],
       );
       if (!anchor) {
-        throw new Error(`unknown inbox entry: ${afterRef}`);
+        throw new Error(`unknown inbox entry: ${options.afterEntryId}`);
+      }
+      filters.push("sequence > ?");
+      params.push(Number(anchor.sequence));
+    } else if (options?.afterItemId) {
+      const anchor = this.getOne(
+        `
+        select ie.sequence
+        from inbox_entries ie
+        join inbox_entry_items iei on iei.entry_id = ie.entry_id
+        where ie.inbox_id = ?
+          and iei.item_id = ?
+        order by ie.sequence desc
+        limit 1
+        `,
+        [inboxId, options.afterItemId],
+      );
+      if (!anchor) {
+        throw new Error(`unknown inbox item: ${options.afterItemId}`);
       }
       filters.push("sequence > ?");
       params.push(Number(anchor.sequence));
@@ -1368,7 +1385,7 @@ export class AgentInboxStore {
       `select * from inbox_entries where ${filters.join(" and ")} order by sequence asc`,
       params,
     );
-    return rows.map((row) => this.mapInboxEntry(row));
+    return this.mapInboxEntries(rows);
   }
 
   getInboxEntry(entryId: string): InboxEntry | null {
@@ -1695,36 +1712,38 @@ export class AgentInboxStore {
   }
 
   deleteAckedInboxItems(inboxId: string, olderThan: string): number {
-    this.db.run(
+    const itemIds = this.getAll(
       `
-      delete from inbox_items
+      select item_id
+      from inbox_items
       where inbox_id = ?
         and acked_at is not null
         and acked_at < ?
-    `,
+      `,
       [inboxId, olderThan],
-    );
-    const changes = this.changes();
-    if (changes > 0) {
-      this.persist();
+    ).map((row) => String(row.item_id));
+    if (itemIds.length === 0) {
+      return 0;
     }
-    return changes;
+    this.deleteInboxItemsAndEntryArtifacts(itemIds);
+    return itemIds.length;
   }
 
   deleteAckedInboxItemsGlobal(olderThan: string): number {
-    this.db.run(
+    const itemIds = this.getAll(
       `
-      delete from inbox_items
+      select item_id
+      from inbox_items
       where acked_at is not null
         and acked_at < ?
-    `,
+      `,
       [olderThan],
-    );
-    const changes = this.changes();
-    if (changes > 0) {
-      this.persist();
+    ).map((row) => String(row.item_id));
+    if (itemIds.length === 0) {
+      return 0;
     }
-    return changes;
+    this.deleteInboxItemsAndEntryArtifacts(itemIds);
+    return itemIds.length;
   }
 
   countInboxItems(inboxId: string, includeAcked: boolean): number {
@@ -2327,7 +2346,7 @@ export class AgentInboxStore {
     };
   }
 
-  private mapInboxEntry(row: Record<string, unknown>): InboxEntry {
+  private mapInboxEntry(row: Record<string, unknown>, itemIds: string[]): InboxEntry {
     const base = {
       entryId: formatEntryRef(Number(row.entry_id)),
       inboxId: String(row.inbox_id),
@@ -2335,7 +2354,7 @@ export class AgentInboxStore {
       itemId: "",
       summary: String(row.summary),
       count: Number(row.count),
-      itemIds: this.listEntryItemIds(Number(row.entry_id)),
+      itemIds,
       sourceIds: parseJson<string[]>(row.source_ids_json as string),
       subscriptionIds: parseJson<string[]>(row.subscription_ids_json as string),
       firstItemAt: String(row.first_item_at),
@@ -2428,8 +2447,8 @@ export class AgentInboxStore {
   }
 
   private getInboxEntryByNumericId(entryId: number): InboxEntry | null {
-    const row = this.getOne("select * from inbox_entries where entry_id = ?", [entryId]);
-    return row ? this.mapInboxEntry(row) : null;
+    const rows = this.getAll("select * from inbox_entries where entry_id = ?", [entryId]);
+    return this.mapInboxEntries(rows)[0] ?? null;
   }
 
   private resolveInboxEntryNumericId(inboxId: string, refOrItemId: string): number {
@@ -2515,10 +2534,41 @@ export class AgentInboxStore {
 
   private listEntryItemIds(entryId: number): string[] {
     const rows = this.getAll(
-      "select item_id from inbox_entry_items where entry_id = ? order by item_id asc",
+      `
+      select iei.item_id
+      from inbox_entry_items iei
+      left join inbox_items ii on ii.item_id = iei.item_id
+      where iei.entry_id = ?
+      order by coalesce(ii.inbox_sequence, ii.rowid, iei.rowid) asc
+      `,
       [entryId],
     );
     return rows.map((row) => String(row.item_id));
+  }
+
+  private listEntryItemIdsBulk(entryIds: number[]): Map<number, string[]> {
+    const result = new Map<number, string[]>();
+    if (entryIds.length === 0) {
+      return result;
+    }
+    const placeholders = entryIds.map(() => "?").join(", ");
+    const rows = this.getAll(
+      `
+      select iei.entry_id, iei.item_id
+      from inbox_entry_items iei
+      left join inbox_items ii on ii.item_id = iei.item_id
+      where iei.entry_id in (${placeholders})
+      order by iei.entry_id asc, coalesce(ii.inbox_sequence, ii.rowid, iei.rowid) asc
+      `,
+      entryIds,
+    );
+    for (const row of rows) {
+      const entryId = Number(row.entry_id);
+      const itemIds = result.get(entryId) ?? [];
+      itemIds.push(String(row.item_id));
+      result.set(entryId, itemIds);
+    }
+    return result;
   }
 
   private getRawItemIdsForEntryIds(entryIds: number[]): string[] {
@@ -2529,6 +2579,11 @@ export class AgentInboxStore {
       }
     }
     return [...itemIds];
+  }
+
+  private mapInboxEntries(rows: Array<Record<string, unknown>>): InboxEntry[] {
+    const itemIdsByEntry = this.listEntryItemIdsBulk(rows.map((row) => Number(row.entry_id)));
+    return rows.map((row) => this.mapInboxEntry(row, itemIdsByEntry.get(Number(row.entry_id)) ?? []));
   }
 
   private syncInboxEntryAckState(inboxId: string, ackedAt: string): void {
@@ -2561,6 +2616,82 @@ export class AgentInboxStore {
       [...entryIds, ackedAt],
     );
     return Number(row?.count ?? 0);
+  }
+
+  private deleteInboxItemsAndEntryArtifacts(itemIds: string[]): void {
+    const placeholders = itemIds.map(() => "?").join(", ");
+    this.inTransaction(() => {
+      this.db.run(
+        `delete from digest_thread_items where item_id in (${placeholders})`,
+        itemIds,
+      );
+      this.db.run(
+        `delete from inbox_items where item_id in (${placeholders})`,
+        itemIds,
+      );
+      this.db.run(
+        `
+        delete from inbox_entries
+        where entry_id in (
+          select e.entry_id
+          from inbox_entries e
+          where not exists (
+            select 1
+            from inbox_entry_items ee
+            where ee.entry_id = e.entry_id
+              and exists (
+                select 1
+                from inbox_items ii
+                where ii.item_id = ee.item_id
+              )
+          )
+        )
+        `,
+      );
+      this.db.run(
+        `
+        delete from inbox_entry_items
+        where not exists (
+          select 1
+          from inbox_items ii
+          where ii.item_id = inbox_entry_items.item_id
+        )
+        `,
+      );
+      this.db.run(
+        `
+        update digest_threads
+        set latest_entry_id = (
+              select e.entry_id
+              from inbox_entries e
+              where e.thread_id = digest_threads.thread_id
+              order by coalesce(e.revision, 0) desc, e.entry_id desc
+              limit 1
+            ),
+            latest_revision = coalesce((
+              select max(coalesce(e.revision, 0))
+              from inbox_entries e
+              where e.thread_id = digest_threads.thread_id
+            ), 0)
+        `,
+      );
+      this.db.run(
+        `
+        delete from digest_threads
+        where not exists (
+          select 1
+          from digest_thread_items dti
+          where dti.thread_id = digest_threads.thread_id
+        )
+          and not exists (
+            select 1
+            from inbox_entries e
+            where e.thread_id = digest_threads.thread_id
+          )
+        `,
+      );
+    });
+    this.persist();
   }
 
   private mapStream(row: Record<string, unknown>): StreamRecord {

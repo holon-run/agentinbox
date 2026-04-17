@@ -1437,17 +1437,20 @@ export class AgentInboxService {
   }
 
   async ackInbox(agentId: string, input: {
+    entryIds?: string[];
+    throughEntryId?: string | null;
+    all?: boolean;
     itemIds?: string[];
     throughItemId?: string | null;
-    all?: boolean;
   }): Promise<{ acked: number }> {
     if (input.all) {
       return this.ackAllInboxItems(agentId);
     }
-    if (input.throughItemId) {
-      return this.ackInboxItemsThrough(agentId, input.throughItemId);
+    const throughEntryId = input.throughEntryId ?? input.throughItemId ?? null;
+    if (throughEntryId) {
+      return this.ackInboxItemsThrough(agentId, throughEntryId);
     }
-    return this.ackInboxItems(agentId, input.itemIds ?? []);
+    return this.ackInboxItems(agentId, input.entryIds ?? input.itemIds ?? []);
   }
 
   compactInbox(agentId: string): { deleted: number; retentionMs: number } {
