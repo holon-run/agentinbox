@@ -7,7 +7,7 @@ import { AdapterRegistry } from "../src/adapters";
 import { AppendSourceEventInput } from "../src/model";
 import { AgentInboxService } from "../src/service";
 import { resolveSourceIdentity } from "../src/source_resolution";
-import { UxcRemoteSourceClient } from "../src/sources/remote";
+import { RemoteSourceRuntime, UxcRemoteSourceClient } from "../src/sources/remote";
 import { ManagedSourceSpec } from "../src/sources/remote_modules";
 import { RemoteSourceProfileRegistry, builtInProfileIdForSourceType, profileConfigForSource } from "../src/sources/remote_profiles";
 import { AgentInboxStore } from "../src/store";
@@ -659,6 +659,51 @@ test("resolveSourceIdentity still honors deprecated profileRegistry context", as
       implementationId: "demo.compat",
     });
   } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("RemoteSourceRuntime still honors deprecated profileRegistry option", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-runtime-compat-"));
+  const store = await AgentInboxStore.open(path.join(homeDir, "agentinbox.sqlite"));
+  try {
+    const profileDir = path.join(homeDir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(path.join(profileDir, "compat-runtime.mjs"), `
+      export default {
+        id: "demo.compat.runtime",
+        validateConfig(source) {
+          if (!source.config?.tenant) throw new Error("tenant required");
+        },
+        buildManagedSourceSpec(source) {
+          return { endpoint: "https://example.invalid", mode: "poll", args: { tenant: source.config.tenant } };
+        },
+        mapRawEvent() { return null; },
+      };
+    `);
+
+    const runtime = new RemoteSourceRuntime(store, async () => ({ appended: 0, deduped: 0 }), {
+      homeDir,
+      client: new FakeRemoteSourceClient(),
+      profileRegistry: new RemoteSourceProfileRegistry(),
+    });
+
+    await assert.doesNotReject(runtime.validateSource({
+      sourceId: "src_runtime_compat",
+      sourceType: "remote_source",
+      sourceKey: "compat-runtime",
+      configRef: null,
+      config: {
+        profilePath: "compat-runtime.mjs",
+        profileConfig: { tenant: "team-a" },
+      },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    }));
+  } finally {
+    store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
