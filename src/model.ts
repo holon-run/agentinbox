@@ -356,6 +356,7 @@ export interface AppendSourceEventResult {
 
 export interface DeliveryRequest {
   agentId?: string;
+  sourceId?: string;
   deliveryHandle?: DeliveryHandle | null;
   provider?: string;
   surface?: string;
@@ -364,6 +365,35 @@ export interface DeliveryRequest {
   replyMode?: string | null;
   kind: string;
   payload: Record<string, unknown>;
+}
+
+export interface DeliveryOperationDescriptor {
+  name: string;
+  title: string;
+  inputSchema: Record<string, unknown>;
+  canonicalTextAlias?: boolean;
+}
+
+export interface DeliveryActionsRequest {
+  sourceId?: string;
+  deliveryHandle?: DeliveryHandle | null;
+  provider?: string;
+  surface?: string;
+  targetRef?: string;
+  threadRef?: string | null;
+  replyMode?: string | null;
+}
+
+export interface DeliveryInvokeRequest {
+  sourceId?: string;
+  deliveryHandle?: DeliveryHandle | null;
+  provider?: string;
+  surface?: string;
+  targetRef?: string;
+  threadRef?: string | null;
+  replyMode?: string | null;
+  operation: string;
+  input: Record<string, unknown>;
 }
 
 export interface MatchResult {

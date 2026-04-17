@@ -389,6 +389,121 @@ test("control plane validates sources/events occurredAt and deliveries/send requ
       });
       assert.equal(invalidDelivery.statusCode, 400);
       assert.equal(typeof invalidDelivery.data.error, "string");
+
+      const mismatchedSend = await client.request<{ error: string }>("/deliveries/send", {
+        sourceId: sourceResponse.data.sourceId,
+        provider: "github",
+        surface: "issue_comment",
+        targetRef: "holon-run/agentinbox#111",
+        kind: "comment",
+        payload: { text: "hello" },
+      });
+      assert.equal(mismatchedSend.statusCode, 400);
+      assert.match(mismatchedSend.data.error, /deliver send is not supported/);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane exposes delivery actions and invoke for remote modules", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-delivery-ops-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const profileDir = path.join(homeDir, "source-profiles");
+  fs.mkdirSync(profileDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(profileDir, "delivery-hook.mjs"),
+    `export default {
+  id: "demo.delivery-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listDeliveryOperations() {
+    return [{
+      name: "ack_remote_event",
+      title: "Ack Remote Event",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["body"],
+        properties: { body: { type: "string" } }
+      }
+    }];
+  },
+  async invokeDeliveryOperation(input) {
+    return { status: "sent", note: "invoked " + input.operation + " for " + input.handle.targetRef };
+  }
+};`,
+    "utf8",
+  );
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        sourceType: "remote_source",
+        sourceKey: "demo-delivery",
+        config: {
+          profilePath: "delivery-hook.mjs",
+          profileConfig: {},
+        },
+      } satisfies RegisterSourceInput);
+      assert.equal(sourceResponse.statusCode, 200);
+
+      const actions = await client.request<{ operations: Array<{ name: string }> }>("/deliveries/actions", {
+        sourceId: sourceResponse.data.sourceId,
+        provider: "demo",
+        surface: "ticket",
+        targetRef: "ticket:42",
+      });
+      assert.equal(actions.statusCode, 200);
+      assert.deepEqual(actions.data.operations.map((operation) => operation.name), ["ack_remote_event"]);
+
+      const invoke = await client.request<{ status: string; note: string; operation: string }>("/deliveries/invoke", {
+        sourceId: sourceResponse.data.sourceId,
+        provider: "demo",
+        surface: "ticket",
+        targetRef: "ticket:42",
+        operation: "ack_remote_event",
+        input: { body: "acked" },
+      });
+      assert.equal(invoke.statusCode, 200);
+      assert.equal(invoke.data.status, "sent");
+      assert.equal(invoke.data.operation, "ack_remote_event");
+      assert.match(invoke.data.note, /invoked ack_remote_event/);
     } finally {
       await started.close();
     }
@@ -869,6 +984,77 @@ test("cli inbox send writes a direct text message into the target inbox", () => 
       message: "Review PR #51 CI failure and push a fix.",
       sender: "local-script",
     });
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli deliver actions exposes handle-scoped delivery operations", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-deliver-actions-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%9631",
+    CODEX_THREAD_ID: "thread-deliver-actions",
+  };
+
+  try {
+    const result = runCli([
+      "deliver",
+      "actions",
+      "--provider",
+      "github",
+      "--surface",
+      "pull_request_comment",
+      "--target",
+      "holon-run/agentinbox#111",
+    ], env);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { operations: Array<{ name: string }> };
+    assert.deepEqual(
+      payload.operations.map((operation) => operation.name),
+      ["add_comment", "close_issue", "reopen_issue", "merge_pull_request"],
+    );
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli deliver invoke requires input-json", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-deliver-invoke-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%9632",
+    CODEX_THREAD_ID: "thread-deliver-invoke",
+  };
+
+  try {
+    const result = runCli([
+      "deliver",
+      "invoke",
+      "--provider",
+      "github",
+      "--surface",
+      "pull_request_comment",
+      "--target",
+      "holon-run/agentinbox#111",
+      "--operation",
+      "add_comment",
+    ], env);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /usage: agentinbox deliver invoke \(\-\-handle-json JSON \| \-\-provider PROVIDER \-\-surface SURFACE \-\-target TARGET\) \-\-operation NAME \-\-input-json JSON \[\-\-source-id SOURCE_ID\]/,
+    );
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

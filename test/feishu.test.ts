@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DeliveryAttempt, SubscriptionSource } from "../src/model";
 import {
+  feishuDeliveryOperationsForHandle,
   FeishuDeliveryAdapter,
   FeishuUxcClient,
+  invokeFeishuDeliveryOperation,
   type FeishuCallClient,
   normalizeFeishuBotEvent,
 } from "../src/sources/feishu";
@@ -98,4 +100,26 @@ test("feishu delivery adapter maps message replies and chat sends to uxc calls",
   assert.equal(fake.calls[1]?.operation, "post:/im/v1/messages");
   assert.equal((fake.calls[1]?.payload as Record<string, unknown>)?.receive_id_type, "chat_id");
   assert.equal((fake.calls[1]?.options as Record<string, unknown>)?.schema_url, FEISHU_IM_SCHEMA_URL);
+});
+
+test("feishu delivery operations expose a canonical send_text action", () => {
+  assert.deepEqual(
+    feishuDeliveryOperationsForHandle({
+      provider: "feishu",
+      surface: "message_reply",
+      targetRef: "om_reply",
+    }).map((operation) => operation.name),
+    ["send_text"],
+  );
+});
+
+test("feishu delivery invoke maps send_text to the canonical outbound path", async () => {
+  const fake = new FakeFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  await invokeFeishuDeliveryOperation({
+    provider: "feishu",
+    surface: "chat_message",
+    targetRef: "oc_chat",
+  }, "send_text", { text: "team update" }, client);
+  assert.equal(fake.calls[0]?.operation, "post:/im/v1/messages");
 });

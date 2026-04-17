@@ -10,7 +10,10 @@ import {
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
+  DeliveryActionsRequest,
   DeliveryHandle,
+  DeliveryInvokeRequest,
+  DeliveryOperationDescriptor,
   DeliveryRequest,
   Inbox,
   InboxItem,
@@ -1334,6 +1337,7 @@ export class AgentInboxService {
 
   async sendDelivery(request: DeliveryRequest): Promise<DeliveryAttempt & { note: string }> {
     const handle = resolveDeliveryHandle(request);
+    const source = resolveDeliverySource(this.store, request.sourceId, handle);
     const attempt: DeliveryAttempt = {
       deliveryId: generateId("dlv"),
       provider: handle.provider,
@@ -1346,11 +1350,63 @@ export class AgentInboxService {
       status: "accepted",
       createdAt: nowIso(),
     };
-    const adapter = this.adapters.deliveryAdapterFor(handle.provider);
-    const result = await adapter.send(request, attempt);
+    const result = source
+      ? await this.sendCanonicalDeliveryViaModule(source, handle, request.payload, attempt)
+      : await this.adapters.deliveryAdapterFor(handle.provider).send(request, attempt);
     const storedAttempt = { ...attempt, status: result.status };
     this.store.insertDelivery(storedAttempt);
     return { ...storedAttempt, note: result.note };
+  }
+
+  async listDeliveryActions(
+    request: DeliveryActionsRequest,
+  ): Promise<{ sourceId: string | null; handle: DeliveryHandle; operations: DeliveryOperationDescriptor[] }> {
+    const handle = resolveDeliveryHandle(request);
+    const source = resolveDeliverySource(this.store, request.sourceId, handle);
+    const operations = await this.adapters.listDeliveryOperations(source, handle);
+    return {
+      sourceId: source?.sourceId ?? null,
+      handle,
+      operations,
+    };
+  }
+
+  async invokeDelivery(
+    request: DeliveryInvokeRequest,
+  ): Promise<DeliveryAttempt & { note: string; operation: string }> {
+    const handle = resolveDeliveryHandle(request);
+    const source = resolveDeliverySource(this.store, request.sourceId, handle);
+    const attempt: DeliveryAttempt = {
+      deliveryId: generateId("dlv"),
+      provider: handle.provider,
+      surface: handle.surface,
+      targetRef: handle.targetRef,
+      threadRef: handle.threadRef ?? null,
+      replyMode: handle.replyMode ?? null,
+      kind: request.operation,
+      payload: request.input,
+      status: "accepted",
+      createdAt: nowIso(),
+    };
+    const result = await this.adapters.invokeDeliveryOperation(source, handle, request.operation, request.input, attempt);
+    const storedAttempt = { ...attempt, status: result.status };
+    this.store.insertDelivery(storedAttempt);
+    return { ...storedAttempt, note: result.note, operation: request.operation };
+  }
+
+  private async sendCanonicalDeliveryViaModule(
+    source: SubscriptionSource,
+    handle: DeliveryHandle,
+    payload: Record<string, unknown>,
+    attempt: DeliveryAttempt,
+  ): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    const operations = await this.adapters.listDeliveryOperations(source, handle);
+    const canonicalOperation = operations.find((operation) => operation.canonicalTextAlias);
+    if (!canonicalOperation) {
+      throw new Error(`deliver send is not supported for ${handle.provider}/${handle.surface}; use deliver invoke`);
+    }
+    const input = payload.text != null ? { ...payload, body: String(payload.text) } : payload;
+    return this.adapters.invokeDeliveryOperation(source, handle, canonicalOperation.name, input, attempt);
   }
 
   status(): Record<string, unknown> {
@@ -2624,7 +2680,9 @@ function retentionCutoffIso(retentionMs: number): string {
   return new Date(Date.now() - retentionMs).toISOString();
 }
 
-function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {
+function resolveDeliveryHandle(
+  request: DeliveryRequest | DeliveryActionsRequest | DeliveryInvokeRequest,
+): DeliveryHandle {
   if (request.deliveryHandle) {
     return request.deliveryHandle;
   }
@@ -2638,6 +2696,35 @@ function resolveDeliveryHandle(request: DeliveryRequest): DeliveryHandle {
     threadRef: request.threadRef ?? null,
     replyMode: request.replyMode ?? null,
   };
+}
+
+function resolveDeliverySource(
+  store: AgentInboxStore,
+  sourceId: string | undefined,
+  handle: DeliveryHandle,
+): SubscriptionSource | null {
+  if (!sourceId) {
+    return null;
+  }
+  const source = store.getSource(sourceId);
+  if (!source) {
+    throw new Error(`unknown source: ${sourceId}`);
+  }
+  const expectedProvider = providerForSourceType(source.sourceType);
+  if (expectedProvider && expectedProvider !== handle.provider) {
+    throw new Error(`source ${sourceId} does not match delivery provider ${handle.provider}`);
+  }
+  return source;
+}
+
+function providerForSourceType(sourceType: SubscriptionSource["sourceType"]): string | null {
+  if (sourceType === "github_repo") {
+    return "github";
+  }
+  if (sourceType === "feishu_bot") {
+    return "feishu";
+  }
+  return null;
 }
 
 export class ActivationDispatcher {

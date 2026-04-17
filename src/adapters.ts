@@ -3,6 +3,8 @@ import {
   AppendSourceEventInput,
   DeliveryAttempt,
   DeliveryRequest,
+  DeliveryHandle,
+  DeliveryOperationDescriptor,
   SubscriptionSource,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
@@ -14,7 +16,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
-import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceModuleRegistry } from "./sources/remote_modules";
+import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -201,9 +203,62 @@ export class AdapterRegistry {
     return this.remoteSource.deriveInlinePreview(source, item);
   }
 
+  async listDeliveryOperations(
+    source: SubscriptionSource | null,
+    handle: DeliveryHandle,
+  ): Promise<DeliveryOperationDescriptor[]> {
+    const module = await this.resolveDeliveryModule(source, handle);
+    if (!module?.listDeliveryOperations) {
+      return [];
+    }
+    return module.listDeliveryOperations({ handle, source });
+  }
+
+  async invokeDeliveryOperation(
+    source: SubscriptionSource | null,
+    handle: DeliveryHandle,
+    operation: string,
+    input: Record<string, unknown>,
+    attempt: DeliveryAttempt,
+  ): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    const module = await this.resolveDeliveryModule(source, handle);
+    if (!module?.invokeDeliveryOperation) {
+      throw new Error(`delivery operations are not supported for provider ${handle.provider}`);
+    }
+    return module.invokeDeliveryOperation({ handle, operation, input, attempt, source });
+  }
+
   status(): Record<string, unknown> {
     return {
       remote: this.remoteSource.status?.() ?? {},
     };
   }
+
+  private async resolveDeliveryModule(source: SubscriptionSource | null, handle: DeliveryHandle): Promise<RemoteSourceModule | null> {
+    if (source) {
+      if (source.sourceType === "local_event") {
+        return null;
+      }
+      return this.remoteModuleRegistry.resolve(source, this.homeDir);
+    }
+    if (handle.provider === "github") {
+      return this.remoteModuleRegistry.resolve(syntheticBuiltinSource("github_repo"), this.homeDir);
+    }
+    if (handle.provider === "feishu") {
+      return this.remoteModuleRegistry.resolve(syntheticBuiltinSource("feishu_bot"), this.homeDir);
+    }
+    return null;
+  }
+}
+
+function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot"): SubscriptionSource {
+  return {
+    sourceId: `builtin:${sourceType}`,
+    sourceType,
+    sourceKey: sourceType,
+    status: "active",
+    createdAt: "",
+    updatedAt: "",
+    config: {},
+  };
 }

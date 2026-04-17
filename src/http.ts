@@ -42,6 +42,30 @@ const deliveryHandleSchema = {
   },
 } as const;
 
+const deliveryTargetByHandleSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["deliveryHandle"],
+  properties: {
+    sourceId: { type: "string", minLength: 1 },
+    deliveryHandle: deliveryHandleSchema,
+  },
+} as const;
+
+const deliveryTargetByFieldsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["provider", "surface", "targetRef"],
+  properties: {
+    sourceId: { type: "string", minLength: 1 },
+    provider: { type: "string", minLength: 1 },
+    surface: { type: "string", minLength: 1 },
+    targetRef: { type: "string", minLength: 1 },
+    threadRef: { type: "string" },
+    replyMode: { type: "string" },
+  },
+} as const;
+
 function buildFastifyServer(service: AgentInboxService) {
   const app = Fastify({
     logger: false,
@@ -1217,6 +1241,7 @@ function buildFastifyServer(service: AgentInboxService) {
             additionalProperties: false,
             required: ["kind", "payload", "deliveryHandle"],
             properties: {
+              sourceId: { type: "string", minLength: 1 },
               kind: { type: "string", minLength: 1 },
               payload: jsonObjectSchema,
               deliveryHandle: deliveryHandleSchema,
@@ -1227,6 +1252,7 @@ function buildFastifyServer(service: AgentInboxService) {
             additionalProperties: false,
             required: ["kind", "payload", "provider", "surface", "targetRef"],
             properties: {
+              sourceId: { type: "string", minLength: 1 },
               kind: { type: "string", minLength: 1 },
               payload: jsonObjectSchema,
               provider: { type: "string", minLength: 1 },
@@ -1244,6 +1270,59 @@ function buildFastifyServer(service: AgentInboxService) {
       },
     },
   }, async (request) => service.sendDelivery(request.body as never));
+
+  app.post("/deliveries/actions", {
+    schema: {
+      tags: ["deliveries"],
+      body: {
+        oneOf: [deliveryTargetByHandleSchema, deliveryTargetByFieldsSchema],
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.listDeliveryActions(request.body as never));
+
+  app.post("/deliveries/invoke", {
+    schema: {
+      tags: ["deliveries"],
+      body: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["deliveryHandle", "operation", "input"],
+            properties: {
+              sourceId: { type: "string", minLength: 1 },
+              deliveryHandle: deliveryHandleSchema,
+              operation: { type: "string", minLength: 1 },
+              input: jsonObjectSchema,
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["provider", "surface", "targetRef", "operation", "input"],
+            properties: {
+              sourceId: { type: "string", minLength: 1 },
+              provider: { type: "string", minLength: 1 },
+              surface: { type: "string", minLength: 1 },
+              targetRef: { type: "string", minLength: 1 },
+              threadRef: { type: "string" },
+              replyMode: { type: "string" },
+              operation: { type: "string", minLength: 1 },
+              input: jsonObjectSchema,
+            },
+          },
+        ],
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.invokeDelivery(request.body as never));
 
   app.setNotFoundHandler((_request, reply) => {
     void reply.code(404).send({ error: "not found" });
@@ -1334,7 +1413,15 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("manual append is not supported") ||
     message.startsWith("sources/events requires") ||
     message.startsWith("source remove requires") ||
+    message.startsWith("delivery requires") ||
+    message.startsWith("deliver send is not supported") ||
     message.startsWith("deliveryHandle requires") ||
+    message.startsWith("delivery operations are not supported") ||
+    message.startsWith("unknown GitHub delivery operation") ||
+    message.startsWith("unknown Feishu delivery operation") ||
+    message.startsWith("invalid GitHub targetRef") ||
+    message.includes("requires input.text") ||
+    message.includes("requires input.body") ||
     message.startsWith("subscriptions/reset requires") ||
     message.startsWith("agents requires") ||
     message.startsWith("agents/targets requires") ||
@@ -1359,6 +1446,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("remote_source requires") ||
     message.startsWith("remote_source profile") ||
     message.startsWith("remote_source module") ||
+    message.startsWith("reply_in_review_thread requires") ||
+    message.includes("does not match delivery provider") ||
     message.includes("requires tmuxPaneId") ||
     message.includes("requires iTerm2 session identity") ||
     message.includes("requires a supported terminal context") ||

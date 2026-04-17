@@ -2,12 +2,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { PollSubscriptionConfig, RuntimeInvokeOptions } from "@holon-run/uxc-daemon-client";
-import { ActivationItem, AppendSourceEventInput, CleanupPolicy, SourceSchemaField, SubscriptionFilter, SubscriptionSource } from "../model";
+import {
+  ActivationItem,
+  AppendSourceEventInput,
+  CleanupPolicy,
+  DeliveryAttempt,
+  DeliveryHandle,
+  DeliveryOperationDescriptor,
+  SourceSchemaField,
+  SubscriptionFilter,
+  SubscriptionSource,
+} from "../model";
 import {
   deriveGithubTrackedResource,
   expandGithubSubscriptionShortcut,
   GITHUB_ENDPOINT,
+  githubDeliveryOperationsForHandle,
   githubSubscriptionShortcutSpec,
+  invokeGithubDeliveryOperation,
   normalizeGithubRepoEvent,
   parseGithubSourceConfig,
   projectGithubLifecycleSignal,
@@ -21,6 +33,8 @@ import {
 } from "./github_ci";
 import {
   FEISHU_OPENAPI_ENDPOINT,
+  feishuDeliveryOperationsForHandle,
+  invokeFeishuDeliveryOperation,
   normalizeFeishuBotEvent,
   parseFeishuSourceConfig,
 } from "./feishu";
@@ -83,6 +97,19 @@ export interface LifecycleSignal {
   occurredAt?: string;
 }
 
+export interface ListDeliveryOperationsInput {
+  handle: DeliveryHandle;
+  source?: SubscriptionSource | null;
+}
+
+export interface InvokeDeliveryOperationInput {
+  handle: DeliveryHandle;
+  operation: string;
+  input: Record<string, unknown>;
+  attempt: DeliveryAttempt;
+  source?: SubscriptionSource | null;
+}
+
 export interface RemoteSourceModule {
   id: string;
   validateConfig(source: SubscriptionSource): void;
@@ -95,6 +122,8 @@ export interface RemoteSourceModule {
   deriveTrackedResource?(filter: SubscriptionFilter, source: SubscriptionSource): { ref: string } | null;
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SubscriptionSource): LifecycleSignal | null;
   deriveInlinePreview?(item: ActivationItem, source: SubscriptionSource): string | null;
+  listDeliveryOperations?(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[];
+  invokeDeliveryOperation?(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }>;
 }
 
 const REMOTE_USER_MODULE_ROOT_DIR = "source-profiles";
@@ -188,6 +217,8 @@ function validateModuleContract(module: RemoteSourceModule, sourcePath: string):
   validateOptionalHook(module.deriveTrackedResource, "deriveTrackedResource", sourcePath);
   validateOptionalHook(module.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
   validateOptionalHook(module.deriveInlinePreview, "deriveInlinePreview", sourcePath);
+  validateOptionalHook(module.listDeliveryOperations, "listDeliveryOperations", sourcePath);
+  validateOptionalHook(module.invokeDeliveryOperation, "invokeDeliveryOperation", sourcePath);
 }
 
 function validateOptionalHook(value: unknown, name: string, sourcePath: string): void {
@@ -229,6 +260,12 @@ function asNonEmptyString(value: unknown): string | null {
 
 const GITHUB_REPO_MODULE: RemoteSourceModule = {
   id: "builtin.github_repo",
+  listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
+    return githubDeliveryOperationsForHandle(input.handle);
+  },
+  async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    return invokeGithubDeliveryOperation(input.handle, input.operation, input.input);
+  },
   describeCapabilities(source: SubscriptionSource): RemoteSourceCapabilityDescription {
     const config = parseGithubSourceConfig(source);
     return {
@@ -451,6 +488,12 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
 
 const FEISHU_BOT_MODULE: RemoteSourceModule = {
   id: "builtin.feishu_bot",
+  listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
+    return feishuDeliveryOperationsForHandle(input.handle);
+  },
+  async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    return invokeFeishuDeliveryOperation(input.handle, input.operation, input.input);
+  },
   describeCapabilities(): RemoteSourceCapabilityDescription {
     return {
       sourceKind: "feishu_bot",
