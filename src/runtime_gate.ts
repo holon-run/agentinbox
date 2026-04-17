@@ -9,6 +9,7 @@ import { Logger, NoopLogger } from "./logging";
 const execFileAsync = promisify(execFile);
 const DEFAULT_ITERM2_SAMPLE_DELAY_MS = 900;
 const DEFAULT_TMUX_SAMPLE_DELAY_MS = 900;
+const NORMALIZED_BUFFER_TAIL_LINES = 20;
 const ACTIVE_BUFFER_MARKERS = [
   "esc to interrupt",
   "Working (",
@@ -393,8 +394,16 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
 
       if (data.status === "available") {
         // If we have cursor and lines data, use cursor-aware detection
-        if (data.cursor && data.lines) {
-          const bufferTail = data.lines.join("\n");
+        if (data.cursor && Array.isArray(data.lines)) {
+          const bufferTail = normalizeProbeTailFromLines(data.lines);
+          if (!bufferTail) {
+            this.logger.trace("probe_python_result", {
+              sessionId,
+              result: { presence: "available", busy: "unknown" },
+              reason: "empty_normalized_buffer",
+            });
+            return { presence: "available", busy: "unknown" };
+          }
           const cursorPosition = { x: data.cursor.x, y: data.cursor.y };
           const screenHeight = data.screen_height;
           const startLine = data.start_line ?? 0;
@@ -427,35 +436,35 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             });
             const secondData = JSON.parse(secondResult.stdout);
 
-            if (secondData.status === "available" && secondData.lines) {
-              const secondBufferTail = secondData.lines.join("\n");
-            if (bufferTail !== secondBufferTail) {
+            if (secondData.status === "available" && Array.isArray(secondData.lines)) {
+              const secondBufferTail = normalizeProbeTailFromLines(secondData.lines);
+              if (secondBufferTail && bufferTail !== secondBufferTail) {
                 this.logger.trace("probe_python_result", {
                   sessionId,
                   result: { presence: "available", busy: "busy" },
                   reason: "buffer_changed",
                 });
+                return { presence: "available", busy: "busy" };
+              }
+            }
+
+            // Check for active buffer markers
+            if (containsActiveBufferMarker(bufferTail)) {
+              this.logger.trace("probe_python_result", {
+                sessionId,
+                result: { presence: "available", busy: "busy" },
+                reason: "active_buffer_marker",
+              });
               return { presence: "available", busy: "busy" };
             }
-          }
 
-          // Check for active buffer markers
-          if (containsActiveBufferMarker(bufferTail)) {
             this.logger.trace("probe_python_result", {
               sessionId,
-              result: { presence: "available", busy: "busy" },
-              reason: "active_buffer_marker",
+              result: { presence: "available", busy: "unknown" },
+              reason: "cursor_aware_not_busy",
             });
-            return { presence: "available", busy: "busy" };
+            return { presence: "available", busy: "unknown" };
           }
-
-          this.logger.trace("probe_python_result", {
-            sessionId,
-            result: { presence: "available", busy: "idle" },
-            reason: "cursor_aware_not_busy",
-          });
-          return { presence: "available", busy: "idle" };
-        }
 
           // If cursor-aware detection is uncertain, fall back to buffer change detection only
           // Do NOT use generic typing prompts to avoid false positives (see #116)
@@ -466,27 +475,27 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             });
             const secondData = JSON.parse(secondResult.stdout);
 
-            if (secondData.status === "available" && secondData.lines) {
-              const secondBufferTail = secondData.lines.join("\n");
-            if (bufferTail !== secondBufferTail) {
+            if (secondData.status === "available" && Array.isArray(secondData.lines)) {
+              const secondBufferTail = normalizeProbeTailFromLines(secondData.lines);
+              if (secondBufferTail && bufferTail !== secondBufferTail) {
                 this.logger.trace("probe_python_result", {
                   sessionId,
                   result: { presence: "available", busy: "busy" },
                   reason: "buffer_changed_after_unknown_cursor_state",
                 });
-              return { presence: "available", busy: "busy" };
+                return { presence: "available", busy: "busy" };
+              }
             }
-          }
 
             // Check for active buffer markers
-          if (containsActiveBufferMarker(bufferTail)) {
-            this.logger.trace("probe_python_result", {
-              sessionId,
-              result: { presence: "available", busy: "busy" },
-              reason: "active_buffer_marker_after_unknown_cursor_state",
-            });
-            return { presence: "available", busy: "busy" };
-          }
+            if (containsActiveBufferMarker(bufferTail)) {
+              this.logger.trace("probe_python_result", {
+                sessionId,
+                result: { presence: "available", busy: "busy" },
+                reason: "active_buffer_marker_after_unknown_cursor_state",
+              });
+              return { presence: "available", busy: "busy" };
+            }
 
             // Return unknown when cursor-aware detection is uncertain
             // Do NOT fall back to generic typing prompts to avoid false positives
@@ -772,7 +781,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
 
   private async readBufferTail(paneId: string): Promise<string | null> {
     try {
-      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", "-20"]);
+      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", `-${NORMALIZED_BUFFER_TAIL_LINES}`]);
       return normalizeBufferTail(result.stdout);
     } catch {
       return null;
@@ -868,10 +877,14 @@ function normalizeBufferTail(buffer: string): string | null {
     .replace(/\r/g, "")
     .split("\n")
     .map((line) => line.trimEnd())
-    .slice(-20)
+    .slice(-NORMALIZED_BUFFER_TAIL_LINES)
     .join("\n")
     .trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeProbeTailFromLines(lines: readonly string[]): string | null {
+  return normalizeBufferTail(lines.join("\n"));
 }
 
 function resolveIterm2ApiPath(override?: string): string {

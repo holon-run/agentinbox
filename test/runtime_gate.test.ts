@@ -928,7 +928,7 @@ test("Iterm2TerminalStateProbe with Python API reports busy when cursor is at pr
   assert.equal(result.busy, "busy");
 });
 
-test("Iterm2TerminalStateProbe with Python API reports idle when cursor is not at prompt line", async () => {
+test("Iterm2TerminalStateProbe with Python API reports unknown when cursor is not at prompt line", async () => {
   const probe = new Iterm2TerminalStateProbe(
     async (file, args) => {
       if (file === "python3") {
@@ -963,7 +963,93 @@ test("Iterm2TerminalStateProbe with Python API reports idle when cursor is not a
   const result = await probe.check(target);
 
   assert.equal(result.presence, "available");
-  assert.equal(result.busy, "idle");
+  assert.equal(result.busy, "unknown");
+});
+
+test("Iterm2TerminalStateProbe with Python API normalizes tail whitespace before diffing snapshots", async () => {
+  const snapshots = [
+    {
+      status: "available",
+      cursor: { x: 5, y: 2 },
+      screen_height: 5,
+      start_line: 0,
+      lines: [
+        "line 1   ",
+        "line 2 with cursor\r",
+        "line 3",
+        "line 4   ",
+        "› test input   ",
+      ],
+    },
+    {
+      status: "available",
+      cursor: { x: 5, y: 2 },
+      screen_height: 5,
+      start_line: 0,
+      lines: [
+        "line 1",
+        "line 2 with cursor",
+        "line 3",
+        "line 4",
+        "› test input",
+      ],
+    },
+  ];
+
+  const probe = new Iterm2TerminalStateProbe(
+    async (file) => {
+      if (file === "python3") {
+        return {
+          stdout: JSON.stringify(snapshots.shift()),
+          stderr: "",
+        };
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {},
+    }
+  );
+
+  const result = await probe.check(makeItermTarget());
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "unknown");
+});
+
+test("Iterm2TerminalStateProbe with Python API sees active markers above the old 5-line tail", async () => {
+  const probe = new Iterm2TerminalStateProbe(
+    async (file) => {
+      if (file === "python3") {
+        return {
+          stdout: JSON.stringify({
+            status: "available",
+            cursor: { x: 0, y: 19 },
+            screen_height: 20,
+            start_line: 0,
+            lines: [
+              "workspace",
+              "build logs",
+              "• Working (1m 23s • esc to interrupt)",
+              ...Array.from({ length: 17 }, (_, index) => `line ${index + 4}`),
+            ],
+          }),
+          stderr: "",
+        };
+      }
+      throw new Error("Unexpected command");
+    },
+    {
+      pythonScriptPath: "/tmp/fake-python-probe.py",
+      sampleDelayMs: 0,
+      sleep: async () => {},
+    }
+  );
+
+  const result = await probe.check(makeItermTarget());
+  assert.equal(result.presence, "available");
+  assert.equal(result.busy, "busy");
 });
 
 test("Iterm2TerminalStateProbe with Python API falls back to CLI when Python fails", async () => {

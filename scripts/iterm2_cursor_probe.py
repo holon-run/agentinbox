@@ -8,6 +8,11 @@ import sys
 import json
 import asyncio
 
+# Keep this value in sync with the TypeScript probe normalization constant
+# `NORMALIZED_BUFFER_TAIL_LINES`, since both are intended to mirror the same
+# CLI/probe tail window.
+CAPTURE_TAIL_LINES = 20
+
 
 def probe_session(connection, session_id):
     """Probe iTerm2 session state and return cursor position with buffer contents."""
@@ -25,9 +30,9 @@ def probe_session(connection, session_id):
                 screen = await session.async_get_screen_contents()
                 cursor = screen.cursor_coord
 
-                # Get the last few lines of content
+                # Capture a tail comparable to the CLI probe window.
                 lines = []
-                start_line = max(0, screen.number_of_lines - 5)
+                start_line = max(0, screen.number_of_lines - CAPTURE_TAIL_LINES)
                 for i in range(start_line, screen.number_of_lines):
                     try:
                         line = screen.line(i)
