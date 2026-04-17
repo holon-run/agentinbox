@@ -8,6 +8,9 @@ import sys
 import json
 import asyncio
 
+# Keep this value in sync with the TypeScript probe normalization constant
+# `NORMALIZED_BUFFER_TAIL_LINES`, since both are intended to mirror the same
+# CLI/probe tail window.
 CAPTURE_TAIL_LINES = 20
 
 

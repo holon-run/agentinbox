@@ -781,7 +781,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
 
   private async readBufferTail(paneId: string): Promise<string | null> {
     try {
-      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", "-20"]);
+      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", `-${NORMALIZED_BUFFER_TAIL_LINES}`]);
       return normalizeBufferTail(result.stdout);
     } catch {
       return null;
