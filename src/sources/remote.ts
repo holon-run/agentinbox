@@ -97,6 +97,7 @@ export class RemoteSourceRuntime {
     private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
     options?: {
       moduleRegistry?: RemoteSourceModuleRegistry;
+      /** @deprecated Use `moduleRegistry` instead. Kept as a backwards-compatible alias. */
       profileRegistry?: RemoteSourceModuleRegistry;
       client?: UxcRemoteSourceClient;
       homeDir?: string;
