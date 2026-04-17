@@ -62,6 +62,7 @@ import {
 } from "./terminal";
 import { LifecycleSignal } from "./sources/remote_modules";
 import { ActivationGate, DefaultActivationGate } from "./runtime_gate";
+import { Logger, NoopLogger } from "./logging";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -154,7 +155,8 @@ export class AgentInboxService {
     backend?: EventBusBackend,
     activationPolicy?: ActivationPolicy,
     terminalDispatcher: TerminalDispatcher = new TerminalDispatcher(),
-    activationGate: ActivationGate = new DefaultActivationGate(),
+    activationGate?: ActivationGate,
+    logger: Logger = new NoopLogger(),
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
@@ -162,12 +164,14 @@ export class AgentInboxService {
     this.activationMaxItems = activationPolicy?.maxItems ?? DEFAULT_ACTIVATION_MAX_ITEMS;
     this.ackedRetentionMs = DEFAULT_ACKED_RETENTION_MS;
     this.terminalDispatcher = terminalDispatcher;
-    this.activationGate = activationGate;
+    this.logger = logger;
+    this.activationGate = activationGate ?? new DefaultActivationGate(undefined, undefined, this.logger.child("gate"));
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
   private readonly terminalDispatcher: TerminalDispatcher;
   private readonly activationGate: ActivationGate;
+  private readonly logger: Logger;
 
   async start(): Promise<void> {
     if (this.syncInterval) {
@@ -1834,12 +1838,32 @@ export class AgentInboxService {
     try {
       if (target.kind === "terminal") {
         const gate = await this.activationGate.evaluate(target);
+        this.logger.debug("activation.gate_decision", {
+          agentId: input.agentId,
+          targetId: target.targetId,
+          runtimeKind: target.runtimeKind,
+          backend: target.backend,
+          outcome: gate.outcome,
+          reason: gate.reason,
+        });
         if (gate.outcome === "offline") {
+          this.logger.info("activation.target_offline", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            reason: gate.reason,
+            transition: "runtime_gate",
+          });
           this.markActivationTargetOffline(target.targetId, `runtime gate: ${gate.reason}`);
           this.reconcileAgentStatus(target.agentId);
           return "offline";
         }
         if (gate.outcome === "defer") {
+          this.logger.debug("activation.dispatch_deferred", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            reason: gate.reason,
+            retryMs: DEFAULT_NOTIFY_RETRY_MS,
+          });
           this.store.upsertActivationDispatchState({
             agentId: input.agentId,
             targetId: input.targetId,
@@ -1877,6 +1901,11 @@ export class AgentInboxService {
         terminalPrompt = prompt;
         const promptFingerprint = terminalReminderFingerprint(prompt, input.items);
         if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
+          this.logger.debug("activation.dispatch_suppressed", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            reason: "unchanged_terminal_prompt",
+          });
           this.store.upsertActivationDispatchState({
             agentId: input.agentId,
             targetId: input.targetId,
@@ -1891,7 +1920,19 @@ export class AgentInboxService {
           });
           return "suppressed";
         }
+        this.logger.debug("activation.terminal_dispatch_start", {
+          agentId: input.agentId,
+          targetId: target.targetId,
+          totalUnackedCount,
+          newItemCount: input.newItemCount,
+          sourceIds: input.sourceIds,
+          subscriptionIds: input.subscriptionIds,
+        });
         await this.terminalDispatcher.dispatch(target, prompt);
+        this.logger.debug("activation.terminal_dispatch_succeeded", {
+          agentId: input.agentId,
+          targetId: target.targetId,
+        });
       } else {
         const activation: Activation = {
           kind: "agentinbox.activation",
@@ -1931,11 +1972,28 @@ export class AgentInboxService {
       });
       return "dispatched";
     } catch (error) {
-      console.warn(`activation target dispatch failed for ${target.targetId}:`, error);
       const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn("activation.dispatch_failed", {
+        agentId: input.agentId,
+        targetId: target.targetId,
+        targetKind: target.kind,
+        error,
+        message,
+      });
       if (target.kind === "terminal") {
         const exists = await this.terminalDispatcher.probe(target);
+        this.logger.debug("activation.terminal_probe_after_failure", {
+          agentId: input.agentId,
+          targetId: target.targetId,
+          exists,
+        });
         if (!exists) {
+          this.logger.info("activation.target_offline", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            reason: message,
+            transition: "dispatch_probe",
+          });
           this.markActivationTargetOffline(target.targetId, message);
           this.reconcileAgentStatus(target.agentId);
           return "offline";

@@ -5,8 +5,9 @@ import { AdapterRegistry } from "./adapters";
 import { AgentInboxClient } from "./client";
 import { startControlServer } from "./control_server";
 import { AgentWithTargets, annotateAgents, BindingKind, resolveCurrentAgent } from "./current_agent";
-import { daemonStatus, ensureDaemonForClient, removePidFile, startDaemon, stopDaemon, writePidFile } from "./daemon";
+import { daemonStatus, ensureDaemonForClient, removePidFile, resolveDaemonLogLevel, startDaemon, stopDaemon, writeDaemonMetadata, writePidFile } from "./daemon";
 import { createServer } from "./http";
+import { JsonLogger, parseLogLevel } from "./logging";
 import { resolveDaemonPaths, resolveServeConfig } from "./paths";
 import { AgentInboxService } from "./service";
 import { AgentInboxStore } from "./store";
@@ -619,28 +620,38 @@ async function main(): Promise<void> {
 
 async function runServe(args: string[]): Promise<void> {
   const port = parseOptionalNumber(takeFlagValue(args, "--port"));
+  const homeOverride = takeFlagValue(args, "--home");
   const serveConfig = resolveServeConfig({
     env: process.env,
-    homeDirOverride: takeFlagValue(args, "--home"),
+    homeDirOverride: homeOverride,
     statePathOverride: takeFlagValue(args, "--state"),
     socketPathOverride: takeFlagValue(args, "--socket"),
     portOverride: port,
   });
+  const daemonPaths = resolveDaemonPaths(process.env, homeOverride);
+  const logLevel = parseLogLevel(takeFlagValue(args, "--log-level") ?? process.env.AGENTINBOX_LOG_LEVEL);
+  const logger = new JsonLogger(logLevel, "agentinbox");
 
   const store = await AgentInboxStore.open(serveConfig.dbPath);
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
     homeDir: serveConfig.homeDir,
   });
-  service = new AgentInboxService(store, adapters);
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, undefined, undefined, logger.child("service"));
   const server = createServer(service);
   await adapters.start();
   await service.start();
   const controlServer = await startControlServer(server, serveConfig.transport);
-  const daemonPaths = resolveDaemonPaths(process.env, takeFlagValue(args, "--home"));
   if (serveConfig.transport.kind === "socket") {
     writePidFile(daemonPaths.pidPath, process.pid);
   }
+  writeDaemonMetadata(daemonPaths.metadataPath, { logLevel });
+  logger.info("daemon.ready", {
+    homeDir: serveConfig.homeDir,
+    dbPath: serveConfig.dbPath,
+    transport: controlServer.info,
+    logLevel,
+  });
   console.log(jsonResponse({
     ok: true,
     homeDir: serveConfig.homeDir,
@@ -656,6 +667,7 @@ async function runServe(args: string[]): Promise<void> {
       if (serveConfig.transport.kind === "socket") {
         removePidFile(daemonPaths.pidPath);
       }
+      removePidFile(daemonPaths.metadataPath);
       process.exit(0);
     });
   };
@@ -670,6 +682,7 @@ async function runDaemon(args: string[]): Promise<void> {
     homeDirOverride: takeFlagValue(args, "--home"),
     socketPathOverride: takeFlagValue(args, "--socket"),
     baseUrlOverride: takeFlagValue(args, "--url"),
+    logLevelOverride: parseLogLevel(takeFlagValue(args, "--log-level") ?? process.env.AGENTINBOX_LOG_LEVEL),
   };
 
   if (action === "start") {
@@ -1001,13 +1014,13 @@ Commands:
     serve: `agentinbox serve
 
 Usage:
-  agentinbox serve [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+  agentinbox serve [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock] [--log-level error|warn|info|debug|trace]
   agentinbox serve --port 4747 [--state ~/.agentinbox/agentinbox.sqlite]
 `,
     daemon: `agentinbox daemon
 
 Usage:
-  agentinbox daemon start [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+  agentinbox daemon start [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock] [--log-level error|warn|info|debug|trace]
   agentinbox daemon stop [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
   agentinbox daemon status [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
 `,

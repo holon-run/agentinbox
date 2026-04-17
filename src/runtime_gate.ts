@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { TerminalActivationTarget } from "./model";
+import { Logger, NoopLogger } from "./logging";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_ITERM2_SAMPLE_DELAY_MS = 900;
@@ -51,18 +52,27 @@ export interface ActivationGate {
 }
 
 export class DefaultActivationGate implements ActivationGate {
+  private readonly runtimeProbes: RuntimePresenceProbe[];
+  private readonly terminalProbes: TerminalStateProbe[];
+  private readonly logger: Logger;
+
   constructor(
-    private readonly runtimeProbes: RuntimePresenceProbe[] = [
-      new CodexRuntimePresenceProbe(),
-      new ClaudeCodeRuntimePresenceProbe(),
-    ],
-    private readonly terminalProbes: TerminalStateProbe[] = [
-      new CodexTerminalStateProbe(),
-      new Iterm2TerminalStateProbe(),
-      new ClaudeCodeTerminalStateProbe(),
-      new TmuxTerminalStateProbe(),
-    ],
-  ) {}
+    runtimeProbes?: RuntimePresenceProbe[],
+    terminalProbes?: TerminalStateProbe[],
+    logger: Logger = new NoopLogger(),
+  ) {
+    this.logger = logger.child("activation_gate");
+    this.runtimeProbes = runtimeProbes ?? [
+      new CodexRuntimePresenceProbe(undefined, undefined, this.logger.child("codex_runtime")),
+      new ClaudeCodeRuntimePresenceProbe(undefined, undefined, this.logger.child("claude_runtime")),
+    ];
+    this.terminalProbes = terminalProbes ?? [
+      new CodexTerminalStateProbe(undefined, undefined, undefined, undefined, undefined, this.logger.child("codex_terminal")),
+      new Iterm2TerminalStateProbe(undefined, {}, this.logger.child("iterm2_terminal")),
+      new ClaudeCodeTerminalStateProbe(undefined, undefined, undefined, this.logger.child("claude_terminal")),
+      new TmuxTerminalStateProbe(undefined, {}, this.logger.child("tmux_terminal")),
+    ];
+  }
 
   async evaluate(target: TerminalActivationTarget): Promise<{
     outcome: "inject" | "defer" | "offline";
@@ -71,6 +81,18 @@ export class DefaultActivationGate implements ActivationGate {
     const runtimeProbe = this.runtimeProbes.find((probe) => probe.supports(target));
     const runtimePresence = runtimeProbe ? await runtimeProbe.check(target) : "unknown";
     if (runtimePresence === "gone") {
+      this.logger.debug("gate_decision", {
+        targetId: target.targetId,
+        runtimeKind: target.runtimeKind,
+        backend: target.backend,
+        runtimeProbe: runtimeProbe?.constructor?.name ?? null,
+        runtimePresence,
+        terminalProbe: null,
+        terminalPresence: null,
+        terminalBusy: null,
+        outcome: "offline",
+        reason: "runtime_gone",
+      });
       return { outcome: "offline", reason: "runtime_gone" };
     }
     const terminalProbe = this.terminalProbes.find((probe) => probe.supports(target));
@@ -79,14 +101,62 @@ export class DefaultActivationGate implements ActivationGate {
       : { presence: "unknown" as const, busy: "unknown" as const };
 
     if (terminalState.presence === "gone") {
+      this.logger.debug("gate_decision", {
+        targetId: target.targetId,
+        runtimeKind: target.runtimeKind,
+        backend: target.backend,
+        runtimeProbe: runtimeProbe?.constructor?.name ?? null,
+        runtimePresence,
+        terminalProbe: terminalProbe?.constructor?.name ?? null,
+        terminalPresence: terminalState.presence,
+        terminalBusy: terminalState.busy,
+        outcome: "offline",
+        reason: "terminal_gone",
+      });
       return { outcome: "offline", reason: "terminal_gone" };
     }
     if (terminalState.busy === "busy") {
+      this.logger.debug("gate_decision", {
+        targetId: target.targetId,
+        runtimeKind: target.runtimeKind,
+        backend: target.backend,
+        runtimeProbe: runtimeProbe?.constructor?.name ?? null,
+        runtimePresence,
+        terminalProbe: terminalProbe?.constructor?.name ?? null,
+        terminalPresence: terminalState.presence,
+        terminalBusy: terminalState.busy,
+        outcome: "defer",
+        reason: "terminal_busy",
+      });
       return { outcome: "defer", reason: "terminal_busy" };
     }
     if (target.runtimeKind === "codex" && terminalState.busy === "idle") {
+      this.logger.debug("gate_decision", {
+        targetId: target.targetId,
+        runtimeKind: target.runtimeKind,
+        backend: target.backend,
+        runtimeProbe: runtimeProbe?.constructor?.name ?? null,
+        runtimePresence,
+        terminalProbe: terminalProbe?.constructor?.name ?? null,
+        terminalPresence: terminalState.presence,
+        terminalBusy: terminalState.busy,
+        outcome: "defer",
+        reason: "terminal_recently_active",
+      });
       return { outcome: "defer", reason: "terminal_recently_active" };
     }
+    this.logger.debug("gate_decision", {
+      targetId: target.targetId,
+      runtimeKind: target.runtimeKind,
+      backend: target.backend,
+      runtimeProbe: runtimeProbe?.constructor?.name ?? null,
+      runtimePresence,
+      terminalProbe: terminalProbe?.constructor?.name ?? null,
+      terminalPresence: terminalState.presence,
+      terminalBusy: terminalState.busy,
+      outcome: "inject",
+      reason: "gate_unknown_or_idle",
+    });
     return { outcome: "inject", reason: "gate_unknown_or_idle" };
   }
 }
@@ -95,6 +165,7 @@ export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
   constructor(
     private readonly killFn: (pid: number, signal: number) => void = (pid, signal) => process.kill(pid, signal),
     private readonly sessionFileReader?: (sessionId: string) => Promise<CodexSessionLookupResult>,
+    private readonly logger: Logger = new NoopLogger(),
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -103,26 +174,33 @@ export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
 
   async check(target: TerminalActivationTarget): Promise<RuntimePresenceStatus> {
     if (!Number.isInteger(target.runtimePid)) {
+      this.logger.trace("probe_result", { targetId: target.targetId, result: "unknown", reason: "missing_runtime_pid" });
       return "unknown";
     }
     try {
       this.killFn(target.runtimePid!, 0);
       if (!target.runtimeSessionId) {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "unknown", reason: "missing_runtime_session_id" });
         return "unknown";
       }
       const sessionInfo = await (this.sessionFileReader ?? defaultCodexSessionFileReader)(target.runtimeSessionId);
       if (sessionInfo === "unknown") {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "unknown", reason: "session_file_unknown" });
         return "unknown";
       }
       if (!sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "gone", reason: "session_file_mismatch" });
         return "gone";
       }
+      this.logger.trace("probe_result", { targetId: target.targetId, result: "alive" });
       return "alive";
     } catch (error) {
       const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : "";
       if (code === "ESRCH") {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "gone", reason: "process_missing" });
         return "gone";
       }
+      this.logger.debug("probe_error", { targetId: target.targetId, error, result: "unknown" });
       return "unknown";
     }
   }
@@ -135,6 +213,7 @@ export class CodexTerminalStateProbe implements TerminalStateProbe {
     private readonly sessionFileReader?: (sessionId: string) => Promise<CodexSessionLookupResult>,
     private readonly statReader?: (filePath: string) => Promise<{ mtimeMs: number } | null>,
     private readonly nowFn: () => number = () => Date.now(),
+    private readonly logger: Logger = new NoopLogger(),
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -147,26 +226,66 @@ export class CodexTerminalStateProbe implements TerminalStateProbe {
   }> {
     const terminalState = await this.readTerminalState(target);
     if (!target.runtimeSessionId) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: terminalState,
+        reason: "missing_runtime_session_id",
+      });
       return terminalState;
     }
     const sessionInfo = await (this.sessionFileReader ?? defaultCodexSessionFileReader)(target.runtimeSessionId);
     if (sessionInfo === "unknown" || !sessionInfo || sessionInfo.sessionId !== target.runtimeSessionId) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: terminalState,
+        reason: "session_file_unavailable",
+      });
       return terminalState;
     }
     const stat = await (this.statReader ?? defaultFileStatReader)(sessionInfo.filePath);
     if (!stat) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: terminalState,
+        reason: "session_file_stat_missing",
+      });
       return terminalState;
     }
     if (terminalState.busy === "busy" || terminalState.presence === "gone") {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: terminalState,
+        reason: "terminal_probe_decisive",
+      });
       return terminalState;
     }
     const ageMs = this.nowFn() - stat.mtimeMs;
     if (ageMs < 5000) {
-      return { presence: terminalState.presence, busy: "busy" };
+      const result = { presence: terminalState.presence, busy: "busy" as const };
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result,
+        reason: "session_file_recent_activity",
+        ageMs,
+      });
+      return result;
     }
     if (ageMs < 30000) {
-      return { presence: terminalState.presence, busy: "idle" };
+      const result = { presence: terminalState.presence, busy: "idle" as const };
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result,
+        reason: "session_file_recently_active",
+        ageMs,
+      });
+      return result;
     }
+    this.logger.trace("probe_result", {
+      targetId: target.targetId,
+      result: terminalState,
+      reason: "session_file_stale",
+      ageMs,
+    });
     return terminalState;
   }
 
@@ -194,6 +313,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       sleep?: (ms: number) => Promise<void>;
       enablePythonProbe?: boolean;
     } = {},
+    private readonly logger: Logger = new NoopLogger(),
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -213,6 +333,11 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
   }> {
     const sessionId = target.itermSessionId?.trim();
     if (!sessionId) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: { presence: "unknown", busy: "unknown" },
+        reason: "missing_iterm_session_id",
+      });
       return { presence: "unknown", busy: "unknown" };
     }
 
@@ -220,12 +345,29 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     if (this.options.enablePythonProbe !== false) {
       const pythonResult = await this.tryPythonApiProbe(sessionId, target.runtimeKind);
       if (pythonResult && pythonResult.presence !== "unknown") {
+        this.logger.debug("probe_result", {
+          targetId: target.targetId,
+          path: "python",
+          result: pythonResult,
+        });
         return pythonResult;
       }
+      this.logger.trace("probe_fallback", {
+        targetId: target.targetId,
+        from: "python",
+        to: "cli",
+        reason: pythonResult ? "python_presence_unknown" : "python_probe_unavailable",
+      });
     }
 
     // Fallback to command-line tools
-    return this.checkWithCommandLineTools(sessionId);
+    const result = await this.checkWithCommandLineTools(sessionId, target.targetId);
+    this.logger.debug("probe_result", {
+      targetId: target.targetId,
+      path: "cli",
+      result,
+    });
+    return result;
   }
 
   private async tryPythonApiProbe(
@@ -241,6 +383,11 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       const data = JSON.parse(result.stdout);
 
       if (data.status === "gone") {
+        this.logger.trace("probe_python_result", {
+          sessionId,
+          result: { presence: "gone", busy: "unknown" },
+          reason: "session_gone",
+        });
         return { presence: "gone", busy: "unknown" };
       }
 
@@ -263,6 +410,11 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
 
           // If cursor-aware detection indicates busy, return immediately
           if (busyStatus === "busy") {
+            this.logger.trace("probe_python_result", {
+              sessionId,
+              result: { presence: "available", busy: "busy" },
+              reason: "cursor_aware_busy",
+            });
             return { presence: "available", busy: "busy" };
           }
 
@@ -277,18 +429,33 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
 
             if (secondData.status === "available" && secondData.lines) {
               const secondBufferTail = secondData.lines.join("\n");
-              if (bufferTail !== secondBufferTail) {
-                return { presence: "available", busy: "busy" };
-              }
-            }
-
-            // Check for active buffer markers
-            if (containsActiveBufferMarker(bufferTail)) {
+            if (bufferTail !== secondBufferTail) {
+                this.logger.trace("probe_python_result", {
+                  sessionId,
+                  result: { presence: "available", busy: "busy" },
+                  reason: "buffer_changed",
+                });
               return { presence: "available", busy: "busy" };
             }
-
-            return { presence: "available", busy: "idle" };
           }
+
+          // Check for active buffer markers
+          if (containsActiveBufferMarker(bufferTail)) {
+            this.logger.trace("probe_python_result", {
+              sessionId,
+              result: { presence: "available", busy: "busy" },
+              reason: "active_buffer_marker",
+            });
+            return { presence: "available", busy: "busy" };
+          }
+
+          this.logger.trace("probe_python_result", {
+            sessionId,
+            result: { presence: "available", busy: "idle" },
+            reason: "cursor_aware_not_busy",
+          });
+          return { presence: "available", busy: "idle" };
+        }
 
           // If cursor-aware detection is uncertain, fall back to buffer change detection only
           // Do NOT use generic typing prompts to avoid false positives (see #116)
@@ -301,45 +468,90 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
 
             if (secondData.status === "available" && secondData.lines) {
               const secondBufferTail = secondData.lines.join("\n");
-              if (bufferTail !== secondBufferTail) {
-                return { presence: "available", busy: "busy" };
-              }
-            }
-
-            // Check for active buffer markers
-            if (containsActiveBufferMarker(bufferTail)) {
+            if (bufferTail !== secondBufferTail) {
+                this.logger.trace("probe_python_result", {
+                  sessionId,
+                  result: { presence: "available", busy: "busy" },
+                  reason: "buffer_changed_after_unknown_cursor_state",
+                });
               return { presence: "available", busy: "busy" };
             }
+          }
+
+            // Check for active buffer markers
+          if (containsActiveBufferMarker(bufferTail)) {
+            this.logger.trace("probe_python_result", {
+              sessionId,
+              result: { presence: "available", busy: "busy" },
+              reason: "active_buffer_marker_after_unknown_cursor_state",
+            });
+            return { presence: "available", busy: "busy" };
+          }
 
             // Return unknown when cursor-aware detection is uncertain
             // Do NOT fall back to generic typing prompts to avoid false positives
+            this.logger.trace("probe_python_result", {
+              sessionId,
+              result: { presence: "available", busy: "unknown" },
+              reason: "cursor_aware_unknown",
+            });
             return { presence: "available", busy: "unknown" };
           }
 
           // This should never be reached as all cases are handled above
+          this.logger.trace("probe_python_result", {
+            sessionId,
+            result: { presence: "available", busy: "unknown" },
+            reason: "cursor_probe_fell_through",
+          });
           return { presence: "available", busy: "unknown" };
         }
 
         // If we don't have cursor data, return unknown to trigger fallback
+        this.logger.trace("probe_python_result", {
+          sessionId,
+          result: null,
+          reason: "missing_cursor_data",
+        });
         return null;
       }
 
       // Any other status means we should fall back
+      this.logger.trace("probe_python_result", {
+        sessionId,
+        result: null,
+        reason: "unexpected_python_status",
+        status: data.status,
+      });
       return null;
-    } catch {
+    } catch (error) {
       // Python API probe failed, fall back to command-line tools
+      this.logger.trace("probe_fallback", {
+        sessionId,
+        from: "python",
+        to: "cli",
+        reason: "python_probe_error",
+        error,
+      });
       return null;
     }
   }
 
-  private async checkWithCommandLineTools(sessionId: string): Promise<{
+  private async checkWithCommandLineTools(sessionId: string, targetId?: string): Promise<{
     presence: TerminalPresenceStatus;
     busy: TerminalBusyStatus;
   }> {
     let it2api: string;
     try {
       it2api = resolveIterm2ApiPath(this.options.iterm2ApiPath);
-    } catch {
+    } catch (error) {
+      this.logger.trace("probe_fallback", {
+        targetId,
+        from: "cli",
+        to: null,
+        reason: "it2api_unavailable",
+        error,
+      });
       return { presence: "unknown", busy: "unknown" };
     }
 
@@ -360,12 +572,27 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     }
 
     if (first !== second) {
+      this.logger.trace("probe_cli_result", {
+        sessionId,
+        result: { presence: "available", busy: "busy" },
+        reason: "buffer_changed",
+      });
       return { presence: "available", busy: "busy" };
     }
     if (containsActiveBufferMarker(second)) {
+      this.logger.trace("probe_cli_result", {
+        sessionId,
+        result: { presence: "available", busy: "busy" },
+        reason: "active_buffer_marker",
+      });
       return { presence: "available", busy: "busy" };
     }
     // Do NOT use generic typing prompts to avoid false positives (see #116)
+    this.logger.trace("probe_cli_result", {
+      sessionId,
+      result: { presence: "available", busy: "unknown" },
+      reason: "stable_quiet_buffer",
+    });
     return { presence: "available", busy: "unknown" };
   }
 
@@ -374,7 +601,13 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       const result = await this.execAsync(it2api, ["list-sessions"]);
       const sessionIds = parseIterm2SessionIds(result.stdout);
       return sessionIds.includes(sessionId) ? "available" : "gone";
-    } catch {
+    } catch (error) {
+      this.logger.trace("probe_error", {
+        sessionId,
+        step: "list_sessions",
+        error,
+        result: "unknown",
+      });
       return "unknown";
     }
   }
@@ -404,6 +637,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
       sampleDelayMs?: number;
       sleep?: (ms: number) => Promise<void>;
     } = {},
+    private readonly logger: Logger = new NoopLogger(),
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -416,17 +650,40 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
   }> {
     const paneId = target.tmuxPaneId?.trim();
     if (!paneId) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: { presence: "unknown", busy: "unknown" },
+        reason: "missing_tmux_pane_id",
+      });
       return { presence: "unknown", busy: "unknown" };
     }
 
     const paneState = await this.readPaneState(paneId);
     if (paneState === "missing") {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        paneId,
+        result: { presence: "gone", busy: "unknown" },
+        reason: "pane_missing",
+      });
       return { presence: "gone", busy: "unknown" };
     }
     if (paneState === "unknown") {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        paneId,
+        result: { presence: "unknown", busy: "unknown" },
+        reason: "pane_state_unknown",
+      });
       return { presence: "unknown", busy: "unknown" };
     }
     if (paneState.dead) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        paneId,
+        result: { presence: "gone", busy: "unknown" },
+        reason: "pane_dead",
+      });
       return { presence: "gone", busy: "unknown" };
     }
 
@@ -441,17 +698,41 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     }
 
     if (first !== second) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        paneId,
+        result: { presence: "available", busy: "busy" },
+        reason: "buffer_changed",
+      });
       return { presence: "available", busy: "busy" };
     }
     if (containsActiveBufferMarker(second)) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        paneId,
+        result: { presence: "available", busy: "busy" },
+        reason: "active_buffer_marker",
+      });
       return { presence: "available", busy: "busy" };
     }
     // Use cursor-aware detection when available
     const cursorHint = evaluateCursorAwareTypingPrompt(target, paneState, second);
     if (cursorHint === "busy") {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        paneId,
+        result: { presence: "available", busy: "busy" },
+        reason: "cursor_aware_busy",
+      });
       return { presence: "available", busy: "busy" };
     }
     // Do NOT fall back to generic typing prompts when cursorHint is unknown to avoid false positives (see #116)
+    this.logger.trace("probe_result", {
+      targetId: target.targetId,
+      paneId,
+      result: { presence: "available", busy: "unknown" },
+      reason: cursorHint === "not_busy" ? "cursor_aware_not_busy" : "cursor_aware_unknown",
+    });
     return { presence: "available", busy: "unknown" };
   }
 
@@ -746,6 +1027,7 @@ export class ClaudeCodeRuntimePresenceProbe implements RuntimePresenceProbe {
   constructor(
     private readonly killFn: (pid: number, signal: number) => void = (pid, signal) => process.kill(pid, signal),
     private readonly sessionFileReader?: (pid: number) => Promise<{ sessionId: string; cwd: string } | null>,
+    private readonly logger: Logger = new NoopLogger(),
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -754,6 +1036,7 @@ export class ClaudeCodeRuntimePresenceProbe implements RuntimePresenceProbe {
 
   async check(target: TerminalActivationTarget): Promise<RuntimePresenceStatus> {
     if (!Number.isInteger(target.runtimePid)) {
+      this.logger.trace("probe_result", { targetId: target.targetId, result: "unknown", reason: "missing_runtime_pid" });
       return "unknown";
     }
 
@@ -764,20 +1047,25 @@ export class ClaudeCodeRuntimePresenceProbe implements RuntimePresenceProbe {
       // 2. Verify session file exists and is valid
       const sessionInfo = await (this.sessionFileReader ?? this.defaultSessionFileReader)(target.runtimePid!);
       if (!sessionInfo) {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "gone", reason: "session_file_missing" });
         return "gone"; // Process exists but session file is invalid/missing
       }
 
       // 3. Verify session ID matches (prevent PID reuse)
       if (target.runtimeSessionId && sessionInfo.sessionId !== target.runtimeSessionId) {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "gone", reason: "session_id_mismatch" });
         return "gone";
       }
 
+      this.logger.trace("probe_result", { targetId: target.targetId, result: "alive" });
       return "alive";
     } catch (error) {
       const code = error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code ?? "") : "";
       if (code === "ESRCH") {
+        this.logger.trace("probe_result", { targetId: target.targetId, result: "gone", reason: "process_missing" });
         return "gone"; // Process doesn't exist
       }
+      this.logger.debug("probe_error", { targetId: target.targetId, error, result: "unknown" });
       return "unknown";
     }
   }
@@ -810,6 +1098,7 @@ export class ClaudeCodeTerminalStateProbe implements TerminalStateProbe {
     private readonly sessionFileReader?: (pid: number) => Promise<{ sessionId: string; cwd: string } | null>,
     private readonly logFileStatReader?: (path: string) => Promise<{ mtimeMs: number } | null>,
     private readonly sleepFn: (ms: number) => Promise<void> = sleep,
+    private readonly logger: Logger = new NoopLogger(),
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -821,6 +1110,11 @@ export class ClaudeCodeTerminalStateProbe implements TerminalStateProbe {
     busy: TerminalBusyStatus;
   }> {
     if (!target.runtimePid || !target.runtimeSessionId) {
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: { presence: "unknown", busy: "unknown" },
+        reason: "missing_runtime_identity",
+      });
       return { presence: "unknown", busy: "unknown" };
     }
 
@@ -828,11 +1122,21 @@ export class ClaudeCodeTerminalStateProbe implements TerminalStateProbe {
       // 1. Read session file to get cwd
       const sessionData = await (this.sessionFileReader ?? this.defaultSessionFileReader)(target.runtimePid);
       if (!sessionData) {
+        this.logger.trace("probe_result", {
+          targetId: target.targetId,
+          result: { presence: "gone", busy: "unknown" },
+          reason: "session_file_missing",
+        });
         return { presence: "gone", busy: "unknown" };
       }
 
       // 2. Verify session ID matches
       if (sessionData.sessionId !== target.runtimeSessionId) {
+        this.logger.trace("probe_result", {
+          targetId: target.targetId,
+          result: { presence: "gone", busy: "unknown" },
+          reason: "session_id_mismatch",
+        });
         return { presence: "gone", busy: "unknown" };
       }
 
@@ -848,10 +1152,18 @@ export class ClaudeCodeTerminalStateProbe implements TerminalStateProbe {
         ? await this.checkIterm2Presence(target.itermSessionId)
         : "available";
 
+      this.logger.trace("probe_result", {
+        targetId: target.targetId,
+        result: { presence, busy },
+      });
       return { presence, busy };
 
     } catch (error) {
-      console.warn('Claude Code state check failed:', error);
+      this.logger.debug("probe_error", {
+        targetId: target.targetId,
+        error,
+        result: { presence: "unknown", busy: "unknown" },
+      });
       return { presence: "unknown", busy: "unknown" };
     }
   }

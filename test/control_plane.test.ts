@@ -133,6 +133,7 @@ test("resolveDaemonPaths derives pid and log files from AGENTINBOX_HOME", () => 
   assert.deepEqual(paths, {
     pidPath: path.join(homeDir, "agentinbox.pid"),
     logPath: path.join(homeDir, "agentinbox.log"),
+    metadataPath: path.join(homeDir, "agentinbox.daemon.json"),
   });
 });
 
@@ -182,6 +183,7 @@ test("daemonStatus removes stale pid files", async () => {
     });
     assert.equal(status.running, false);
     assert.equal(status.pid, null);
+    assert.equal(status.logLevel, null);
     assert.equal(fs.existsSync(pidPath), false);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -217,6 +219,7 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
     const parsedDaemon = JSON.parse(daemonState.stdout) as {
       running: boolean;
       pid: number | null;
+      logLevel: string | null;
       version: string | null;
       startedAt: string | null;
       command: string | null;
@@ -226,6 +229,7 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
     };
     assert.equal(parsedDaemon.running, true);
     assert.ok(parsedDaemon.pid && parsedDaemon.pid > 0);
+    assert.equal(parsedDaemon.logLevel, "info");
     assert.equal(parsedDaemon.version, packageVersion.version);
     assert.equal(typeof parsedDaemon.command, "string");
     assert.ok(parsedDaemon.command && parsedDaemon.command.includes("serve"));
@@ -243,6 +247,45 @@ test("cli auto-starts the daemon for normal commands and daemon stop shuts it do
     assert.equal(stopped.status, 0, stopped.stderr);
     const parsedStopped = JSON.parse(stopped.stdout) as { running: boolean };
     assert.equal(parsedStopped.running, false);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("daemon status surfaces the configured log level", () => {
+  const repoDir = path.resolve(__dirname, "..");
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-daemon-log-level-home-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+  };
+  try {
+    const started = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "start", "--log-level", "debug"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 25_000,
+    });
+    assert.equal(started.status, 0, started.stderr);
+
+    const daemonState = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "status"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 25_000,
+    });
+    assert.equal(daemonState.status, 0, daemonState.stderr);
+    const parsedDaemon = JSON.parse(daemonState.stdout) as { running: boolean; logLevel: string | null };
+    assert.equal(parsedDaemon.running, true);
+    assert.equal(parsedDaemon.logLevel, "debug");
+
+    const stopped = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "stop"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 25_000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }

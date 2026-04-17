@@ -37,6 +37,7 @@ export interface ResolvedServeConfig {
 export interface DaemonPaths {
   pidPath: string;
   logPath: string;
+  metadataPath: string;
 }
 
 export function resolveAgentInboxHome(
@@ -110,6 +111,7 @@ export function resolveDaemonPaths(
   return {
     pidPath: path.join(homeDir, "agentinbox.pid"),
     logPath: path.join(homeDir, "agentinbox.log"),
+    metadataPath: path.join(homeDir, "agentinbox.daemon.json"),
   };
 }
 
