@@ -1717,6 +1717,7 @@ export class AgentInboxService {
   private upsertTerminalActivationTarget(agentId: string, input: RegisterAgentInput, now: string): TerminalActivationTarget {
     const existing = findExistingTerminalActivationTarget(this.store, input);
     if (existing) {
+      const existingPolicy = notificationPolicyForTarget(existing);
       const target = this.store.updateTerminalActivationTargetHeartbeat(existing.targetId, {
         runtimeKind: input.runtimeKind ?? "unknown",
         runtimeSessionId: input.runtimeSessionId ?? null,
@@ -1725,8 +1726,8 @@ export class AgentInboxService {
         tty: input.tty ?? null,
         termProgram: input.termProgram ?? null,
         itermSessionId: input.itermSessionId ?? null,
-        notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
-        minUnackedItems: input.minUnackedItems ?? null,
+        notifyLeaseMs: input.notifyLeaseMs ?? existingPolicy.notifyLeaseMs,
+        minUnackedItems: input.minUnackedItems ?? existingPolicy.minUnackedItems ?? null,
         updatedAt: now,
         lastSeenAt: now,
       });

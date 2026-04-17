@@ -833,8 +833,8 @@ export class AgentInboxStore {
       tty?: string | null;
       termProgram?: string | null;
       itermSessionId?: string | null;
-      notifyLeaseMs?: number;
-      minUnackedItems?: number | null;
+      notifyLeaseMs: number;
+      minUnackedItems: number | null;
       updatedAt: string;
       lastSeenAt: string;
     },
@@ -854,8 +854,8 @@ export class AgentInboxStore {
         input.tty ?? null,
         input.termProgram ?? null,
         input.itermSessionId ?? null,
-        input.notifyLeaseMs ?? null,
-        input.minUnackedItems ?? null,
+        input.notifyLeaseMs,
+        input.minUnackedItems,
         input.updatedAt,
         input.lastSeenAt,
         targetId,

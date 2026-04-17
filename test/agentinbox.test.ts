@@ -2679,6 +2679,44 @@ test("lease reminders stay suppressed while unacked items remain below minUnacke
   }
 });
 
+test("re-registering a terminal agent preserves notification policy when flags are omitted", async () => {
+  const { service, dir, store } = await makeService({
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-policy-preserve",
+      tmuxPaneId: "%422",
+      notifyLeaseMs: 250,
+      minUnackedItems: 4,
+    });
+
+    const rebound = service.registerAgent({
+      agentId: registered.agent.agentId,
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-policy-preserve",
+      tmuxPaneId: "%422",
+    });
+
+    assert.equal(rebound.terminalTarget.targetId, registered.terminalTarget.targetId);
+    assert.equal(rebound.terminalTarget.notifyLeaseMs, 250);
+    assert.equal(rebound.terminalTarget.minUnackedItems, 4);
+    assert.deepEqual(rebound.terminalTarget.notificationPolicy, {
+      notifyLeaseMs: 250,
+      minUnackedItems: 4,
+    });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("terminal activation prompts use the current unacked inbox total", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { service, dir, store } = await makeService({
