@@ -60,6 +60,25 @@ class FixedActivationGate implements ActivationGate {
   }
 }
 
+class MutableActivationGate implements ActivationGate {
+  constructor(
+    private outcome: "inject" | "defer" | "offline",
+    private reason = "test",
+  ) {}
+
+  set(outcome: "inject" | "defer" | "offline", reason = this.reason): void {
+    this.outcome = outcome;
+    this.reason = reason;
+  }
+
+  async evaluate(_target: TerminalActivationTarget): Promise<{ outcome: "inject" | "defer" | "offline"; reason: string }> {
+    return {
+      outcome: this.outcome,
+      reason: this.reason,
+    };
+  }
+}
+
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
     namespace: string;
@@ -1532,6 +1551,11 @@ test("subscription remove preserves unrelated activation dispatch state", async 
       status: "notified",
       leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       lastNotifiedFingerprint: null,
+      deferReason: null,
+      deferAttempts: 0,
+      firstDeferredAt: null,
+      lastDeferredAt: null,
+      pendingFingerprint: null,
       pendingNewItemCount: 1,
       pendingSummary: "standing-subscription",
       pendingSubscriptionIds: [first.subscriptionId],
@@ -3708,7 +3732,217 @@ test("busy terminal gate defers activation without counting a dispatch failure",
     const states = store.listActivationDispatchStatesForAgent(registered.agent.agentId);
     assert.equal(states.length, 1);
     assert.equal(states[0]?.status, "dirty");
+    assert.equal(states[0]?.deferReason, "terminal_busy");
+    assert.equal(states[0]?.deferAttempts, 1);
+    assert.ok(states[0]?.pendingFingerprint);
     assert.equal(states[0]?.pendingNewItemCount, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("busy terminal defer uses capped exponential backoff", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const activationGate = new MutableActivationGate("defer", "terminal_busy");
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "iterm2",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-busy-backoff",
+      runtimePid: 4242,
+      itermSessionId: "SESSION-BUSY-BACKOFF",
+      termProgram: "iTerm.app",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "busy-gate-backoff",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-busy-backoff-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    for (const [attempt, expectedRetryMs] of [[2, 10_000], [3, 20_000], [4, 40_000], [5, 80_000], [6, 160_000], [7, 300_000]] as const) {
+      const current = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+      store.upsertActivationDispatchState({
+        ...current,
+        leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+        updatedAt: nowIso(),
+      });
+      await (service as any).syncActivationDispatchStates();
+      await sleep(20);
+
+      const next = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+      assert.equal(next.deferAttempts, attempt);
+      const retryMs = Date.parse(next.leaseExpiresAt!) - Date.now();
+      assert.ok(retryMs <= expectedRetryMs && retryMs >= expectedRetryMs - 2_000);
+    }
+    const finalState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.equal(finalState.deferReason, "terminal_busy");
+    assert.equal(terminalDispatcher.calls.length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("busy terminal defer keeps only the latest pending reminder fingerprint", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const activationGate = new MutableActivationGate("defer", "terminal_busy");
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-busy-latest-only",
+      tmuxPaneId: "%137",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "busy-gate-latest-only",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-busy-latest-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    const firstState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const firstFingerprint = firstState.pendingFingerprint;
+    assert.ok(firstFingerprint);
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-busy-latest-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    const secondState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.notEqual(secondState.pendingFingerprint, firstFingerprint);
+    assert.equal(secondState.deferAttempts, 1);
+
+    activationGate.set("inject", "gate_unknown_or_idle");
+    store.upsertActivationDispatchState({
+      ...secondState,
+      leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      updatedAt: nowIso(),
+    });
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 2 unacked items in inbox/);
+    const delivered = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.equal(delivered.lastNotifiedFingerprint, secondState.pendingFingerprint);
+    assert.equal(delivered.pendingFingerprint, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate reopening suppresses duplicate terminal dispatches for an already-notified fingerprint", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const activationGate = new MutableActivationGate("inject", "gate_unknown_or_idle");
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-busy-duplicate-suppression",
+      tmuxPaneId: "%138",
+      notifyLeaseMs: 50,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "busy-gate-duplicate-suppression",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-duplicate-suppression-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const notifiedState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.ok(notifiedState.lastNotifiedFingerprint);
+
+    activationGate.set("inject", "gate_unknown_or_idle");
+    store.upsertActivationDispatchState({
+      ...notifiedState,
+      status: "dirty",
+      leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      pendingNewItemCount: 1,
+      pendingSummary: "local_event:busy-gate-duplicate-suppression:message.created",
+      pendingSubscriptionIds: [subscription.subscriptionId],
+      pendingSourceIds: [source.sourceId],
+      deferReason: "terminal_busy",
+      deferAttempts: 3,
+      firstDeferredAt: nowIso(),
+      lastDeferredAt: nowIso(),
+      pendingFingerprint: notifiedState.lastNotifiedFingerprint,
+      updatedAt: nowIso(),
+    });
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const suppressedState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.equal(suppressedState.status, "notified");
+    assert.equal(suppressedState.pendingFingerprint, null);
   } finally {
     await service.stop();
     store.close();

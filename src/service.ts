@@ -1,5 +1,6 @@
 import {
   Activation,
+  ActivationDispatchDeferReason,
   ActivationItem,
   ActivationTarget,
   AddWebhookActivationTargetInput,
@@ -80,6 +81,7 @@ const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
 const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
 const DEFAULT_NOTIFY_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_NOTIFY_RETRY_MS = 5_000;
+const MAX_TERMINAL_DEFER_RETRY_MS = 5 * 60 * 1000;
 const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
@@ -2053,6 +2055,11 @@ export class AgentInboxService {
               status: "dirty",
               leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
               lastNotifiedFingerprint: state.lastNotifiedFingerprint,
+              deferReason: null,
+              deferAttempts: 0,
+              firstDeferredAt: null,
+              lastDeferredAt: null,
+              pendingFingerprint: null,
               pendingNewItemCount: state.pendingNewItemCount + entries.length,
               pendingSummary: latestSummary(entries) ?? state.pendingSummary,
               pendingSubscriptionIds: uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
@@ -2064,16 +2071,58 @@ export class AgentInboxService {
           }
         }
       } else {
+        const target = this.getActivationTarget(buffer.targetId);
+        const inbox = this.ensureInboxForAgent(buffer.agentId);
+        const unackedItems = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
+        const mergedNewItemCount = state.pendingNewItemCount + entries.length;
+        const mergedSummary = latestSummary(entries) ?? state.pendingSummary;
+        const mergedSubscriptionIds = uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]);
+        const mergedSourceIds = uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]);
+        let deferReason = state.deferReason;
+        let deferAttempts = state.deferAttempts;
+        let firstDeferredAt = state.firstDeferredAt;
+        let lastDeferredAt = state.lastDeferredAt;
+        let pendingFingerprint = state.pendingFingerprint;
+        let leaseExpiresAt = state.leaseExpiresAt;
+        if (target.kind === "terminal" && state.status === "dirty" && state.leaseExpiresAt != null && state.deferReason) {
+          const reminder = await this.buildTerminalReminder(
+            target,
+            inbox.inboxId,
+            unackedItems.length,
+            mergedSummary,
+            unackedItems,
+          );
+          if (pendingFingerprint !== reminder.fingerprint) {
+            const deferredAt = nowIso();
+            pendingFingerprint = reminder.fingerprint;
+            deferAttempts = 1;
+            firstDeferredAt = deferredAt;
+            lastDeferredAt = deferredAt;
+            leaseExpiresAt = new Date(Date.now() + terminalDeferRetryMs(deferAttempts)).toISOString();
+            this.logger.debug("activation.defer_pending_replaced", {
+              agentId: buffer.agentId,
+              targetId: buffer.targetId,
+              deferReason: state.deferReason,
+              deferAttempts,
+              pendingFingerprint,
+            });
+          }
+        }
         this.store.upsertActivationDispatchState({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
           status: "dirty",
-          leaseExpiresAt: state.leaseExpiresAt,
+          leaseExpiresAt,
           lastNotifiedFingerprint: state.lastNotifiedFingerprint,
-          pendingNewItemCount: state.pendingNewItemCount + entries.length,
-          pendingSummary: latestSummary(entries) ?? state.pendingSummary,
-          pendingSubscriptionIds: uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
-          pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
+          deferReason,
+          deferAttempts,
+          firstDeferredAt,
+          lastDeferredAt,
+          pendingFingerprint,
+          pendingNewItemCount: mergedNewItemCount,
+          pendingSummary: mergedSummary,
+          pendingSubscriptionIds: mergedSubscriptionIds,
+          pendingSourceIds: mergedSourceIds,
           updatedAt: nowIso(),
         });
       }
@@ -2153,6 +2202,11 @@ export class AgentInboxService {
         ...state,
         status: "dirty",
         leaseExpiresAt: null,
+        deferReason: null,
+        deferAttempts: 0,
+        firstDeferredAt: null,
+        lastDeferredAt: null,
+        pendingFingerprint: null,
         pendingNewItemCount: state.pendingNewItemCount > 0 ? state.pendingNewItemCount : unacked,
         updatedAt: nowIso(),
       });
@@ -2195,6 +2249,11 @@ export class AgentInboxService {
         ...state,
         status: "dirty",
         leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+        deferReason: null,
+        deferAttempts: 0,
+        firstDeferredAt: null,
+        lastDeferredAt: null,
+        pendingFingerprint: null,
         updatedAt: nowIso(),
       });
     }
@@ -2233,6 +2292,11 @@ export class AgentInboxService {
         status: "dirty",
         leaseExpiresAt: null,
         lastNotifiedFingerprint: state?.lastNotifiedFingerprint ?? null,
+        deferReason: null,
+        deferAttempts: 0,
+        firstDeferredAt: null,
+        lastDeferredAt: null,
+        pendingFingerprint: null,
         pendingNewItemCount: input.newItemCount,
         pendingSummary: input.summary,
         pendingSubscriptionIds: uniqueSortedNullable(input.subscriptionIds),
@@ -2264,19 +2328,42 @@ export class AgentInboxService {
           this.reconcileAgentStatus(target.agentId);
           return "offline";
         }
+        const reminder = await this.buildTerminalReminder(
+          target,
+          inbox.inboxId,
+          totalUnackedCount,
+          input.summary,
+          input.entries,
+        );
+        const prompt = reminder.prompt;
+        const promptFingerprint = reminder.fingerprint;
+        terminalPrompt = prompt;
         if (gate.outcome === "defer") {
+          const deferReason = toActivationDispatchDeferReason(gate.reason);
+          const sameFingerprint = state?.pendingFingerprint === promptFingerprint
+            && state.deferReason === deferReason;
+          const deferAttempts = sameFingerprint ? state.deferAttempts + 1 : 1;
+          const deferredAt = nowIso();
+          const retryMs = terminalDeferRetryMs(deferAttempts);
           this.logger.debug("activation.dispatch_deferred", {
             agentId: input.agentId,
             targetId: target.targetId,
-            reason: gate.reason,
-            retryMs: DEFAULT_NOTIFY_RETRY_MS,
+            reason: deferReason,
+            retryMs,
+            deferAttempts,
+            pendingFingerprint: promptFingerprint,
           });
           this.store.upsertActivationDispatchState({
             agentId: input.agentId,
             targetId: input.targetId,
             status: "dirty",
-            leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+            leaseExpiresAt: new Date(Date.now() + retryMs).toISOString(),
             lastNotifiedFingerprint: state?.lastNotifiedFingerprint ?? null,
+            deferReason,
+            deferAttempts,
+            firstDeferredAt: sameFingerprint ? state?.firstDeferredAt ?? deferredAt : deferredAt,
+            lastDeferredAt: deferredAt,
+            pendingFingerprint: promptFingerprint,
             pendingNewItemCount: input.newItemCount,
             pendingSummary: input.summary,
             pendingSubscriptionIds: uniqueSortedNullable(input.subscriptionIds),
@@ -2285,28 +2372,14 @@ export class AgentInboxService {
           });
           return "deferred";
         }
-        let preview: string | null = null;
-        if (totalUnackedCount === 1 && input.entries.length === 1 && input.entries[0]?.kind === "item") {
-          const singleItem = input.entries[0].item;
-          const source = this.store.getSource(singleItem.sourceId);
-          if (source) {
-            try {
-              const sourcePreview = await this.adapters.deriveInlinePreview(source, singleItem);
-              preview = typeof sourcePreview === "string" ? normalizeInlinePreviewText(sourcePreview) : null;
-            } catch {
-              preview = null;
-            }
-          }
-          preview ??= deriveInlineItemPreview(singleItem, input.summary);
+        if (state?.pendingFingerprint && state.pendingFingerprint !== promptFingerprint) {
+          this.logger.debug("activation.defer_pending_revalidated", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            previousFingerprint: state.pendingFingerprint,
+            currentFingerprint: promptFingerprint,
+          });
         }
-        const prompt = renderAgentPrompt({
-          inboxId: inbox.inboxId,
-          totalUnackedCount,
-          summary: input.summary,
-          preview,
-        });
-        terminalPrompt = prompt;
-        const promptFingerprint = terminalReminderFingerprint(prompt, input.entries);
         if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
           this.logger.debug("activation.dispatch_suppressed", {
             agentId: input.agentId,
@@ -2319,6 +2392,11 @@ export class AgentInboxService {
             status: "notified",
             leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
             lastNotifiedFingerprint: promptFingerprint,
+            deferReason: null,
+            deferAttempts: 0,
+            firstDeferredAt: null,
+            lastDeferredAt: null,
+            pendingFingerprint: null,
             pendingNewItemCount: 0,
             pendingSummary: null,
             pendingSubscriptionIds: [],
@@ -2377,6 +2455,11 @@ export class AgentInboxService {
         lastNotifiedFingerprint: target.kind === "terminal"
           ? terminalReminderFingerprint(terminalPrompt ?? "", input.entries)
           : state?.lastNotifiedFingerprint ?? null,
+        deferReason: null,
+        deferAttempts: 0,
+        firstDeferredAt: null,
+        lastDeferredAt: null,
+        pendingFingerprint: null,
         pendingNewItemCount: 0,
         pendingSummary: null,
         pendingSubscriptionIds: [],
@@ -2428,12 +2511,50 @@ export class AgentInboxService {
       status: "dirty",
       leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
       lastNotifiedFingerprint: this.store.getActivationDispatchState(agentId, targetId)?.lastNotifiedFingerprint ?? null,
+      deferReason: null,
+      deferAttempts: 0,
+      firstDeferredAt: null,
+      lastDeferredAt: null,
+      pendingFingerprint: null,
       pendingNewItemCount: entries.length,
       pendingSummary: latestSummary(entries),
       pendingSubscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
       pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
       updatedAt: nowIso(),
     });
+  }
+
+  private async buildTerminalReminder(
+    target: TerminalActivationTarget,
+    inboxId: string,
+    totalUnackedCount: number,
+    summary: string | null,
+    entries: InboxEntry[],
+  ): Promise<{ prompt: string; fingerprint: string }> {
+    let preview: string | null = null;
+    if (totalUnackedCount === 1 && entries.length === 1 && entries[0]?.kind === "item") {
+      const singleItem = entries[0].item;
+      const source = this.store.getSource(singleItem.sourceId);
+      if (source) {
+        try {
+          const sourcePreview = await this.adapters.deriveInlinePreview(source, singleItem);
+          preview = typeof sourcePreview === "string" ? normalizeInlinePreviewText(sourcePreview) : null;
+        } catch {
+          preview = null;
+        }
+      }
+      preview ??= deriveInlineItemPreview(singleItem, summary);
+    }
+    const prompt = renderAgentPrompt({
+      inboxId,
+      totalUnackedCount,
+      summary,
+      preview,
+    });
+    return {
+      prompt,
+      fingerprint: terminalReminderFingerprint(prompt, entries),
+    };
   }
 
   private detectDirectInboxSender(env: NodeJS.ProcessEnv): string | null {
@@ -3328,6 +3449,19 @@ function terminalReminderFingerprint(prompt: string, items: InboxEntry[]): strin
       .sort((left, right) => left.localeCompare(right)),
   });
   return createHash("sha256").update(payload).digest("hex");
+}
+
+function toActivationDispatchDeferReason(reason: string): ActivationDispatchDeferReason {
+  if (reason === "terminal_recently_active") {
+    return reason;
+  }
+  return "terminal_busy";
+}
+
+function terminalDeferRetryMs(attempts: number): number {
+  const normalizedAttempts = Math.max(1, attempts);
+  const multiplier = 2 ** (normalizedAttempts - 1);
+  return Math.min(DEFAULT_NOTIFY_RETRY_MS * multiplier, MAX_TERMINAL_DEFER_RETRY_MS);
 }
 
 function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {

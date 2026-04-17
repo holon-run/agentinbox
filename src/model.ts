@@ -166,12 +166,21 @@ export interface TerminalActivationTarget extends ActivationTargetBase {
 
 export type ActivationTarget = WebhookActivationTarget | TerminalActivationTarget;
 
+export type ActivationDispatchDeferReason =
+  | "terminal_busy"
+  | "terminal_recently_active";
+
 export interface ActivationDispatchState {
   agentId: string;
   targetId: string;
   status: ActivationDispatchStatus;
   leaseExpiresAt: string | null;
   lastNotifiedFingerprint: string | null;
+  deferReason: ActivationDispatchDeferReason | null;
+  deferAttempts: number;
+  firstDeferredAt: string | null;
+  lastDeferredAt: string | null;
+  pendingFingerprint: string | null;
   pendingNewItemCount: number;
   pendingSummary: string | null;
   pendingSubscriptionIds: string[];
