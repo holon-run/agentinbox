@@ -213,13 +213,18 @@ async function readMigrationState(dbPath: string): Promise<{ appliedCount: numbe
   return { appliedCount, hasNewIndex };
 }
 
+function expectedMigrationCount(): number {
+  const migrationsDir = path.join(__dirname, "..", "drizzle", "migrations");
+  return fs.readdirSync(migrationsDir).filter((name) => /^\d+_.*\.sql$/.test(name)).length;
+}
+
 test("store migrates a new database using drizzle SQL migrations", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-new-"));
   const dbPath = path.join(dir, "agentinbox.sqlite");
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 9);
+    assert.equal(state.appliedCount, expectedMigrationCount());
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 0);
@@ -236,7 +241,7 @@ test("store upgrades a legacy v12 database with backup and forward migration", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, 9);
+    assert.equal(state.appliedCount, expectedMigrationCount());
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
     assert.equal(backups.length, 1);
