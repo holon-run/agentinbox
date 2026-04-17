@@ -18,6 +18,7 @@ import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
+import { compatSourceTypeForStream } from "./source_hosts";
 
 export interface SourceAdapter {
   ensureSource(source: SubscriptionSource): Promise<void>;
@@ -130,11 +131,12 @@ export class AdapterRegistry {
   }
 
   async pollSource(source: SubscriptionSource): Promise<SourcePollResult> {
-    const adapter = this.sourceAdapterFor(source.sourceType);
+    const compatSourceType = compatSourceTypeForStream(source);
+    const adapter = this.sourceAdapterFor(compatSourceType);
     if (!adapter.pollSource) {
       return {
         sourceId: source.sourceId,
-        sourceType: source.sourceType,
+        sourceType: compatSourceType,
         appended: 0,
         deduped: 0,
         eventsRead: 0,
@@ -145,23 +147,25 @@ export class AdapterRegistry {
   }
 
   async pauseSource(source: SubscriptionSource): Promise<void> {
-    const adapter = this.sourceAdapterFor(source.sourceType);
+    const compatSourceType = compatSourceTypeForStream(source);
+    const adapter = this.sourceAdapterFor(compatSourceType);
     if (!adapter.pauseSource) {
-      throw new Error(`source type ${source.sourceType} does not support pause`);
+      throw new Error(`source type ${compatSourceType} does not support pause`);
     }
     await adapter.pauseSource?.(source.sourceId);
   }
 
   async resumeSource(source: SubscriptionSource): Promise<void> {
-    const adapter = this.sourceAdapterFor(source.sourceType);
+    const compatSourceType = compatSourceTypeForStream(source);
+    const adapter = this.sourceAdapterFor(compatSourceType);
     if (!adapter.resumeSource) {
-      throw new Error(`source type ${source.sourceType} does not support resume`);
+      throw new Error(`source type ${compatSourceType} does not support resume`);
     }
     await adapter.resumeSource?.(source.sourceId);
   }
 
   async removeSource(source: SubscriptionSource): Promise<void> {
-    const adapter = this.sourceAdapterFor(source.sourceType);
+    const adapter = this.sourceAdapterFor(compatSourceTypeForStream(source));
     await adapter.removeSource?.(source.sourceId);
   }
 
@@ -180,7 +184,7 @@ export class AdapterRegistry {
   }
 
   async projectLifecycleSignal(source: SubscriptionSource, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
-    if (source.sourceType === "local_event") {
+    if (compatSourceTypeForStream(source) === "local_event") {
       return null;
     }
     return this.remoteSource.projectLifecycleSignal(source, rawPayload);
@@ -190,14 +194,14 @@ export class AdapterRegistry {
     source: SubscriptionSource,
     input: { name: string; args?: Record<string, unknown> },
   ): Promise<ExpandedSubscriptionInput | null> {
-    if (source.sourceType === "local_event") {
+    if (compatSourceTypeForStream(source) === "local_event") {
       return null;
     }
     return this.remoteSource.expandSubscriptionShortcut(source, input);
   }
 
   async deriveInlinePreview(source: SubscriptionSource, item: ActivationItem): Promise<string | null> {
-    if (source.sourceType === "local_event") {
+    if (compatSourceTypeForStream(source) === "local_event") {
       return null;
     }
     return this.remoteSource.deriveInlinePreview(source, item);
@@ -236,7 +240,7 @@ export class AdapterRegistry {
 
   private async resolveDeliveryModule(source: SubscriptionSource | null, handle: DeliveryHandle): Promise<RemoteSourceModule | null> {
     if (source) {
-      if (source.sourceType === "local_event") {
+      if (compatSourceTypeForStream(source) === "local_event") {
         return null;
       }
       return this.remoteModuleRegistry.resolve(source, this.homeDir);
@@ -254,6 +258,10 @@ export class AdapterRegistry {
 function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot"): SubscriptionSource {
   return {
     sourceId: `builtin:${sourceType}`,
+    hostId: `builtin-host:${sourceType}`,
+    streamKind: sourceType === "github_repo" ? "repo_events" : "message_events",
+    streamKey: sourceType,
+    compatSourceType: sourceType,
     sourceType,
     sourceKey: sourceType,
     status: "active",

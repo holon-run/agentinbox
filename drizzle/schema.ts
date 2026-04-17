@@ -1,7 +1,24 @@
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
+export const sourceHosts = sqliteTable("source_hosts", {
+  hostId: text("host_id").primaryKey(),
+  hostType: text("host_type").notNull(),
+  hostKey: text("host_key").notNull(),
+  configRef: text("config_ref"),
+  configJson: text("config_json").notNull(),
+  status: text("status").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  hostTypeKey: uniqueIndex("idx_source_hosts_type_key").on(table.hostType, table.hostKey),
+}));
+
 export const sources = sqliteTable("sources", {
   sourceId: text("source_id").primaryKey(),
+  hostId: text("host_id").notNull(),
+  streamKind: text("stream_kind").notNull(),
+  streamKey: text("stream_key").notNull(),
+  compatSourceType: text("compat_source_type"),
   sourceType: text("source_type").notNull(),
   sourceKey: text("source_key").notNull(),
   configRef: text("config_ref"),
@@ -12,6 +29,7 @@ export const sources = sqliteTable("sources", {
   updatedAt: text("updated_at").notNull(),
 }, (table) => ({
   sourceTypeKey: uniqueIndex("idx_sources_type_key").on(table.sourceType, table.sourceKey),
+  hostStreamKey: uniqueIndex("idx_sources_host_stream_key").on(table.hostId, table.streamKind, table.streamKey),
 }));
 
 export const sourceIdleStates = sqliteTable("source_idle_states", {

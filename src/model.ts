@@ -1,4 +1,5 @@
 export type SourceType = "local_event" | "remote_source" | "github_repo" | "github_repo_ci" | "feishu_bot";
+export type HostType = "local_event" | "remote_source" | "github" | "feishu";
 
 export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
 export type ActivationMode = "activation_only" | "activation_with_items";
@@ -18,8 +19,24 @@ export interface DeliveryHandle {
   replyMode?: string | null;
 }
 
-export interface SubscriptionSource {
+export interface SourceHost {
+  hostId: string;
+  hostType: HostType;
+  hostKey: string;
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+  status: "active" | "paused" | "error";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SourceStream {
   sourceId: string;
+  streamId?: string | null;
+  hostId?: string;
+  streamKind?: string;
+  streamKey?: string;
+  compatSourceType?: SourceType | null;
   sourceType: SourceType;
   sourceKey: string;
   configRef?: string | null;
@@ -29,6 +46,9 @@ export interface SubscriptionSource {
   createdAt: string;
   updatedAt: string;
 }
+
+// Deprecated compatibility alias. Product-level "sources" now resolve to streams.
+export type SubscriptionSource = SourceStream;
 
 export interface SourceIdleState {
   sourceId: string;
@@ -198,6 +218,32 @@ export interface DeliveryAttempt {
 export interface RegisterSourceInput {
   sourceType: SourceType;
   sourceKey: string;
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+}
+
+export interface RegisterHostInput {
+  hostType: HostType;
+  hostKey: string;
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+}
+
+export interface UpdateHostInput {
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+}
+
+export interface RegisterStreamInput {
+  hostId: string;
+  streamKind: string;
+  streamKey: string;
+  compatSourceType?: SourceType | null;
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+}
+
+export interface UpdateStreamInput {
   configRef?: string | null;
   config?: Record<string, unknown>;
 }

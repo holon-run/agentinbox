@@ -2787,6 +2787,127 @@ test("control plane source details degrade when remote_source resolution fails b
   }
 });
 
+test("control plane groups compatible GitHub source aliases under one host", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-host-stream-grouping-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+
+      const repoEvents = await client.request<{ hostId: string; sourceId: string }>("/sources", {
+        sourceType: "github_repo",
+        sourceKey: "holon-run/agentinbox",
+        config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      });
+      const ciRuns = await client.request<{ hostId: string; sourceId: string }>("/sources", {
+        sourceType: "github_repo_ci",
+        sourceKey: "holon-run/agentinbox",
+        config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      });
+
+      assert.equal(repoEvents.statusCode, 200);
+      assert.equal(ciRuns.statusCode, 200);
+      assert.equal(repoEvents.data.hostId, ciRuns.data.hostId);
+
+      const hosts = await client.request<{ hosts: Array<{ hostId: string; hostType: string }> }>("/hosts", undefined, "GET");
+      assert.equal(hosts.statusCode, 200);
+      assert.equal(hosts.data.hosts.filter((host) => host.hostType === "github").length, 1);
+
+      const hostDetails = await client.request<{ host: { hostId: string; hostType: string }; streams: Array<{ sourceId: string; streamKind: string }> }>(
+        `/hosts/${encodeURIComponent(repoEvents.data.hostId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(hostDetails.statusCode, 200);
+      assert.equal(hostDetails.data.host.hostType, "github");
+      assert.deepEqual(
+        hostDetails.data.streams.map((stream) => stream.streamKind).sort(),
+        ["ci_runs", "repo_events"],
+      );
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane creates streams under explicit hosts", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-host-stream-create-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const host = await client.request<{ hostId: string; hostType: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "local-default",
+        config: {},
+      });
+      assert.equal(host.statusCode, 200);
+
+      const stream = await client.request<{ sourceId: string; hostId: string; streamKind: string }>(
+        "/streams",
+        {
+          hostId: host.data.hostId,
+          streamKind: "events",
+          streamKey: "local-default",
+          compatSourceType: "local_event",
+          config: {},
+        },
+      );
+      assert.equal(stream.statusCode, 200);
+      assert.equal(stream.data.hostId, host.data.hostId);
+      assert.equal(stream.data.streamKind, "events");
+
+      const listed = await client.request<{ streams: Array<{ sourceId: string; hostId: string }> }>("/streams", undefined, "GET");
+      assert.equal(listed.statusCode, 200);
+      assert.equal(listed.data.streams.some((candidate) => candidate.sourceId === stream.data.sourceId && candidate.hostId === host.data.hostId), true);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("control plane source remove accepts with_subscriptions for explicit cascade cleanup", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-control-plane-remove-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");

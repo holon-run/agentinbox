@@ -2,6 +2,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { ResolvedSourceIdentity, ResolvedSourceSchema, SourceSchema, SubscriptionSource } from "./model";
 import { RemoteSourceModule, RemoteSourceModuleRegistry, builtInModuleIdForSourceType, moduleConfigForSource } from "./sources/remote_modules";
 import { getSourceSchema } from "./source_schema";
+import { compatSourceTypeForStream } from "./source_hosts";
 
 export interface ResolveSourceContext {
   homeDir?: string;
@@ -14,7 +15,8 @@ export async function resolveSourceIdentity(
   source: SubscriptionSource,
   context: ResolveSourceContext = {},
 ): Promise<ResolvedSourceIdentity> {
-  if (source.sourceType === "local_event") {
+  const compatSourceType = compatSourceTypeForStream(source);
+  if (compatSourceType === "local_event") {
     return {
       hostType: "local_event",
       sourceKind: "local_event",
@@ -22,17 +24,17 @@ export async function resolveSourceIdentity(
     };
   }
 
-  const builtinImplementationId = builtInModuleIdForSourceType(source.sourceType);
+  const builtinImplementationId = builtInModuleIdForSourceType(compatSourceType);
   if (builtinImplementationId) {
     return {
       hostType: "remote_source",
-      sourceKind: source.sourceType,
+      sourceKind: compatSourceType,
       implementationId: builtinImplementationId,
     };
   }
 
-  if (source.sourceType !== "remote_source") {
-    throw new Error(`unsupported source type for source resolution: ${source.sourceType}`);
+  if (compatSourceType !== "remote_source") {
+    throw new Error(`unsupported source type for source resolution: ${compatSourceType}`);
   }
 
   const moduleRegistry = context.moduleRegistry ?? context.profileRegistry ?? new RemoteSourceModuleRegistry();
@@ -56,7 +58,7 @@ export async function resolveSourceSchema(
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
   const resolvedContext: ResolveSourceContext = { ...context, moduleRegistry, homeDir };
   const identity = await resolveSourceIdentity(source, resolvedContext);
-  const staticSchema = getSourceSchema(source.sourceType);
+  const staticSchema = getSourceSchema(compatSourceTypeForStream(source));
   let capabilityDescription: ReturnType<NonNullable<RemoteSourceModule["describeCapabilities"]>> | undefined;
   let module: RemoteSourceModule | null = null;
   if (identity.hostType === "remote_source") {
@@ -125,7 +127,7 @@ export function withResolvedIdentity(
 }
 
 function moduleInputSource(source: SubscriptionSource): SubscriptionSource {
-  if (source.sourceType !== "remote_source") {
+  if (compatSourceTypeForStream(source) !== "remote_source") {
     return source;
   }
   return {

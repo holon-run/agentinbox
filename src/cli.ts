@@ -66,6 +66,177 @@ async function main(): Promise<void> {
 
   const client = await createClient(normalized);
 
+  if (command === "host" && normalized[1] === "add") {
+    const [hostType, hostKey] = normalized.slice(2, 4);
+    if (!hostType || !hostKey) {
+      throw new Error("usage: agentinbox host add <hostType> <hostKey> [--config-json JSON] [--config-ref REF]");
+    }
+    await printRemote(client, "/hosts", {
+      hostType,
+      hostKey,
+      configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
+      config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
+    });
+    return;
+  }
+
+  if (command === "host" && normalized[1] === "list") {
+    await printRemote(client, "/hosts", undefined, "GET");
+    return;
+  }
+
+  if (command === "host" && normalized[1] === "show") {
+    const hostId = normalized[2];
+    if (!hostId) {
+      throw new Error("usage: agentinbox host show <hostId>");
+    }
+    await printRemote(client, `/hosts/${encodeURIComponent(hostId)}`, undefined, "GET");
+    return;
+  }
+
+  if (command === "host" && normalized[1] === "schema") {
+    const hostId = normalized[2];
+    if (!hostId) {
+      throw new Error("usage: agentinbox host schema <hostId>");
+    }
+    await printRemote(client, `/hosts/${encodeURIComponent(hostId)}/schema`, undefined, "GET");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "add") {
+    const [hostId, streamKind, streamKey] = normalized.slice(2, 5);
+    if (!hostId || !streamKind || !streamKey) {
+      throw new Error("usage: agentinbox stream add <hostId> <streamKind> <streamKey> [--compat-source-type TYPE] [--config-json JSON] [--config-ref REF]");
+    }
+    await printRemote(client, "/streams", {
+      hostId,
+      streamKind,
+      streamKey,
+      compatSourceType: takeFlagValue(normalized, "--compat-source-type") ?? undefined,
+      configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
+      config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
+    });
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "list") {
+    await printRemote(client, "/streams", undefined, "GET");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "show") {
+    const streamId = normalized[2];
+    if (!streamId) {
+      throw new Error("usage: agentinbox stream show <streamId>");
+    }
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}`, undefined, "GET");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "remove") {
+    const removeArgs = normalized.slice(2);
+    const positionals = positionalArgs(removeArgs, ["--with-subscriptions"]);
+    const streamId = positionals[0];
+    if (!streamId || positionals[1]) {
+      throw new Error("usage: agentinbox stream remove <streamId> [--with-subscriptions]");
+    }
+    const query = buildQuery({
+      with_subscriptions: hasFlag(normalized, "--with-subscriptions") ? "true" : undefined,
+    });
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}${query}`, undefined, "DELETE");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "update") {
+    const streamId = normalized[2];
+    if (!streamId) {
+      throw new Error("usage: agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]");
+    }
+    const configRef = takeFlagValue(normalized, "--config-ref");
+    const clearConfigRef = hasFlag(normalized, "--clear-config-ref");
+    const configJson = takeFlagValue(normalized, "--config-json");
+    if (configRef != null && clearConfigRef) {
+      throw new Error("stream update accepts only one of --config-ref or --clear-config-ref");
+    }
+    if (!clearConfigRef && configRef == null && configJson == null) {
+      throw new Error("usage: agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]");
+    }
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}`, {
+      ...(clearConfigRef ? { configRef: null } : (configRef != null ? { configRef } : {})),
+      config: configJson != null ? parseJsonArg(configJson, "--config-json") : undefined,
+    }, "PATCH");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "pause") {
+    const streamId = normalized[2];
+    if (!streamId) {
+      throw new Error("usage: agentinbox stream pause <streamId>");
+    }
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}/pause`, {});
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "resume") {
+    const streamId = normalized[2];
+    if (!streamId) {
+      throw new Error("usage: agentinbox stream resume <streamId>");
+    }
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}/resume`, {});
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "schema") {
+    if (normalized[2] === "preview") {
+      const sourceRef = normalized[3];
+      if (!sourceRef) {
+        throw new Error("usage: agentinbox stream schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]");
+      }
+      await printRemote(client, "/streams/schema-preview", {
+        sourceRef,
+        configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
+        config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
+      });
+      return;
+    }
+    const streamRef = normalized[2];
+    if (!streamRef) {
+      throw new Error("usage: agentinbox stream schema <streamId|sourceType>");
+    }
+    if (streamRef.startsWith("src_")) {
+      await printRemote(client, `/streams/${encodeURIComponent(streamRef)}/schema`, undefined, "GET");
+      return;
+    }
+    await printRemote(client, `/source-types/${encodeURIComponent(streamRef)}/schema`, undefined, "GET");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "poll") {
+    const streamId = normalized[2];
+    if (!streamId) {
+      throw new Error("usage: agentinbox stream poll <streamId>");
+    }
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}/poll`, {});
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "event") {
+    const streamId = normalized[2];
+    const sourceNativeId = takeFlagValue(normalized, "--native-id");
+    const eventVariant = takeFlagValue(normalized, "--event");
+    if (!streamId || !sourceNativeId || !eventVariant) {
+      throw new Error("usage: agentinbox stream event <streamId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]");
+    }
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}/events`, {
+      sourceNativeId,
+      eventVariant,
+      occurredAt: takeFlagValue(normalized, "--occurred-at") ?? undefined,
+      metadata: parseJsonArg(takeFlagValue(normalized, "--metadata-json")),
+      rawPayload: parseJsonArg(takeFlagValue(normalized, "--payload-json")),
+    });
+    return;
+  }
+
   if (command === "source" && normalized[1] === "add") {
     const [type, sourceKey] = normalized.slice(2, 4);
     if (!type || !sourceKey) {
@@ -1086,6 +1257,29 @@ Usage:
   agentinbox daemon start [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock] [--log-level error|warn|info|debug|trace]
   agentinbox daemon stop [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
   agentinbox daemon status [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+`,
+    host: `agentinbox host
+
+Usage:
+  agentinbox host add <hostType> <hostKey> [--config-json JSON] [--config-ref REF]
+  agentinbox host list
+  agentinbox host show <hostId>
+  agentinbox host schema <hostId>
+`,
+    stream: `agentinbox stream
+
+Usage:
+  agentinbox stream add <hostId> <streamKind> <streamKey> [--compat-source-type TYPE] [--config-json JSON] [--config-ref REF]
+  agentinbox stream list
+  agentinbox stream show <streamId>
+  agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
+  agentinbox stream remove <streamId> [--with-subscriptions]
+  agentinbox stream pause <streamId>
+  agentinbox stream resume <streamId>
+  agentinbox stream schema <streamId|sourceType>
+  agentinbox stream schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]
+  agentinbox stream poll <streamId>
+  agentinbox stream event <streamId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
 `,
     source: `agentinbox source
 

@@ -21,14 +21,17 @@ import {
   PreviewSourceSchemaInput,
   RegisterAgentInput,
   RegisterAgentResult,
+  RegisterHostInput,
   RegisterSourceInput,
   RegisterSubscriptionInput,
   RegisterTimerInput,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
+  SourceHost,
   SourceSchema,
   SourceSchemaPreview,
   SourcePollResult,
+  SourceStream,
   Subscription,
   CleanupPolicy,
   SubscriptionLifecycleRetirement,
@@ -66,6 +69,7 @@ import {
 import { LifecycleSignal } from "./sources/remote_modules";
 import { ActivationGate, DefaultActivationGate } from "./runtime_gate";
 import { Logger, NoopLogger } from "./logging";
+import { compatSourceTypeForStream, hostTypeForSourceType, resolveLegacySource, streamKindForSourceType } from "./source_hosts";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -220,13 +224,32 @@ export class AgentInboxService {
     if (existing) {
       return existing;
     }
+    const resolved = resolveLegacySource(input);
     const now = nowIso();
+    let host = this.store.getSourceHostByKey(resolved.hostType, resolved.hostKey);
+    if (!host) {
+      host = {
+        hostId: generateId("hst"),
+        hostType: resolved.hostType,
+        hostKey: resolved.hostKey,
+        configRef: input.configRef ?? null,
+        config: resolved.hostConfig,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.store.insertSourceHost(host);
+    }
     const source: SubscriptionSource = {
       sourceId: generateId("src"),
+      hostId: host.hostId,
+      streamKind: resolved.streamKind,
+      streamKey: resolved.streamKey,
+      compatSourceType: resolved.compatSourceType,
       sourceType: input.sourceType,
       sourceKey: input.sourceKey,
       configRef: input.configRef ?? null,
-      config: input.config ?? {},
+      config: resolved.streamConfig,
       status: "active",
       checkpoint: null,
       createdAt: now,
@@ -242,6 +265,28 @@ export class AgentInboxService {
     return this.store.listSources();
   }
 
+  listHosts(): SourceHost[] {
+    return this.store.listSourceHosts();
+  }
+
+  getHost(hostId: string): SourceHost {
+    const host = this.store.getSourceHost(hostId);
+    if (!host) {
+      throw new Error(`unknown host: ${hostId}`);
+    }
+    return host;
+  }
+
+  getHostDetails(hostId: string): Record<string, unknown> {
+    const host = this.getHost(hostId);
+    const streams = this.store.listSources().filter((stream) => stream.hostId === hostId);
+    return {
+      host,
+      schema: this.getHostSchema(host.hostType),
+      streams,
+    };
+  }
+
   getSource(sourceId: string): SubscriptionSource {
     const source = this.store.getSource(sourceId);
     if (!source) {
@@ -252,7 +297,7 @@ export class AgentInboxService {
 
   async getSourceDetails(sourceId: string): Promise<Record<string, unknown>> {
     const source = this.getSource(sourceId);
-    const fallbackSchema = getSourceSchema(source.sourceType);
+    const fallbackSchema = getSourceSchema(compatSourceTypeForStream(source));
     let resolvedIdentity: ResolvedSourceIdentity | null = null;
     let resolutionError: string | null = null;
     let schema: SourceSchema | ResolvedSourceSchema = fallbackSchema;
@@ -269,6 +314,7 @@ export class AgentInboxService {
       : fallbackSchema;
     return {
       source,
+      host: source.hostId ? this.store.getSourceHost(source.hostId) : null,
       resolvedIdentity,
       ...(resolutionError ? { resolutionError } : {}),
       schema: resolvedSchema,
@@ -280,6 +326,90 @@ export class AgentInboxService {
 
   getSourceSchema(sourceType: SubscriptionSource["sourceType"]): SourceSchema {
     return getSourceSchema(sourceType);
+  }
+
+  getHostSchema(hostType: SourceHost["hostType"]): Record<string, unknown> {
+    return {
+      hostType,
+      configFields: getHostConfigFields(hostType),
+      streamKinds: listHostStreamKinds(hostType),
+    };
+  }
+
+  registerHost(input: RegisterHostInput): SourceHost {
+    const existing = this.store.getSourceHostByKey(input.hostType, input.hostKey);
+    if (existing) {
+      return existing;
+    }
+    const now = nowIso();
+    const host: SourceHost = {
+      hostId: generateId("hst"),
+      hostType: input.hostType,
+      hostKey: input.hostKey,
+      configRef: input.configRef ?? null,
+      config: input.config ?? {},
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.insertSourceHost(host);
+    return host;
+  }
+
+  registerStream(input: {
+    hostId: string;
+    streamKind: string;
+    streamKey: string;
+    compatSourceType?: SourceStream["compatSourceType"];
+    configRef?: string | null;
+    config?: Record<string, unknown>;
+  }): Promise<SourceStream> {
+    const host = this.getHost(input.hostId);
+    const existing = this.store.listSources().find((stream) =>
+      stream.hostId === input.hostId &&
+      stream.streamKind === input.streamKind &&
+      stream.streamKey === input.streamKey,
+    );
+    if (existing) {
+      return Promise.resolve(existing);
+    }
+    const compatSourceType = input.compatSourceType ?? sourceTypeForStreamRegistration(host.hostType, input.streamKind);
+    const now = nowIso();
+    const stream: SourceStream = {
+      sourceId: generateId("src"),
+      streamId: null,
+      hostId: input.hostId,
+      streamKind: input.streamKind,
+      streamKey: input.streamKey,
+      compatSourceType,
+      sourceType: compatSourceType,
+      sourceKey: input.streamKey,
+      configRef: input.configRef ?? host.configRef ?? null,
+      config: input.config ?? {},
+      status: "active",
+      checkpoint: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.insertSource(stream);
+    return this.adapters.sourceAdapterFor(compatSourceType)
+      .ensureSource(stream)
+      .then(async () => {
+        await this.ensureStreamForSource(stream);
+        return this.getStream(stream.sourceId);
+      });
+  }
+
+  listStreams(): SourceStream[] {
+    return this.listSources();
+  }
+
+  getStream(streamId: string): SourceStream {
+    return this.getSource(streamId);
+  }
+
+  getStreamDetails(streamId: string): Promise<Record<string, unknown>> {
+    return this.getSourceDetails(streamId);
   }
 
   async getResolvedSourceSchema(sourceId: string): Promise<ResolvedSourceSchema> {
@@ -3237,4 +3367,55 @@ function weekdayToNumber(value: string): number {
     default:
       throw new Error(`unsupported weekday: ${value}`);
   }
+}
+
+function listHostStreamKinds(hostType: SourceHost["hostType"]): string[] {
+  switch (hostType) {
+    case "github":
+      return ["repo_events", "ci_runs"];
+    case "feishu":
+      return ["message_events"];
+    case "local_event":
+      return ["events"];
+    case "remote_source":
+      return ["default"];
+  }
+}
+
+function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: string; type: string; description: string; required?: boolean }> {
+  switch (hostType) {
+    case "github":
+      return [
+        { name: "uxcAuth", type: "string", description: "Optional shared GitHub auth/runtime profile.", required: false },
+      ];
+    case "feishu":
+      return [
+        { name: "appId", type: "string", description: "Feishu app ID.", required: false },
+        { name: "appSecret", type: "string", description: "Feishu app secret.", required: false },
+        { name: "uxcAuth", type: "string", description: "Optional shared Feishu auth/runtime profile.", required: false },
+      ];
+    case "local_event":
+      return [];
+    case "remote_source":
+      return [
+        { name: "profilePath", type: "string", description: "Local module path under $AGENTINBOX_HOME/source-profiles.", required: false },
+        { name: "profileConfig", type: "object", description: "Module-specific host configuration.", required: false },
+      ];
+  }
+}
+
+function sourceTypeForStreamRegistration(hostType: SourceHost["hostType"], streamKind: string): SourceStream["sourceType"] {
+  if (hostType === "github") {
+    if (streamKind === "ci_runs") {
+      return "github_repo_ci";
+    }
+    return "github_repo";
+  }
+  if (hostType === "feishu") {
+    return "feishu_bot";
+  }
+  if (hostType === "local_event") {
+    return "local_event";
+  }
+  return "remote_source";
 }

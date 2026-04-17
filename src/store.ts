@@ -22,6 +22,7 @@ import {
   ListInboxItemsOptions,
   AgentTimer,
   RegisterAgentInput,
+  SourceHost,
   SourceIdleState,
   Subscription,
   SubscriptionLifecycleRetirement,
@@ -238,6 +239,93 @@ export class AgentInboxStore {
     return Boolean(row);
   }
 
+  getSourceHostByKey(hostType: string, hostKey: string): SourceHost | null {
+    const row = this.getOne(
+      "select * from source_hosts where host_type = ? and host_key = ?",
+      [hostType, hostKey],
+    );
+    return row ? this.mapSourceHost(row) : null;
+  }
+
+  getSourceHost(hostId: string): SourceHost | null {
+    const row = this.getOne("select * from source_hosts where host_id = ?", [hostId]);
+    return row ? this.mapSourceHost(row) : null;
+  }
+
+  insertSourceHost(host: SourceHost): void {
+    this.db.run(
+      `
+      insert into source_hosts (
+        host_id, host_type, host_key, config_ref, config_json, status, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        host.hostId,
+        host.hostType,
+        host.hostKey,
+        host.configRef ?? null,
+        JSON.stringify(host.config ?? {}),
+        host.status,
+        host.createdAt,
+        host.updatedAt,
+      ],
+    );
+    this.persist();
+  }
+
+  listSourceHosts(): SourceHost[] {
+    const rows = this.getAll("select * from source_hosts order by created_at asc");
+    return rows.map((row) => this.mapSourceHost(row));
+  }
+
+  updateSourceHostDefinition(
+    hostId: string,
+    input: { configRef?: string | null; config?: Record<string, unknown> },
+  ): SourceHost {
+    const current = this.getSourceHost(hostId);
+    if (!current) {
+      throw new Error(`unknown source host: ${hostId}`);
+    }
+    this.db.run(
+      `
+      update source_hosts
+      set config_ref = ?, config_json = ?, updated_at = ?
+      where host_id = ?
+    `,
+      [
+        Object.prototype.hasOwnProperty.call(input, "configRef") ? input.configRef ?? null : current.configRef ?? null,
+        JSON.stringify(Object.prototype.hasOwnProperty.call(input, "config") ? input.config ?? {} : current.config ?? {}),
+        nowIso(),
+        hostId,
+      ],
+    );
+    this.persist();
+    return this.getSourceHost(hostId)!;
+  }
+
+  updateSourceHostRuntime(
+    hostId: string,
+    input: { status?: SourceHost["status"] },
+  ): void {
+    const current = this.getSourceHost(hostId);
+    if (!current) {
+      throw new Error(`unknown source host: ${hostId}`);
+    }
+    this.db.run(
+      `
+      update source_hosts
+      set status = ?, updated_at = ?
+      where host_id = ?
+    `,
+      [
+        Object.prototype.hasOwnProperty.call(input, "status") ? input.status ?? current.status : current.status,
+        nowIso(),
+        hostId,
+      ],
+    );
+    this.persist();
+  }
+
   getSourceByKey(sourceType: string, sourceKey: string): SubscriptionSource | null {
     const row = this.getOne(
       "select * from sources where source_type = ? and source_key = ?",
@@ -252,15 +340,23 @@ export class AgentInboxStore {
   }
 
   insertSource(source: SubscriptionSource): void {
+    const hostId = source.hostId ?? this.ensureCompatibilityHostForSource(source);
+    const streamKind = source.streamKind ?? "default";
+    const streamKey = source.streamKey ?? source.sourceKey;
     this.db.run(
       `
       insert into sources (
-        source_id, source_type, source_key, config_ref, config_json,
+        source_id, host_id, stream_kind, stream_key, compat_source_type,
+        source_type, source_key, config_ref, config_json,
         status, checkpoint, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         source.sourceId,
+        hostId,
+        streamKind,
+        streamKey,
+        source.compatSourceType ?? null,
         source.sourceType,
         source.sourceKey,
         source.configRef ?? null,
@@ -392,6 +488,13 @@ export class AgentInboxStore {
       }
       this.db.run("delete from source_idle_states where source_id = ?", [sourceId]);
       this.db.run("delete from sources where source_id = ?", [sourceId]);
+      const hostId = source.hostId ?? null;
+      const siblings = hostId
+        ? this.getOne("select count(*) as count from sources where host_id = ?", [hostId])
+        : null;
+      if (hostId && Number(siblings?.count ?? 0) === 0) {
+        this.db.run("delete from source_hosts where host_id = ?", [hostId]);
+      }
     });
     this.persist();
     return source;
@@ -1519,12 +1622,62 @@ export class AgentInboxStore {
   private mapSource(row: Record<string, unknown>): SubscriptionSource {
     return {
       sourceId: String(row.source_id),
+      streamId: String(row.source_id),
+      hostId: String(row.host_id),
+      streamKind: String(row.stream_kind),
+      streamKey: String(row.stream_key),
+      compatSourceType: row.compat_source_type ? String(row.compat_source_type) as SubscriptionSource["compatSourceType"] : null,
       sourceType: row.source_type as SubscriptionSource["sourceType"],
       sourceKey: String(row.source_key),
       configRef: row.config_ref ? String(row.config_ref) : null,
       config: parseJson<Record<string, unknown>>(row.config_json as string),
       status: row.status as SubscriptionSource["status"],
       checkpoint: row.checkpoint ? String(row.checkpoint) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private ensureCompatibilityHostForSource(source: SubscriptionSource): string {
+    const hostType = source.sourceType === "github_repo" || source.sourceType === "github_repo_ci"
+      ? "github"
+      : source.sourceType === "feishu_bot"
+        ? "feishu"
+        : source.sourceType === "local_event"
+          ? "local_event"
+          : "remote_source";
+    const hostKey = source.sourceType === "github_repo" || source.sourceType === "github_repo_ci"
+      ? `uxcAuth:${String((source.config ?? {}).uxcAuth ?? source.configRef ?? "default")}`
+      : source.sourceType === "feishu_bot"
+        ? `app:${String((source.config ?? {}).appId ?? source.configRef ?? source.sourceId)}`
+        : source.sourceKey;
+    const existing = this.getSourceHostByKey(hostType, hostKey);
+    if (existing) {
+      return existing.hostId;
+    }
+    const now = nowIso();
+    const host: SourceHost = {
+      hostId: generateId("hst"),
+      hostType: hostType as SourceHost["hostType"],
+      hostKey,
+      configRef: source.configRef ?? null,
+      config: source.config ?? {},
+      status: source.status,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.insertSourceHost(host);
+    return host.hostId;
+  }
+
+  private mapSourceHost(row: Record<string, unknown>): SourceHost {
+    return {
+      hostId: String(row.host_id),
+      hostType: String(row.host_type) as SourceHost["hostType"],
+      hostKey: String(row.host_key),
+      configRef: row.config_ref ? String(row.config_ref) : null,
+      config: parseJson<Record<string, unknown>>(row.config_json as string),
+      status: String(row.status) as SourceHost["status"],
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
