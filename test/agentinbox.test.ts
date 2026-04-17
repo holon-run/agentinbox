@@ -2551,6 +2551,172 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
   }
 });
 
+test("notification thresholds defer activation until minUnackedItems is reached", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-threshold-gated",
+      tmuxPaneId: "%420",
+      notifyLeaseMs: 100,
+      minUnackedItems: 2,
+    });
+    service.addWebhookActivationTarget(registered.agent.agentId, {
+      url: "http://127.0.0.1:9999/webhook",
+      activationMode: "activation_with_items",
+      notifyLeaseMs: 100,
+      minUnackedItems: 2,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-threshold-gated",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-threshold-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(dispatcher.calls.length, 0);
+    assert.equal(terminalDispatcher.calls.length, 0);
+    const statesAfterFirst = store.listActivationDispatchStatesForAgent(registered.agent.agentId);
+    assert.equal(statesAfterFirst.length, 2);
+    assert.ok(statesAfterFirst.every((state) => state.status === "dirty" && state.leaseExpiresAt === null));
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-threshold-2",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(dispatcher.calls.length, 1);
+    assert.equal(terminalDispatcher.calls.length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lease reminders stay suppressed while unacked items remain below minUnackedItems", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const { service, dir, store } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-threshold-reminder",
+      tmuxPaneId: "%421",
+      notifyLeaseMs: 50,
+      minUnackedItems: 2,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "local-event-threshold-reminder",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-threshold-reminder-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 0);
+    let state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(state);
+    assert.equal(state.status, "dirty");
+    assert.equal(state.leaseExpiresAt, null);
+
+    await sleep(70);
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 0);
+    state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    assert.ok(state);
+    assert.equal(state.status, "dirty");
+    assert.equal(state.leaseExpiresAt, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("re-registering a terminal agent preserves notification policy when flags are omitted", async () => {
+  const { service, dir, store } = await makeService({
+    activationWindowMs: 20,
+    activationMaxItems: 20,
+    activationGate: new FixedActivationGate("inject", "test"),
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-policy-preserve",
+      tmuxPaneId: "%422",
+      notifyLeaseMs: 250,
+      minUnackedItems: 4,
+    });
+
+    const rebound = service.registerAgent({
+      agentId: registered.agent.agentId,
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-policy-preserve",
+      tmuxPaneId: "%422",
+    });
+
+    assert.equal(rebound.terminalTarget.targetId, registered.terminalTarget.targetId);
+    assert.equal(rebound.terminalTarget.notifyLeaseMs, 250);
+    assert.equal(rebound.terminalTarget.minUnackedItems, 4);
+    assert.deepEqual(rebound.terminalTarget.notificationPolicy, {
+      notifyLeaseMs: 250,
+      minUnackedItems: 4,
+    });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("terminal activation prompts use the current unacked inbox total", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { service, dir, store } = await makeService({

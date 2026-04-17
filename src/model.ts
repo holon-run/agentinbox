@@ -112,6 +112,11 @@ export interface SubscriptionLifecycleRetirement {
   updatedAt: string;
 }
 
+export interface NotificationPolicy {
+  notifyLeaseMs: number;
+  minUnackedItems?: number | null;
+}
+
 interface ActivationTargetBase {
   targetId: string;
   agentId: string;
@@ -122,6 +127,8 @@ interface ActivationTargetBase {
   lastDeliveredAt?: string | null;
   lastError?: string | null;
   notifyLeaseMs: number;
+  minUnackedItems?: number | null;
+  notificationPolicy?: NotificationPolicy;
   createdAt: string;
   updatedAt: string;
   lastSeenAt: string;
@@ -266,6 +273,7 @@ export interface RegisterAgentInput {
   termProgram?: string | null;
   itermSessionId?: string | null;
   notifyLeaseMs?: number | null;
+  minUnackedItems?: number | null;
 }
 
 export interface RegisterAgentResult {
@@ -278,6 +286,7 @@ export interface AddWebhookActivationTargetInput {
   url: string;
   activationMode?: ActivationMode;
   notifyLeaseMs?: number | null;
+  minUnackedItems?: number | null;
 }
 
 export interface DirectInboxTextMessageInput {

@@ -127,8 +127,15 @@ Register the current terminal session:
 ```bash
 agentinbox agent register
 agentinbox agent register --agent-id agent-alpha
+agentinbox agent register --notify-lease-ms 600000 --min-unacked-items 5
 agentinbox agent current
 ```
+
+`notifyLeaseMs` and `minUnackedItems` are target-facing notification policy:
+they control how often a target may be reminded and how many unacked items must
+accumulate before AgentInbox notifies it. Service-wide activation batching
+(`windowMs`, `maxItems`) and terminal gating heuristics remain daemon-level
+policy, not per-agent knobs.
 
 Create a local source and publish an event:
 

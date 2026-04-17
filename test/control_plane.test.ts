@@ -813,6 +813,33 @@ test("cli resolves current agent, auto-registers session workflows, and warns on
   }
 });
 
+test("cli agent register accepts min-unacked-items", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-pol-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%903",
+    CODEX_THREAD_ID: "thread-cli-policy",
+  };
+
+  try {
+    const register = runCli(["agent", "register", "--notify-lease-ms", "200", "--min-unacked-items", "3"], env);
+    assert.equal(register.status, 0, register.stderr);
+    const payload = JSON.parse(register.stdout) as {
+      agent: { agentId: string };
+      terminalTarget: { notifyLeaseMs: number; minUnackedItems: number | null };
+    };
+    assert.equal(payload.terminalTarget.notifyLeaseMs, 200);
+    assert.equal(payload.terminalTarget.minUnackedItems, 3);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli source schema resolves source ids to instance schema", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-schema-"));
   const env = {
@@ -2154,6 +2181,85 @@ test("control plane accepts direct inbox text messages and rejects blank payload
   } finally {
     await adapters.stop();
     webhookServer.close();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane accepts notification policy thresholds for agent and webhook targets", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-http-pol-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, {
+    windowMs: 10,
+    maxItems: 1,
+  }, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+
+      const agentResponse = await client.request<{
+        agent: { agentId: string };
+        terminalTarget: { notifyLeaseMs: number; minUnackedItems: number | null; notificationPolicy?: { notifyLeaseMs: number; minUnackedItems: number | null } };
+      }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-policy-http",
+        tmuxPaneId: "%166",
+        notifyLeaseMs: 200,
+        minUnackedItems: 3,
+      });
+      assert.equal(agentResponse.statusCode, 200);
+      const agentId = agentResponse.data.agent.agentId;
+      assert.equal(agentResponse.data.terminalTarget.notifyLeaseMs, 200);
+      assert.equal(agentResponse.data.terminalTarget.minUnackedItems, 3);
+      assert.deepEqual(agentResponse.data.terminalTarget.notificationPolicy, {
+        notifyLeaseMs: 200,
+        minUnackedItems: 3,
+      });
+
+      const targetResponse = await client.request<{
+        targetId: string;
+        notifyLeaseMs: number;
+        minUnackedItems: number | null;
+        notificationPolicy?: { notifyLeaseMs: number; minUnackedItems: number | null };
+      }>(`/agents/${encodeURIComponent(agentId)}/targets`, {
+        kind: "webhook",
+        url: "http://127.0.0.1:9999/activate",
+        activationMode: "activation_only",
+        notifyLeaseMs: 300,
+        minUnackedItems: 5,
+      });
+      assert.equal(targetResponse.statusCode, 200);
+      assert.equal(targetResponse.data.notifyLeaseMs, 300);
+      assert.equal(targetResponse.data.minUnackedItems, 5);
+      assert.deepEqual(targetResponse.data.notificationPolicy, {
+        notifyLeaseMs: 300,
+        minUnackedItems: 5,
+      });
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });

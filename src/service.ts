@@ -18,6 +18,7 @@ import {
   Inbox,
   InboxItem,
   InboxWatchEvent,
+  NotificationPolicy,
   PreviewSourceSchemaInput,
   RegisterAgentInput,
   RegisterAgentResult,
@@ -67,7 +68,7 @@ import {
   TerminalDispatcher,
 } from "./terminal";
 import { LifecycleSignal } from "./sources/remote_modules";
-import { ActivationGate, DefaultActivationGate } from "./runtime_gate";
+import { ActivationGate, DefaultActivationGate, GatingPolicy } from "./runtime_gate";
 import { Logger, NoopLogger } from "./logging";
 import { compatSourceTypeForStream, hostTypeForSourceType, resolveLegacySource, streamKindForSourceType } from "./source_hosts";
 
@@ -164,6 +165,7 @@ export class AgentInboxService {
     terminalDispatcher: TerminalDispatcher = new TerminalDispatcher(),
     activationGate?: ActivationGate,
     logger: Logger = new NoopLogger(),
+    gatingPolicy?: GatingPolicy,
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
@@ -172,7 +174,7 @@ export class AgentInboxService {
     this.ackedRetentionMs = DEFAULT_ACKED_RETENTION_MS;
     this.terminalDispatcher = terminalDispatcher;
     this.logger = logger;
-    this.activationGate = activationGate ?? new DefaultActivationGate(undefined, undefined, this.logger.child("gate"));
+    this.activationGate = activationGate ?? new DefaultActivationGate(undefined, undefined, this.logger.child("gate"), gatingPolicy);
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
@@ -557,6 +559,7 @@ export class AgentInboxService {
 
   registerAgent(input: RegisterAgentInput): RegisterAgentResult {
     validateNotifyLeaseMs(input.notifyLeaseMs);
+    validateMinUnackedItems(input.minUnackedItems);
     validateTerminalRegistration(input);
 
     const runtimeKind = input.runtimeKind ?? "unknown";
@@ -772,6 +775,7 @@ export class AgentInboxService {
   addWebhookActivationTarget(agentId: string, input: AddWebhookActivationTargetInput): WebhookActivationTarget {
     this.getAgent(agentId);
     validateNotifyLeaseMs(input.notifyLeaseMs);
+    validateMinUnackedItems(input.minUnackedItems);
     const mode = normalizeWebhookActivationMode(input.activationMode);
     const now = nowIso();
     const target: WebhookActivationTarget = {
@@ -786,6 +790,11 @@ export class AgentInboxService {
       mode,
       url: input.url,
       notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
+      minUnackedItems: input.minUnackedItems ?? null,
+      notificationPolicy: {
+        notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
+        minUnackedItems: input.minUnackedItems ?? null,
+      },
       createdAt: now,
       updatedAt: now,
       lastSeenAt: now,
@@ -1708,6 +1717,7 @@ export class AgentInboxService {
   private upsertTerminalActivationTarget(agentId: string, input: RegisterAgentInput, now: string): TerminalActivationTarget {
     const existing = findExistingTerminalActivationTarget(this.store, input);
     if (existing) {
+      const existingPolicy = notificationPolicyForTarget(existing);
       const target = this.store.updateTerminalActivationTargetHeartbeat(existing.targetId, {
         runtimeKind: input.runtimeKind ?? "unknown",
         runtimeSessionId: input.runtimeSessionId ?? null,
@@ -1716,6 +1726,8 @@ export class AgentInboxService {
         tty: input.tty ?? null,
         termProgram: input.termProgram ?? null,
         itermSessionId: input.itermSessionId ?? null,
+        notifyLeaseMs: input.notifyLeaseMs ?? existingPolicy.notifyLeaseMs,
+        minUnackedItems: input.minUnackedItems ?? existingPolicy.minUnackedItems ?? null,
         updatedAt: now,
         lastSeenAt: now,
       });
@@ -1737,6 +1749,11 @@ export class AgentInboxService {
       lastError: null,
       mode: "agent_prompt",
       notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
+      minUnackedItems: input.minUnackedItems ?? null,
+      notificationPolicy: {
+        notifyLeaseMs: input.notifyLeaseMs ?? DEFAULT_NOTIFY_LEASE_MS,
+        minUnackedItems: input.minUnackedItems ?? null,
+      },
       runtimeKind: input.runtimeKind ?? "unknown",
       runtimeSessionId: input.runtimeSessionId ?? null,
       runtimePid: input.runtimePid ?? null,
@@ -1862,7 +1879,8 @@ export class AgentInboxService {
     const entries = buffer.pending.splice(0, buffer.pending.length);
     try {
       const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
-      if (!state) {
+      const shouldAttemptDispatch = !state || (state.status === "dirty" && state.leaseExpiresAt == null);
+      if (shouldAttemptDispatch) {
         const inbox = this.ensureInboxForAgent(buffer.agentId);
         const unackedItems = this.store.listInboxItems(inbox.inboxId, { includeAcked: false }).map((item) => ({
           itemId: item.itemId,
@@ -1878,15 +1896,34 @@ export class AgentInboxService {
         const dispatched = await this.dispatchActivationTarget({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
-          newItemCount: entries.length,
+          newItemCount: state ? state.pendingNewItemCount + entries.length : entries.length,
           totalUnackedCount: unackedItems.length,
-          summary: latestSummary(entries),
-          subscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
-          sourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
+          summary: state ? latestSummary(entries) ?? state.pendingSummary : latestSummary(entries),
+          subscriptionIds: state
+            ? uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)])
+            : uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
+          sourceIds: state
+            ? uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)])
+            : uniqueSorted(entries.map((entry) => entry.sourceId)),
           items: unackedItems,
         });
         if (dispatched === "retryable_failure") {
-          this.upsertDirtyDispatchState(buffer.agentId, buffer.targetId, entries);
+          if (state && state.status === "dirty" && state.leaseExpiresAt == null) {
+            this.store.upsertActivationDispatchState({
+              agentId: buffer.agentId,
+              targetId: buffer.targetId,
+              status: "dirty",
+              leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+              lastNotifiedFingerprint: state.lastNotifiedFingerprint,
+              pendingNewItemCount: state.pendingNewItemCount + entries.length,
+              pendingSummary: latestSummary(entries) ?? state.pendingSummary,
+              pendingSubscriptionIds: uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
+              pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
+              updatedAt: nowIso(),
+            });
+          } else {
+            this.upsertDirtyDispatchState(buffer.agentId, buffer.targetId, entries);
+          }
         }
       } else {
         this.store.upsertActivationDispatchState({
@@ -1943,6 +1980,7 @@ export class AgentInboxService {
       return;
     }
 
+    const target = this.getActivationTarget(targetId);
     const inbox = this.ensureInboxForAgent(agentId);
     const unacked = this.store.countInboxItems(inbox.inboxId, false);
     if (unacked === 0) {
@@ -1950,11 +1988,21 @@ export class AgentInboxService {
       return;
     }
 
+    if (!meetsNotificationThreshold(notificationPolicyForTarget(target), unacked)) {
+      this.store.upsertActivationDispatchState({
+        ...state,
+        status: "dirty",
+        leaseExpiresAt: null,
+        pendingNewItemCount: state.pendingNewItemCount > 0 ? state.pendingNewItemCount : unacked,
+        updatedAt: nowIso(),
+      });
+      return;
+    }
+
     if (reason === "ack" && state.status !== "dirty") {
       return;
     }
     if (reason === "lease" && state.status === "notified") {
-      const target = this.getActivationTarget(targetId);
       if (target.kind !== "terminal") {
         // Webhook targets keep the existing lease-based behavior.
       } else {
@@ -2020,6 +2068,29 @@ export class AgentInboxService {
     const inbox = this.ensureInboxForAgent(input.agentId);
     const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
     const totalUnackedCount = input.totalUnackedCount ?? this.store.countInboxItems(inbox.inboxId, false);
+    const notificationPolicy = notificationPolicyForTarget(target);
+    if (!meetsNotificationThreshold(notificationPolicy, totalUnackedCount)) {
+      this.logger.debug("activation.dispatch_suppressed", {
+        agentId: input.agentId,
+        targetId: target.targetId,
+        reason: "min_unacked_items",
+        totalUnackedCount,
+        minUnackedItems: notificationPolicy.minUnackedItems ?? null,
+      });
+      this.store.upsertActivationDispatchState({
+        agentId: input.agentId,
+        targetId: input.targetId,
+        status: "dirty",
+        leaseExpiresAt: null,
+        lastNotifiedFingerprint: state?.lastNotifiedFingerprint ?? null,
+        pendingNewItemCount: input.newItemCount,
+        pendingSummary: input.summary,
+        pendingSubscriptionIds: uniqueSortedNullable(input.subscriptionIds),
+        pendingSourceIds: uniqueSorted(input.sourceIds),
+        updatedAt: nowIso(),
+      });
+      return "suppressed";
+    }
     let terminalPrompt: string | null = null;
     try {
       if (target.kind === "terminal") {
@@ -2898,6 +2969,29 @@ function validateNotifyLeaseMs(value: number | null | undefined): void {
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error("notifyLeaseMs must be a positive integer");
   }
+}
+
+function validateMinUnackedItems(value: number | null | undefined): void {
+  if (value == null) {
+    return;
+  }
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error("minUnackedItems must be a positive integer");
+  }
+}
+
+function notificationPolicyForTarget(target: ActivationTarget): NotificationPolicy {
+  return target.notificationPolicy ?? {
+    notifyLeaseMs: target.notifyLeaseMs,
+    minUnackedItems: target.minUnackedItems ?? null,
+  };
+}
+
+function meetsNotificationThreshold(policy: NotificationPolicy, totalUnackedCount: number): boolean {
+  if (policy.minUnackedItems == null) {
+    return true;
+  }
+  return totalUnackedCount >= policy.minUnackedItems;
 }
 
 function normalizeWebhookActivationMode(mode: AddWebhookActivationTargetInput["activationMode"]): WebhookActivationTarget["mode"] {

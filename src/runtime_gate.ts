@@ -7,18 +7,28 @@ import { TerminalActivationTarget } from "./model";
 import { Logger, NoopLogger } from "./logging";
 
 const execFileAsync = promisify(execFile);
-const DEFAULT_ITERM2_SAMPLE_DELAY_MS = 900;
-const DEFAULT_TMUX_SAMPLE_DELAY_MS = 900;
-const NORMALIZED_BUFFER_TAIL_LINES = 20;
-const ACTIVE_BUFFER_MARKERS = [
-  "esc to interrupt",
-  "Working (",
-  "⠼ ",
-];
-const TYPING_PROMPT_PREFIXES = [
-  "› ",
-  "> ",
-];
+export interface GatingPolicy {
+  iTerm2SampleDelayMs: number;
+  tmuxSampleDelayMs: number;
+  normalizedBufferTailLines: number;
+  activeBufferMarkers: string[];
+  typingPromptPrefixes: string[];
+}
+
+const DEFAULT_GATING_POLICY: GatingPolicy = {
+  iTerm2SampleDelayMs: 900,
+  tmuxSampleDelayMs: 900,
+  normalizedBufferTailLines: 20,
+  activeBufferMarkers: [
+    "esc to interrupt",
+    "Working (",
+    "⠼ ",
+  ],
+  typingPromptPrefixes: [
+    "› ",
+    "> ",
+  ],
+};
 
 type ExecFileAsyncLike = (
   file: string,
@@ -61,6 +71,7 @@ export class DefaultActivationGate implements ActivationGate {
     runtimeProbes?: RuntimePresenceProbe[],
     terminalProbes?: TerminalStateProbe[],
     logger: Logger = new NoopLogger(),
+    gatingPolicy: GatingPolicy = DEFAULT_GATING_POLICY,
   ) {
     this.logger = logger.child("activation_gate");
     this.runtimeProbes = runtimeProbes ?? [
@@ -68,10 +79,10 @@ export class DefaultActivationGate implements ActivationGate {
       new ClaudeCodeRuntimePresenceProbe(undefined, undefined, this.logger.child("claude_runtime")),
     ];
     this.terminalProbes = terminalProbes ?? [
-      new CodexTerminalStateProbe(undefined, undefined, undefined, undefined, undefined, this.logger.child("codex_terminal")),
-      new Iterm2TerminalStateProbe(undefined, {}, this.logger.child("iterm2_terminal")),
+      new CodexTerminalStateProbe(undefined, undefined, undefined, undefined, undefined, this.logger.child("codex_terminal"), gatingPolicy),
+      new Iterm2TerminalStateProbe(undefined, {}, this.logger.child("iterm2_terminal"), gatingPolicy),
       new ClaudeCodeTerminalStateProbe(undefined, undefined, undefined, this.logger.child("claude_terminal")),
-      new TmuxTerminalStateProbe(undefined, {}, this.logger.child("tmux_terminal")),
+      new TmuxTerminalStateProbe(undefined, {}, this.logger.child("tmux_terminal"), gatingPolicy),
     ];
   }
 
@@ -209,12 +220,13 @@ export class CodexRuntimePresenceProbe implements RuntimePresenceProbe {
 
 export class CodexTerminalStateProbe implements TerminalStateProbe {
   constructor(
-    private readonly iTermProbe: TerminalStateProbe = new Iterm2TerminalStateProbe(),
-    private readonly tmuxProbe: TerminalStateProbe = new TmuxTerminalStateProbe(),
+    private readonly iTermProbe: TerminalStateProbe = new Iterm2TerminalStateProbe(undefined, {}, new NoopLogger(), DEFAULT_GATING_POLICY),
+    private readonly tmuxProbe: TerminalStateProbe = new TmuxTerminalStateProbe(undefined, {}, new NoopLogger(), DEFAULT_GATING_POLICY),
     private readonly sessionFileReader?: (sessionId: string) => Promise<CodexSessionLookupResult>,
     private readonly statReader?: (filePath: string) => Promise<{ mtimeMs: number } | null>,
     private readonly nowFn: () => number = () => Date.now(),
     private readonly logger: Logger = new NoopLogger(),
+    private readonly gatingPolicy: GatingPolicy = DEFAULT_GATING_POLICY,
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -315,6 +327,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       enablePythonProbe?: boolean;
     } = {},
     private readonly logger: Logger = new NoopLogger(),
+    private readonly gatingPolicy: GatingPolicy = DEFAULT_GATING_POLICY,
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -395,7 +408,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       if (data.status === "available") {
         // If we have cursor and lines data, use cursor-aware detection
         if (data.cursor && Array.isArray(data.lines)) {
-          const bufferTail = normalizeProbeTailFromLines(data.lines);
+          const bufferTail = normalizeProbeTailFromLines(data.lines, this.gatingPolicy.normalizedBufferTailLines);
           if (!bufferTail) {
             this.logger.trace("probe_python_result", {
               sessionId,
@@ -430,14 +443,14 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
           // If cursor-aware detection is certain it's not busy, don't apply prompt heuristics
           if (busyStatus === "not_busy") {
             // Still check for buffer changes and active markers
-            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? this.gatingPolicy.iTerm2SampleDelayMs);
             const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
               env: { ...process.env, PYTHONIOENCODING: "utf-8" }
             });
             const secondData = JSON.parse(secondResult.stdout);
 
             if (secondData.status === "available" && Array.isArray(secondData.lines)) {
-              const secondBufferTail = normalizeProbeTailFromLines(secondData.lines);
+              const secondBufferTail = normalizeProbeTailFromLines(secondData.lines, this.gatingPolicy.normalizedBufferTailLines);
               if (secondBufferTail && bufferTail !== secondBufferTail) {
                 this.logger.trace("probe_python_result", {
                   sessionId,
@@ -449,7 +462,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             }
 
             // Check for active buffer markers
-            if (containsActiveBufferMarker(bufferTail)) {
+            if (containsActiveBufferMarker(bufferTail, this.gatingPolicy.activeBufferMarkers)) {
               this.logger.trace("probe_python_result", {
                 sessionId,
                 result: { presence: "available", busy: "busy" },
@@ -469,14 +482,14 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
           // If cursor-aware detection is uncertain, fall back to buffer change detection only
           // Do NOT use generic typing prompts to avoid false positives (see #116)
           if (busyStatus === "unknown") {
-            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+            await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? this.gatingPolicy.iTerm2SampleDelayMs);
             const secondResult = await this.execAsync("python3", [scriptPath, sessionId], {
               env: { ...process.env, PYTHONIOENCODING: "utf-8" }
             });
             const secondData = JSON.parse(secondResult.stdout);
 
             if (secondData.status === "available" && Array.isArray(secondData.lines)) {
-              const secondBufferTail = normalizeProbeTailFromLines(secondData.lines);
+              const secondBufferTail = normalizeProbeTailFromLines(secondData.lines, this.gatingPolicy.normalizedBufferTailLines);
               if (secondBufferTail && bufferTail !== secondBufferTail) {
                 this.logger.trace("probe_python_result", {
                   sessionId,
@@ -488,7 +501,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
             }
 
             // Check for active buffer markers
-            if (containsActiveBufferMarker(bufferTail)) {
+            if (containsActiveBufferMarker(bufferTail, this.gatingPolicy.activeBufferMarkers)) {
               this.logger.trace("probe_python_result", {
                 sessionId,
                 result: { presence: "available", busy: "busy" },
@@ -574,7 +587,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
     if (!first) {
       return { presence: "available", busy: "unknown" };
     }
-    await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_ITERM2_SAMPLE_DELAY_MS);
+    await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? this.gatingPolicy.iTerm2SampleDelayMs);
     const second = await this.readBufferTail(it2api, sessionId);
     if (!second) {
       return { presence: "available", busy: "unknown" };
@@ -588,7 +601,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
       });
       return { presence: "available", busy: "busy" };
     }
-    if (containsActiveBufferMarker(second)) {
+    if (containsActiveBufferMarker(second, this.gatingPolicy.activeBufferMarkers)) {
       this.logger.trace("probe_cli_result", {
         sessionId,
         result: { presence: "available", busy: "busy" },
@@ -632,7 +645,7 @@ export class Iterm2TerminalStateProbe implements TerminalStateProbe {
   private async readBufferTail(it2api: string, sessionId: string): Promise<string | null> {
     try {
       const result = await this.execAsync(it2api, ["get-buffer", sessionId]);
-      return normalizeBufferTail(result.stdout);
+      return normalizeBufferTail(result.stdout, this.gatingPolicy.normalizedBufferTailLines);
     } catch {
       return null;
     }
@@ -647,6 +660,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
       sleep?: (ms: number) => Promise<void>;
     } = {},
     private readonly logger: Logger = new NoopLogger(),
+    private readonly gatingPolicy: GatingPolicy = DEFAULT_GATING_POLICY,
   ) {}
 
   supports(target: TerminalActivationTarget): boolean {
@@ -700,7 +714,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
     if (!first) {
       return { presence: "available", busy: "unknown" };
     }
-    await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? DEFAULT_TMUX_SAMPLE_DELAY_MS);
+    await (this.options.sleep ?? sleep)(this.options.sampleDelayMs ?? this.gatingPolicy.tmuxSampleDelayMs);
     const second = await this.readBufferTail(paneId);
     if (!second) {
       return { presence: "available", busy: "unknown" };
@@ -715,7 +729,7 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
       });
       return { presence: "available", busy: "busy" };
     }
-    if (containsActiveBufferMarker(second)) {
+    if (containsActiveBufferMarker(second, this.gatingPolicy.activeBufferMarkers)) {
       this.logger.trace("probe_result", {
         targetId: target.targetId,
         paneId,
@@ -781,19 +795,19 @@ export class TmuxTerminalStateProbe implements TerminalStateProbe {
 
   private async readBufferTail(paneId: string): Promise<string | null> {
     try {
-      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", `-${NORMALIZED_BUFFER_TAIL_LINES}`]);
-      return normalizeBufferTail(result.stdout);
+      const result = await this.execAsync("tmux", ["capture-pane", "-p", "-t", paneId, "-S", `-${this.gatingPolicy.normalizedBufferTailLines}`]);
+      return normalizeBufferTail(result.stdout, this.gatingPolicy.normalizedBufferTailLines);
     } catch {
       return null;
     }
   }
 }
 
-function containsActiveBufferMarker(bufferTail: string): boolean {
-  return ACTIVE_BUFFER_MARKERS.some((marker) => bufferTail.includes(marker));
+function containsActiveBufferMarker(bufferTail: string, markers: readonly string[] = DEFAULT_GATING_POLICY.activeBufferMarkers): boolean {
+  return markers.some((marker) => bufferTail.includes(marker));
 }
 
-function hasVisibleTypingPrompt(bufferTail: string, prefixes: readonly string[] = TYPING_PROMPT_PREFIXES): boolean {
+function hasVisibleTypingPrompt(bufferTail: string, prefixes: readonly string[] = DEFAULT_GATING_POLICY.typingPromptPrefixes): boolean {
   const lines = bufferTail
     .split("\n")
     .map((line) => line.trimEnd())
@@ -861,7 +875,7 @@ function typingPromptPrefixesForRuntime(runtimeKind: TerminalActivationTarget["r
   if (runtimeKind === "claude_code") {
     return ["❯ ", "› "];
   }
-  return TYPING_PROMPT_PREFIXES;
+  return DEFAULT_GATING_POLICY.typingPromptPrefixes;
 }
 
 function parseOptionalInt(value: string | undefined): number | null {
@@ -872,19 +886,19 @@ function parseOptionalInt(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function normalizeBufferTail(buffer: string): string | null {
+function normalizeBufferTail(buffer: string, tailLines = DEFAULT_GATING_POLICY.normalizedBufferTailLines): string | null {
   const normalized = buffer
     .replace(/\r/g, "")
     .split("\n")
     .map((line) => line.trimEnd())
-    .slice(-NORMALIZED_BUFFER_TAIL_LINES)
+    .slice(-tailLines)
     .join("\n")
     .trim();
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeProbeTailFromLines(lines: readonly string[]): string | null {
-  return normalizeBufferTail(lines.join("\n"));
+function normalizeProbeTailFromLines(lines: readonly string[], tailLines = DEFAULT_GATING_POLICY.normalizedBufferTailLines): string | null {
+  return normalizeBufferTail(lines.join("\n"), tailLines);
 }
 
 function resolveIterm2ApiPath(override?: string): string {

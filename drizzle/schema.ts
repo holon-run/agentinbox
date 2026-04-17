@@ -119,6 +119,7 @@ export const activationTargets = sqliteTable("activation_targets", {
   lastError: text("last_error"),
   mode: text("mode").notNull(),
   notifyLeaseMs: integer("notify_lease_ms").notNull(),
+  minUnackedItems: integer("min_unacked_items"),
   url: text("url"),
   runtimeKind: text("runtime_kind"),
   runtimeSessionId: text("runtime_session_id"),
