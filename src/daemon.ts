@@ -3,18 +3,21 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { AgentInboxClient } from "./client";
 import { resolveAgentInboxHome, resolveDaemonPaths, type ClientTransport } from "./paths";
+import { defaultLogLevel, isLogLevel, LogLevel, parseLogLevel } from "./logging";
 
 export interface DaemonCliOptions {
   env?: NodeJS.ProcessEnv;
   homeDirOverride?: string;
   socketPathOverride?: string;
   baseUrlOverride?: string;
+  logLevelOverride?: LogLevel;
   noAutoStart?: boolean;
 }
 
 export interface DaemonStartResult {
   started: boolean;
   pid: number;
+  logLevel: LogLevel;
   pidPath: string;
   logPath: string;
   transport: ClientTransport;
@@ -23,6 +26,7 @@ export interface DaemonStartResult {
 export interface DaemonStatusResult {
   running: boolean;
   pid: number | null;
+  logLevel: LogLevel | null;
   version: string | null;
   startedAt: string | null;
   command: string | null;
@@ -53,6 +57,7 @@ export async function ensureDaemonForClient(options: DaemonCliOptions = {}): Pro
 export async function startDaemon(options: DaemonCliOptions = {}): Promise<DaemonStartResult> {
   const env = options.env ?? process.env;
   const transport = requireSocketTransport(resolveDaemonClientTransport(options), "daemon start");
+  const logLevel = resolveDaemonLogLevel(env, options.logLevelOverride);
 
   const homeDir = resolveAgentInboxHome(env, options.homeDirOverride);
   const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
@@ -64,6 +69,7 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
     return {
       started: false,
       pid: pid ?? -1,
+      logLevel,
       pidPath,
       logPath,
       transport,
@@ -80,6 +86,7 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
         AGENTINBOX_HOME: homeDir,
         AGENTINBOX_SOCKET: transport.socketPath,
         AGENTINBOX_URL: "",
+        AGENTINBOX_LOG_LEVEL: logLevel,
       },
       detached: true,
       stdio: ["ignore", logFd, logFd],
@@ -92,6 +99,7 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
   return {
     started: true,
     pid: child.pid ?? -1,
+    logLevel,
     pidPath,
     logPath,
     transport,
@@ -101,7 +109,7 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
 export async function stopDaemon(options: DaemonCliOptions = {}): Promise<DaemonStatusResult> {
   const env = options.env ?? process.env;
   const transport = requireSocketTransport(resolveDaemonClientTransport(options), "daemon stop");
-  const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
+  const { pidPath, logPath, metadataPath } = resolveDaemonPaths(env, options.homeDirOverride);
 
   const pid = readPidFile(pidPath);
   if (pid != null && isProcessAlive(pid)) {
@@ -111,6 +119,7 @@ export async function stopDaemon(options: DaemonCliOptions = {}): Promise<Daemon
 
   cleanupStalePidFile(pidPath, true);
   cleanupFile(transport.socketPath);
+  cleanupFile(metadataPath);
 
   return daemonStatus(options);
 }
@@ -118,14 +127,16 @@ export async function stopDaemon(options: DaemonCliOptions = {}): Promise<Daemon
 export async function daemonStatus(options: DaemonCliOptions = {}): Promise<DaemonStatusResult> {
   const env = options.env ?? process.env;
   const transport = requireSocketTransport(resolveDaemonClientTransport(options), "daemon status");
-  const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
+  const { pidPath, logPath, metadataPath } = resolveDaemonPaths(env, options.homeDirOverride);
   const pid = readPidFile(pidPath);
   if (pid != null && !isProcessAlive(pid)) {
     cleanupStalePidFile(pidPath, true);
     cleanupFile(transport.socketPath);
+    cleanupFile(metadataPath);
     return {
       running: false,
       pid: null,
+      logLevel: null,
       version: null,
       startedAt: null,
       command: null,
@@ -137,9 +148,11 @@ export async function daemonStatus(options: DaemonCliOptions = {}): Promise<Daem
   }
 
   const processInfo = pid == null ? null : readProcessMetadata(pid);
+  const daemonMetadata = readDaemonMetadata(metadataPath);
   return {
     running: await canReachHealthz(transport),
     pid,
+    logLevel: daemonMetadata?.logLevel ?? null,
     version: pid == null ? null : PACKAGE_VERSION,
     startedAt: processInfo?.startedAt ?? null,
     command: processInfo?.command ?? null,
@@ -280,6 +293,36 @@ function cleanupStalePidFile(pidPath: string, force = false): void {
   }
   if (force || !isProcessAlive(pid)) {
     cleanupFile(pidPath);
+  }
+}
+
+export function resolveDaemonLogLevel(
+  env: NodeJS.ProcessEnv = process.env,
+  override?: LogLevel,
+): LogLevel {
+  if (override) {
+    return override;
+  }
+  return parseLogLevel(env.AGENTINBOX_LOG_LEVEL, defaultLogLevel());
+}
+
+export function writeDaemonMetadata(
+  metadataPath: string,
+  metadata: { logLevel: LogLevel },
+): void {
+  fs.mkdirSync(path.dirname(metadataPath), { recursive: true });
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata), "utf8");
+}
+
+function readDaemonMetadata(metadataPath: string): { logLevel: LogLevel } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as { logLevel?: unknown };
+    if (isLogLevel(parsed.logLevel)) {
+      return { logLevel: parsed.logLevel };
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 

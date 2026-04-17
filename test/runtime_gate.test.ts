@@ -14,6 +14,48 @@ import { TerminalActivationTarget } from "../src/model";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Logger, LogLevel } from "../src/logging";
+
+class RecordingLogger implements Logger {
+  constructor(
+    public readonly level: LogLevel = "trace",
+    private readonly component = "test",
+    public readonly records: Array<{ level: LogLevel; event: string; fields?: Record<string, unknown>; component: string }> = [],
+  ) {}
+
+  enabled(_level: LogLevel): boolean {
+    return true;
+  }
+
+  child(component: string): Logger {
+    return new RecordingLogger(this.level, `${this.component}.${component}`, this.records);
+  }
+
+  error(event: string, fields?: Record<string, unknown>): void {
+    this.push("error", event, fields);
+  }
+
+  warn(event: string, fields?: Record<string, unknown>): void {
+    this.push("warn", event, fields);
+  }
+
+  info(event: string, fields?: Record<string, unknown>): void {
+    this.push("info", event, fields);
+  }
+
+  debug(event: string, fields?: Record<string, unknown>): void {
+    this.push("debug", event, fields);
+  }
+
+  trace(event: string, fields?: Record<string, unknown>): void {
+    this.push("trace", event, fields);
+  }
+
+  private push(level: LogLevel, event: string, fields?: Record<string, unknown>): void {
+    const record = { level, event, fields, component: this.component };
+    this.records.push(record);
+  }
+}
 
 function makeItermTarget(): TerminalActivationTarget {
   return {
@@ -376,6 +418,44 @@ test("DefaultActivationGate short-circuits terminal probes when runtime is alrea
     reason: "runtime_gone",
   });
   assert.equal(terminalChecked, false);
+});
+
+test("DefaultActivationGate emits a structured gate decision log", async () => {
+  const logger = new RecordingLogger();
+  const gate = new DefaultActivationGate(
+    [new CodexRuntimePresenceProbe(
+      () => {},
+      async () => ({
+        sessionId: "thread-1",
+        filePath: "/tmp/codex-thread-1.jsonl",
+      }),
+    )],
+    [{
+      supports: () => true,
+      async check() {
+        return {
+          presence: "available" as const,
+          busy: "busy" as const,
+        };
+      },
+    }],
+    logger,
+  );
+
+  const decision = await gate.evaluate(makeItermTarget());
+  assert.deepEqual(decision, {
+    outcome: "defer",
+    reason: "terminal_busy",
+  });
+
+  const logRecord = logger.records.find((record) => record.event === "gate_decision");
+  assert.ok(logRecord);
+  assert.equal(logRecord.level, "debug");
+  assert.equal(logRecord.fields?.runtimePresence, "alive");
+  assert.equal(logRecord.fields?.terminalPresence, "available");
+  assert.equal(logRecord.fields?.terminalBusy, "busy");
+  assert.equal(logRecord.fields?.outcome, "defer");
+  assert.equal(logRecord.fields?.reason, "terminal_busy");
 });
 
 test("CodexTerminalStateProbe reports busy when the Codex session file was updated recently", async () => {
