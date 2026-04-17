@@ -28,7 +28,7 @@ export const sources = sqliteTable("sources", {
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 }, (table) => ({
-  sourceTypeKey: uniqueIndex("idx_sources_type_key").on(table.sourceType, table.sourceKey),
+  sourceTypeKey: index("idx_sources_type_key").on(table.sourceType, table.sourceKey),
   hostStreamKey: uniqueIndex("idx_sources_host_stream_key").on(table.hostId, table.streamKind, table.streamKey),
 }));
 

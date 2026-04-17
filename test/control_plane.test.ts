@@ -2908,6 +2908,78 @@ test("control plane creates streams under explicit hosts", async () => {
   }
 });
 
+test("control plane allows the same GitHub stream key under different hosts", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aib-host-dups-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const hostA = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "github",
+        hostKey: "uxcAuth:github-a",
+        config: { uxcAuth: "github-a" },
+      });
+      const hostB = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "github",
+        hostKey: "uxcAuth:github-b",
+        config: { uxcAuth: "github-b" },
+      });
+
+      assert.equal(hostA.statusCode, 200);
+      assert.equal(hostB.statusCode, 200);
+      assert.notEqual(hostA.data.hostId, hostB.data.hostId);
+
+      const streamA = await client.request<{ sourceId: string; hostId: string; streamKind: string }>(
+        "/streams",
+        {
+          hostId: hostA.data.hostId,
+          streamKind: "repo_events",
+          streamKey: "holon-run/agentinbox",
+          config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-a" },
+        },
+      );
+      const streamB = await client.request<{ sourceId: string; hostId: string; streamKind: string }>(
+        "/streams",
+        {
+          hostId: hostB.data.hostId,
+          streamKind: "repo_events",
+          streamKey: "holon-run/agentinbox",
+          config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-b" },
+        },
+      );
+
+      assert.equal(streamA.statusCode, 200);
+      assert.equal(streamB.statusCode, 200);
+      assert.notEqual(streamA.data.sourceId, streamB.data.sourceId);
+      assert.equal(streamA.data.hostId, hostA.data.hostId);
+      assert.equal(streamB.data.hostId, hostB.data.hostId);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("control plane source remove accepts with_subscriptions for explicit cascade cleanup", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-control-plane-remove-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");

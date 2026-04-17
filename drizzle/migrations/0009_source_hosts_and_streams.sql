@@ -79,7 +79,7 @@ from (
       when source_type = 'local_event' then
         source_key
       else
-        source_id
+        source_key
     end as host_key,
     config_ref,
     case
@@ -122,10 +122,43 @@ set host_id = (
       when sources.source_type = 'local_event' then
         sources.source_key
       else
-        sources.source_id
+        sources.source_key
     end
 )
 where host_id is null;
+
+create table if not exists sources__new (
+  source_id text primary key,
+  host_id text not null,
+  stream_kind text not null,
+  stream_key text not null,
+  compat_source_type text,
+  source_type text not null,
+  source_key text not null,
+  config_ref text,
+  config_json text not null,
+  status text not null,
+  checkpoint text,
+  created_at text not null,
+  updated_at text not null
+);
+
+insert into sources__new (
+  source_id, host_id, stream_kind, stream_key, compat_source_type,
+  source_type, source_key, config_ref, config_json,
+  status, checkpoint, created_at, updated_at
+)
+select
+  source_id, host_id, stream_kind, stream_key, compat_source_type,
+  source_type, source_key, config_ref, config_json,
+  status, checkpoint, created_at, updated_at
+from sources;
+
+drop table sources;
+alter table sources__new rename to sources;
+
+create index if not exists idx_sources_type_key
+  on sources(source_type, source_key);
 
 create unique index if not exists idx_sources_host_stream_key
   on sources(host_id, stream_kind, stream_key);

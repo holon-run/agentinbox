@@ -310,8 +310,8 @@ export function defaultInboxIdForAgent(agentId: string): string {
   return `inbox_${agentId}`;
 }
 
-export function streamKeyForSource(sourceType: string, sourceKey: string): string {
-  return `${sourceType}:${sourceKey}`;
+export function streamKeyForSource(sourceId: string): string {
+  return `source:${sourceId}`;
 }
 
 export function toAppendResult(result: AppendEventsResult): AppendSourceEventResult {

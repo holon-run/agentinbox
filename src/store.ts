@@ -340,34 +340,35 @@ export class AgentInboxStore {
   }
 
   insertSource(source: SubscriptionSource): void {
-    const hostId = source.hostId ?? this.ensureCompatibilityHostForSource(source);
-    const streamKind = source.streamKind ?? "default";
-    const streamKey = source.streamKey ?? source.sourceKey;
-    this.db.run(
-      `
-      insert into sources (
-        source_id, host_id, stream_kind, stream_key, compat_source_type,
-        source_type, source_key, config_ref, config_json,
-        status, checkpoint, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
-        source.sourceId,
-        hostId,
-        streamKind,
-        streamKey,
-        source.compatSourceType ?? null,
-        source.sourceType,
-        source.sourceKey,
-        source.configRef ?? null,
-        JSON.stringify(source.config ?? {}),
-        source.status,
-        source.checkpoint ?? null,
-        source.createdAt,
-        source.updatedAt,
-      ],
-    );
-    this.persist();
+    this.inTransaction(() => {
+      const hostId = source.hostId ?? this.ensureCompatibilityHostForSource(source);
+      const streamKind = source.streamKind ?? "default";
+      const streamKey = source.streamKey ?? source.sourceKey;
+      this.db.run(
+        `
+        insert into sources (
+          source_id, host_id, stream_kind, stream_key, compat_source_type,
+          source_type, source_key, config_ref, config_json,
+          status, checkpoint, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          source.sourceId,
+          hostId,
+          streamKind,
+          streamKey,
+          source.compatSourceType ?? null,
+          source.sourceType,
+          source.sourceKey,
+          source.configRef ?? null,
+          JSON.stringify(source.config ?? {}),
+          source.status,
+          source.checkpoint ?? null,
+          source.createdAt,
+          source.updatedAt,
+        ],
+      );
+    });
   }
 
   listSources(): SubscriptionSource[] {
@@ -1620,12 +1621,15 @@ export class AgentInboxStore {
   }
 
   private mapSource(row: Record<string, unknown>): SubscriptionSource {
+    const hostId = requiredText(row, "host_id");
+    const streamKind = requiredText(row, "stream_kind");
+    const streamKey = requiredText(row, "stream_key");
     return {
       sourceId: String(row.source_id),
       streamId: String(row.source_id),
-      hostId: String(row.host_id),
-      streamKind: String(row.stream_kind),
-      streamKey: String(row.stream_key),
+      hostId,
+      streamKind,
+      streamKey,
       compatSourceType: row.compat_source_type ? String(row.compat_source_type) as SubscriptionSource["compatSourceType"] : null,
       sourceType: row.source_type as SubscriptionSource["sourceType"],
       sourceKey: String(row.source_key),
@@ -1666,7 +1670,23 @@ export class AgentInboxStore {
       createdAt: now,
       updatedAt: now,
     };
-    this.insertSourceHost(host);
+    this.db.run(
+      `
+      insert into source_hosts (
+        host_id, host_type, host_key, config_ref, config_json, status, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        host.hostId,
+        host.hostType,
+        host.hostKey,
+        host.configRef ?? null,
+        JSON.stringify(host.config ?? {}),
+        host.status,
+        host.createdAt,
+        host.updatedAt,
+      ],
+    );
     return host.hostId;
   }
 
@@ -1917,4 +1937,12 @@ export class AgentInboxStore {
       updatedAt: String(row.updated_at),
     };
   }
+}
+
+function requiredText(row: Record<string, unknown>, key: string): string {
+  const value = row[key];
+  if (value == null) {
+    throw new Error(`missing required column: ${key}`);
+  }
+  return String(value);
 }

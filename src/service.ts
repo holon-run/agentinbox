@@ -1603,7 +1603,7 @@ export class AgentInboxService {
   private async ensureStreamForSource(source: SubscriptionSource) {
     return this.backend.ensureStream({
       sourceId: source.sourceId,
-      streamKey: streamKeyForSource(source.sourceType, source.sourceKey),
+      streamKey: streamKeyForSource(source.sourceId),
       backend: "sqlite",
     });
   }
@@ -3390,15 +3390,15 @@ function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: st
       ];
     case "feishu":
       return [
-        { name: "appId", type: "string", description: "Feishu app ID.", required: false },
-        { name: "appSecret", type: "string", description: "Feishu app secret.", required: false },
+        { name: "appId", type: "string", description: "Feishu app ID.", required: true },
+        { name: "appSecret", type: "string", description: "Feishu app secret.", required: true },
         { name: "uxcAuth", type: "string", description: "Optional shared Feishu auth/runtime profile.", required: false },
       ];
     case "local_event":
       return [];
     case "remote_source":
       return [
-        { name: "profilePath", type: "string", description: "Local module path under $AGENTINBOX_HOME/source-profiles.", required: false },
+        { name: "profilePath", type: "string", description: "Local module path under $AGENTINBOX_HOME/source-profiles.", required: true },
         { name: "profileConfig", type: "object", description: "Module-specific host configuration.", required: false },
       ];
   }
