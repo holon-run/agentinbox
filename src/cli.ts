@@ -383,6 +383,7 @@ async function main(): Promise<void> {
       termProgram: detected.termProgram ?? undefined,
       itermSessionId: detected.itermSessionId ?? undefined,
       notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined,
+      minUnackedItems: parseOptionalNumber(takeFlagValue(normalized, "--min-unacked-items")) ?? undefined,
     });
     return;
   }
@@ -428,13 +429,14 @@ async function main(): Promise<void> {
     const agentId = normalized[4];
     const url = takeFlagValue(normalized, "--url");
     if (!agentId || !url) {
-      throw new Error("usage: agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N]");
+      throw new Error("usage: agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N] [--min-unacked-items N]");
     }
     await printRemote(client, `/agents/${encodeURIComponent(agentId)}/targets`, {
       kind: "webhook",
       url,
       activationMode: takeFlagValue(normalized, "--activation-mode") ?? undefined,
       notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined,
+      minUnackedItems: parseOptionalNumber(takeFlagValue(normalized, "--min-unacked-items")) ?? undefined,
     });
     return;
   }
@@ -1299,13 +1301,13 @@ Usage:
     agent: `agentinbox agent
 
 Usage:
-  agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N]
+  agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N] [--min-unacked-items N]
   agentinbox agent list
   agentinbox agent current
   agentinbox agent show <agentId>
   agentinbox agent remove <agentId>
   agentinbox agent resume <agentId>
-  agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N]
+  agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N] [--min-unacked-items N]
   agentinbox agent target list <agentId>
   agentinbox agent target remove <agentId> <targetId>
   agentinbox agent target resume <agentId> <targetId>

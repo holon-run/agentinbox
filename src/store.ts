@@ -764,8 +764,8 @@ export class AgentInboxStore {
         `
         insert into activation_targets (
           target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error,
-          mode, notify_lease_ms, url, created_at, updated_at, last_seen_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          mode, notify_lease_ms, min_unacked_items, url, created_at, updated_at, last_seen_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           target.targetId,
@@ -778,6 +778,7 @@ export class AgentInboxStore {
           target.lastError ?? null,
           target.mode,
           target.notifyLeaseMs,
+          target.minUnackedItems ?? null,
           target.url,
           target.createdAt,
           target.updatedAt,
@@ -788,10 +789,10 @@ export class AgentInboxStore {
       this.db.run(
         `
         insert into activation_targets (
-          target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error, mode, notify_lease_ms,
+          target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error, mode, notify_lease_ms, min_unacked_items,
           runtime_kind, runtime_session_id, runtime_pid, backend, tmux_pane_id, tty, term_program, iterm_session_id,
           created_at, updated_at, last_seen_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           target.targetId,
@@ -804,6 +805,7 @@ export class AgentInboxStore {
           target.lastError ?? null,
           target.mode,
           target.notifyLeaseMs,
+          target.minUnackedItems ?? null,
           target.runtimeKind,
           target.runtimeSessionId ?? null,
           target.runtimePid ?? null,
@@ -831,6 +833,8 @@ export class AgentInboxStore {
       tty?: string | null;
       termProgram?: string | null;
       itermSessionId?: string | null;
+      notifyLeaseMs?: number;
+      minUnackedItems?: number | null;
       updatedAt: string;
       lastSeenAt: string;
     },
@@ -839,7 +843,7 @@ export class AgentInboxStore {
       `
       update activation_targets
       set status = 'active', offline_since = null, last_error = null, consecutive_failures = 0,
-          runtime_kind = ?, runtime_session_id = ?, runtime_pid = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, updated_at = ?, last_seen_at = ?
+          runtime_kind = ?, runtime_session_id = ?, runtime_pid = ?, tmux_pane_id = ?, tty = ?, term_program = ?, iterm_session_id = ?, notify_lease_ms = ?, min_unacked_items = ?, updated_at = ?, last_seen_at = ?
       where target_id = ? and kind = 'terminal'
     `,
       [
@@ -850,6 +854,8 @@ export class AgentInboxStore {
         input.tty ?? null,
         input.termProgram ?? null,
         input.itermSessionId ?? null,
+        input.notifyLeaseMs ?? null,
+        input.minUnackedItems ?? null,
         input.updatedAt,
         input.lastSeenAt,
         targetId,
@@ -1782,6 +1788,11 @@ export class AgentInboxStore {
         mode: row.mode as WebhookActivationTarget["mode"],
         url,
         notifyLeaseMs: Number(row.notify_lease_ms),
+        minUnackedItems: row.min_unacked_items == null ? null : Number(row.min_unacked_items),
+        notificationPolicy: {
+          notifyLeaseMs: Number(row.notify_lease_ms),
+          minUnackedItems: row.min_unacked_items == null ? null : Number(row.min_unacked_items),
+        },
         createdAt: String(row.created_at),
         updatedAt: String(row.updated_at),
         lastSeenAt: String(row.last_seen_at),
@@ -1798,6 +1809,11 @@ export class AgentInboxStore {
       lastError: row.last_error ? String(row.last_error) : null,
       mode: row.mode as TerminalActivationTarget["mode"],
       notifyLeaseMs: Number(row.notify_lease_ms),
+      minUnackedItems: row.min_unacked_items == null ? null : Number(row.min_unacked_items),
+      notificationPolicy: {
+        notifyLeaseMs: Number(row.notify_lease_ms),
+        minUnackedItems: row.min_unacked_items == null ? null : Number(row.min_unacked_items),
+      },
       runtimeKind: (row.runtime_kind ? String(row.runtime_kind) : "unknown") as TerminalActivationTarget["runtimeKind"],
       runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,
       runtimePid: row.runtime_pid == null ? null : Number(row.runtime_pid),

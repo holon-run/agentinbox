@@ -817,6 +817,7 @@ function buildFastifyServer(service: AgentInboxService) {
           termProgram: { type: "string" },
           itermSessionId: { type: "string" },
           notifyLeaseMs: { type: "integer", minimum: 1 },
+          minUnackedItems: { type: "integer", minimum: 1 },
         },
       },
       response: {
@@ -839,6 +840,7 @@ function buildFastifyServer(service: AgentInboxService) {
       termProgram: optionalString(body.termProgram),
       itermSessionId: optionalString(body.itermSessionId),
       notifyLeaseMs: typeof body.notifyLeaseMs === "number" ? body.notifyLeaseMs : null,
+      minUnackedItems: typeof body.minUnackedItems === "number" ? body.minUnackedItems : null,
     });
   });
 
@@ -945,6 +947,7 @@ function buildFastifyServer(service: AgentInboxService) {
           url: { type: "string", minLength: 1 },
           activationMode: { type: "string" },
           notifyLeaseMs: { type: "integer", minimum: 1 },
+          minUnackedItems: { type: "integer", minimum: 1 },
         },
       },
       response: {
@@ -958,11 +961,13 @@ function buildFastifyServer(service: AgentInboxService) {
       url: string;
       activationMode?: ActivationMode;
       notifyLeaseMs?: number;
+      minUnackedItems?: number;
     };
     return service.addWebhookActivationTarget(decodeURIComponent(params.agentId), {
       url: body.url,
       activationMode: body.activationMode,
       notifyLeaseMs: body.notifyLeaseMs ?? null,
+      minUnackedItems: body.minUnackedItems ?? null,
     });
   });
 
@@ -1784,6 +1789,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
     message.startsWith("notifyLeaseMs must be a positive integer") ||
+    message.startsWith("minUnackedItems must be a positive integer") ||
     message.startsWith("invalid webhook activation target") ||
     message.startsWith("remote_source requires") ||
     message.startsWith("remote_source profile") ||
