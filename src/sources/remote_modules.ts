@@ -13,6 +13,7 @@ import {
   SubscriptionFilter,
   SubscriptionSource,
 } from "../model";
+import { compatSourceTypeForStream } from "../source_hosts";
 import {
   deriveGithubTrackedResource,
   expandGithubSubscriptionShortcut,
@@ -133,17 +134,18 @@ export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
 
   resolve(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceModule> {
-    if (source.sourceType === "github_repo") {
+    const compatSourceType = compatSourceTypeForStream(source);
+    if (compatSourceType === "github_repo") {
       return Promise.resolve(GITHUB_REPO_MODULE);
     }
-    if (source.sourceType === "github_repo_ci") {
+    if (compatSourceType === "github_repo_ci") {
       return Promise.resolve(GITHUB_REPO_CI_MODULE);
     }
-    if (source.sourceType === "feishu_bot") {
+    if (compatSourceType === "feishu_bot") {
       return Promise.resolve(FEISHU_BOT_MODULE);
     }
-    if (source.sourceType !== "remote_source") {
-      throw new Error(`unsupported source type for remote module: ${source.sourceType}`);
+    if (compatSourceType !== "remote_source") {
+      throw new Error(`unsupported source type for remote module: ${compatSourceType}`);
     }
     return this.loadUserModule(source, homeDir);
   }

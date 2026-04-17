@@ -127,6 +127,162 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async () => service.gc());
 
+  app.get("/hosts", {
+    schema: {
+      tags: ["sources"],
+      response: {
+        200: {
+          type: "object",
+          required: ["hosts"],
+          properties: {
+            hosts: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async () => ({ hosts: service.listHosts() }));
+
+  app.post("/hosts", {
+    schema: {
+      tags: ["sources"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["hostType", "hostKey"],
+        properties: {
+          hostType: { type: "string", minLength: 1 },
+          hostKey: { type: "string", minLength: 1 },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.registerHost(request.body as never));
+
+  app.get("/hosts/:hostId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["hostId"],
+        properties: {
+          hostId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { hostId: string };
+    return service.getHostDetails(decodeURIComponent(params.hostId));
+  });
+
+  app.get("/hosts/:hostId/schema", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["hostId"],
+        properties: {
+          hostId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { hostId: string };
+    const host = service.getHost(decodeURIComponent(params.hostId));
+    return service.getHostSchema(host.hostType);
+  });
+
+  app.get("/streams", {
+    schema: {
+      tags: ["sources"],
+      response: {
+        200: {
+          type: "object",
+          required: ["streams"],
+          properties: {
+            streams: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async () => ({ streams: service.listStreams() }));
+
+  app.post("/streams", {
+    schema: {
+      tags: ["sources"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["hostId", "streamKind", "streamKey"],
+        properties: {
+          hostId: { type: "string", minLength: 1 },
+          streamKind: { type: "string", minLength: 1 },
+          streamKey: { type: "string", minLength: 1 },
+          compatSourceType: { type: "string" },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.registerStream(request.body as never));
+
+  app.get("/streams/:streamId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.getStreamDetails(decodeURIComponent(params.streamId));
+  });
+
+  app.get("/streams/:streamId/schema", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.getResolvedSourceSchema(decodeURIComponent(params.streamId));
+  });
+
   app.get("/sources", {
     schema: {
       tags: ["sources"],
@@ -202,6 +358,192 @@ function buildFastifyServer(service: AgentInboxService) {
   }, async (request) => {
     const params = request.params as { sourceId: string };
     return service.getResolvedSourceSchema(decodeURIComponent(params.sourceId));
+  });
+
+  app.patch("/streams/:streamId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        minProperties: 1,
+        properties: {
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.updateSource(decodeURIComponent(params.streamId), request.body as never);
+  });
+
+  app.delete("/streams/:streamId", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          with_subscriptions: {
+            anyOf: [
+              { type: "boolean" },
+              { type: "string", enum: ["true", "false", "1", "0"] },
+            ],
+          },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    const query = request.query as { with_subscriptions?: boolean | string };
+    return service.removeSource(decodeURIComponent(params.streamId), {
+      withSubscriptions: query.with_subscriptions === true || query.with_subscriptions === "true" || query.with_subscriptions === "1",
+    });
+  });
+
+  app.post("/streams/:streamId/pause", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.pauseSource(decodeURIComponent(params.streamId));
+  });
+
+  app.post("/streams/:streamId/resume", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.resumeSource(decodeURIComponent(params.streamId));
+  });
+
+  app.post("/streams/schema-preview", {
+    schema: {
+      tags: ["sources"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sourceRef"],
+        properties: {
+          sourceRef: { type: "string", minLength: 1 },
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => service.previewSourceSchema(request.body as PreviewSourceSchemaInput));
+
+  app.post("/streams/:streamId/poll", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.pollSource(decodeURIComponent(params.streamId));
+  });
+
+  app.post("/streams/:streamId/events", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["streamId"],
+        properties: {
+          streamId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["sourceNativeId", "eventVariant"],
+        properties: {
+          sourceNativeId: { type: "string", minLength: 1 },
+          eventVariant: { type: "string", minLength: 1 },
+          occurredAt: { type: "string", minLength: 1 },
+          metadata: jsonObjectSchema,
+          rawPayload: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    const body = request.body as {
+      sourceNativeId: string;
+      eventVariant: string;
+      occurredAt?: string;
+      metadata?: Record<string, unknown>;
+      rawPayload?: Record<string, unknown>;
+    };
+    return service.appendSourceEvent({
+      sourceId: decodeURIComponent(params.streamId),
+      sourceNativeId: body.sourceNativeId,
+      eventVariant: body.eventVariant,
+      occurredAt: body.occurredAt,
+      metadata: body.metadata ?? {},
+      rawPayload: body.rawPayload ?? {},
+    });
   });
 
   app.delete("/sources/:sourceId", {
