@@ -635,7 +635,8 @@ async function main(): Promise<void> {
     const targetRef = takeFlagValue(normalized, "--target");
     const handleJson = takeFlagValue(normalized, "--handle-json");
     const operation = takeFlagValue(normalized, "--operation");
-    if (!operation || (!handleJson && (!provider || !surface || !targetRef))) {
+    const inputJson = takeFlagValue(normalized, "--input-json");
+    if (!operation || !inputJson || (!handleJson && (!provider || !surface || !targetRef))) {
       throw new Error("usage: agentinbox deliver invoke (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) --operation NAME --input-json JSON [--source-id SOURCE_ID]");
     }
     await printRemote(
@@ -646,7 +647,7 @@ async function main(): Promise<void> {
           sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
           deliveryHandle: parseJsonArg(handleJson),
           operation,
-          input: parseJsonArg(takeFlagValue(normalized, "--input-json")),
+          input: parseJsonArg(inputJson, "--input-json"),
         }
         : {
           sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
@@ -656,7 +657,7 @@ async function main(): Promise<void> {
           threadRef: takeFlagValue(normalized, "--thread") ?? undefined,
           replyMode: takeFlagValue(normalized, "--reply-mode") ?? undefined,
           operation,
-          input: parseJsonArg(takeFlagValue(normalized, "--input-json")),
+          input: parseJsonArg(inputJson, "--input-json"),
         },
     );
     return;

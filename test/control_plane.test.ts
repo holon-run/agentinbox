@@ -1025,6 +1025,42 @@ test("cli deliver actions exposes handle-scoped delivery operations", () => {
   }
 });
 
+test("cli deliver invoke requires input-json", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-deliver-invoke-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%9632",
+    CODEX_THREAD_ID: "thread-deliver-invoke",
+  };
+
+  try {
+    const result = runCli([
+      "deliver",
+      "invoke",
+      "--provider",
+      "github",
+      "--surface",
+      "pull_request_comment",
+      "--target",
+      "holon-run/agentinbox#111",
+      "--operation",
+      "add_comment",
+    ], env);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /usage: agentinbox deliver invoke \(\-\-handle-json JSON \| \-\-provider PROVIDER \-\-surface SURFACE \-\-target TARGET\) \-\-operation NAME \-\-input-json JSON \[\-\-source-id SOURCE_ID\]/,
+    );
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli agent resume and target resume commands are available", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-agent-resume-"));
   const env = {
