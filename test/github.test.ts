@@ -5,7 +5,9 @@ import {
   GithubDeliveryAdapter,
   GithubUxcClient,
   githubSubscriptionShortcutSpec,
+  githubDeliveryOperationsForHandle,
   expandGithubSubscriptionShortcut,
+  invokeGithubDeliveryOperation,
   normalizeGithubRepoEvent,
   projectGithubLifecycleSignal,
   type GithubCallClient,
@@ -239,4 +241,45 @@ test("github delivery adapter maps issue comments and review replies to uxc call
   };
   await adapter.send({ kind: "reply", payload: { text: "review" } } as never, reviewAttempt);
   assert.equal(fake.calls[1]?.operation, "post:/repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies");
+});
+
+test("github delivery operations expose handle-specific actions", () => {
+  assert.deepEqual(
+    githubDeliveryOperationsForHandle({
+      provider: "github",
+      surface: "pull_request_comment",
+      targetRef: "holon-run/agentinbox#34",
+    }).map((operation) => operation.name),
+    ["add_comment", "close_issue", "reopen_issue", "merge_pull_request"],
+  );
+  assert.deepEqual(
+    githubDeliveryOperationsForHandle({
+      provider: "github",
+      surface: "review_comment",
+      targetRef: "holon-run/agentinbox#34",
+      threadRef: "review_comment:88",
+    }).map((operation) => operation.name),
+    ["reply_in_review_thread"],
+  );
+});
+
+test("github delivery invoke maps issue state and merge operations to uxc calls", async () => {
+  const fake = new FakeUxcClient();
+  const client = new GithubUxcClient(fake);
+
+  await invokeGithubDeliveryOperation({
+    provider: "github",
+    surface: "issue_comment",
+    targetRef: "holon-run/agentinbox#12",
+  }, "close_issue", {}, client);
+  assert.equal(fake.calls[0]?.operation, "patch:/repos/{owner}/{repo}/issues/{issue_number}");
+  assert.equal((fake.calls[0]?.payload as Record<string, unknown>)?.state, "closed");
+
+  await invokeGithubDeliveryOperation({
+    provider: "github",
+    surface: "pull_request_comment",
+    targetRef: "holon-run/agentinbox#34",
+  }, "merge_pull_request", { mergeMethod: "squash", commitTitle: "Ship it" }, client);
+  assert.equal(fake.calls[1]?.operation, "put:/repos/{owner}/{repo}/pulls/{pull_number}/merge");
+  assert.equal((fake.calls[1]?.payload as Record<string, unknown>)?.merge_method, "squash");
 });

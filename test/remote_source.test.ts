@@ -708,6 +708,103 @@ test("RemoteSourceRuntime still honors deprecated profileRegistry option", async
   }
 });
 
+test("user-defined remote_source modules can expose delivery actions and invoke them", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const profileDir = path.join(dir, "source-profiles");
+    fs.mkdirSync(profileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, "delivery-hook.mjs"),
+      `globalThis.__deliveryCalls = globalThis.__deliveryCalls ?? [];
+export default {
+  id: "demo.delivery-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent(raw) {
+    return raw?.id ? {
+      sourceNativeId: String(raw.id),
+      eventVariant: "demo.created",
+      metadata: {},
+      rawPayload: raw
+    } : null;
+  },
+  listDeliveryOperations() {
+    return [{
+      name: "ack_remote_event",
+      title: "Ack Remote Event",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["body"],
+        properties: { body: { type: "string" } }
+      }
+    }];
+  },
+  async invokeDeliveryOperation(input) {
+    globalThis.__deliveryCalls.push({
+      operation: input.operation,
+      input: input.input,
+      targetRef: input.handle.targetRef
+    });
+    return { status: "sent", note: "sent custom remote delivery" };
+  }
+};`,
+      "utf8",
+    );
+
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo-delivery",
+      config: {
+        profilePath: "delivery-hook.mjs",
+        profileConfig: {},
+      },
+    });
+
+    const listed = await service.listDeliveryActions({
+      sourceId: source.sourceId,
+      provider: "demo",
+      surface: "ticket",
+      targetRef: "ticket:42",
+    });
+    assert.deepEqual(listed.operations.map((operation) => operation.name), ["ack_remote_event"]);
+
+    const invoked = await service.invokeDelivery({
+      sourceId: source.sourceId,
+      provider: "demo",
+      surface: "ticket",
+      targetRef: "ticket:42",
+      operation: "ack_remote_event",
+      input: { body: "acked" },
+    });
+    assert.equal(invoked.status, "sent");
+    assert.equal(invoked.note, "sent custom remote delivery");
+
+    const calls = ((globalThis as { __deliveryCalls?: Array<Record<string, unknown>> }).__deliveryCalls ?? []);
+    assert.deepEqual(calls, [{
+      operation: "ack_remote_event",
+      input: { body: "acked" },
+      targetRef: "ticket:42",
+    }]);
+  } finally {
+    delete (globalThis as { __deliveryCalls?: unknown }).__deliveryCalls;
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function checkpointKeyForPayload(
   payload: unknown,
   strategy: NonNullable<ManagedSourceSpec["poll_config"]>["checkpoint_strategy"],

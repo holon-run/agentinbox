@@ -586,9 +586,10 @@ async function main(): Promise<void> {
     const targetRef = takeFlagValue(normalized, "--target");
     const kind = takeFlagValue(normalized, "--kind") ?? "reply";
     if (!provider || !surface || !targetRef) {
-      throw new Error("usage: agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]");
+      throw new Error("usage: agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--source-id SOURCE_ID] [--kind KIND] [--payload-json JSON]");
     }
     await printRemote(client, "/deliveries/send", {
+      sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
       provider,
       surface,
       targetRef,
@@ -597,6 +598,67 @@ async function main(): Promise<void> {
       kind,
       payload: parseJsonArg(takeFlagValue(normalized, "--payload-json")),
     });
+    return;
+  }
+
+  if (command === "deliver" && normalized[1] === "actions") {
+    const provider = takeFlagValue(normalized, "--provider");
+    const surface = takeFlagValue(normalized, "--surface");
+    const targetRef = takeFlagValue(normalized, "--target");
+    const handleJson = takeFlagValue(normalized, "--handle-json");
+    if (!handleJson && (!provider || !surface || !targetRef)) {
+      throw new Error("usage: agentinbox deliver actions (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) [--source-id SOURCE_ID]");
+    }
+    await printRemote(
+      client,
+      "/deliveries/actions",
+      handleJson
+        ? {
+          sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
+          deliveryHandle: parseJsonArg(handleJson),
+        }
+        : {
+          sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
+          provider,
+          surface,
+          targetRef,
+          threadRef: takeFlagValue(normalized, "--thread") ?? undefined,
+          replyMode: takeFlagValue(normalized, "--reply-mode") ?? undefined,
+        },
+    );
+    return;
+  }
+
+  if (command === "deliver" && normalized[1] === "invoke") {
+    const provider = takeFlagValue(normalized, "--provider");
+    const surface = takeFlagValue(normalized, "--surface");
+    const targetRef = takeFlagValue(normalized, "--target");
+    const handleJson = takeFlagValue(normalized, "--handle-json");
+    const operation = takeFlagValue(normalized, "--operation");
+    if (!operation || (!handleJson && (!provider || !surface || !targetRef))) {
+      throw new Error("usage: agentinbox deliver invoke (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) --operation NAME --input-json JSON [--source-id SOURCE_ID]");
+    }
+    await printRemote(
+      client,
+      "/deliveries/invoke",
+      handleJson
+        ? {
+          sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
+          deliveryHandle: parseJsonArg(handleJson),
+          operation,
+          input: parseJsonArg(takeFlagValue(normalized, "--input-json")),
+        }
+        : {
+          sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
+          provider,
+          surface,
+          targetRef,
+          threadRef: takeFlagValue(normalized, "--thread") ?? undefined,
+          replyMode: takeFlagValue(normalized, "--reply-mode") ?? undefined,
+          operation,
+          input: parseJsonArg(takeFlagValue(normalized, "--input-json")),
+        },
+    );
     return;
   }
 
@@ -1087,7 +1149,9 @@ Usage:
     deliver: `agentinbox deliver
 
 Usage:
-  agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--kind KIND] [--payload-json JSON]
+  agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--source-id SOURCE_ID] [--kind KIND] [--payload-json JSON]
+  agentinbox deliver actions (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) [--source-id SOURCE_ID]
+  agentinbox deliver invoke (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) --operation NAME --input-json JSON [--source-id SOURCE_ID]
 `,
     status: `agentinbox status
 

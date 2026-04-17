@@ -3,6 +3,7 @@ import {
   AppendSourceEventInput,
   DeliveryAttempt,
   DeliveryHandle,
+  DeliveryOperationDescriptor,
   DeliveryRequest,
   SourceSchemaField,
   SubscriptionFilter,
@@ -67,6 +68,50 @@ export class GithubUxcClient {
       options: { auth: input.auth },
     });
   }
+
+  async updateIssueState(input: {
+    owner: string;
+    repo: string;
+    issueNumber: number;
+    state: "open" | "closed";
+    auth?: string;
+  }): Promise<void> {
+    await this.client.call({
+      endpoint: GITHUB_ENDPOINT,
+      operation: "patch:/repos/{owner}/{repo}/issues/{issue_number}",
+      payload: {
+        owner: input.owner,
+        repo: input.repo,
+        issue_number: input.issueNumber,
+        state: input.state,
+      },
+      options: { auth: input.auth },
+    });
+  }
+
+  async mergePullRequest(input: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    mergeMethod?: "merge" | "squash" | "rebase";
+    commitTitle?: string;
+    commitMessage?: string;
+    auth?: string;
+  }): Promise<void> {
+    await this.client.call({
+      endpoint: GITHUB_ENDPOINT,
+      operation: "put:/repos/{owner}/{repo}/pulls/{pull_number}/merge",
+      payload: {
+        owner: input.owner,
+        repo: input.repo,
+        pull_number: input.pullNumber,
+        merge_method: input.mergeMethod ?? null,
+        commit_title: input.commitTitle ?? null,
+        commit_message: input.commitMessage ?? null,
+      },
+      options: { auth: input.auth },
+    });
+  }
 }
 
 export class GithubDeliveryAdapter {
@@ -78,31 +123,136 @@ export class GithubDeliveryAdapter {
 
   async send(request: DeliveryRequest, attempt: DeliveryAttempt): Promise<{ status: "sent"; note: string }> {
     const payloadText = stringifyDeliveryPayload(request.payload);
-    const target = parseTargetRef(attempt.targetRef);
-    if (attempt.surface === "issue_comment" || attempt.surface === "pull_request_comment") {
-      await this.client.createIssueComment({
-        owner: target.owner,
-        repo: target.repo,
-        issueNumber: target.number,
-        body: payloadText,
-      });
-      return { status: "sent", note: "sent GitHub issue comment" };
-    }
-    if (attempt.surface === "review_comment") {
-      if (!attempt.threadRef || !attempt.threadRef.startsWith("review_comment:")) {
-        throw new Error("review_comment delivery requires threadRef=review_comment:<id>");
-      }
-      await this.client.replyToReviewComment({
-        owner: target.owner,
-        repo: target.repo,
-        pullNumber: target.number,
-        commentId: Number(attempt.threadRef.slice("review_comment:".length)),
-        body: payloadText,
-      });
-      return { status: "sent", note: "sent GitHub review comment reply" };
-    }
-    throw new Error(`unsupported GitHub surface: ${attempt.surface}`);
+    return invokeGithubDeliveryOperation(attempt, canonicalGithubOperationForSurface(attempt.surface), { body: payloadText }, this.client);
   }
+}
+
+export function githubDeliveryOperationsForHandle(handle: DeliveryHandle): DeliveryOperationDescriptor[] {
+  if (handle.surface === "review_comment") {
+    return [{
+      name: "reply_in_review_thread",
+      title: "Reply In Review Thread",
+      inputSchema: deliveryBodySchema(),
+      canonicalTextAlias: true,
+    }];
+  }
+  if (handle.surface === "issue_comment") {
+    return [
+      {
+        name: "add_comment",
+        title: "Add Comment",
+        inputSchema: deliveryBodySchema(),
+        canonicalTextAlias: true,
+      },
+      {
+        name: "close_issue",
+        title: "Close Issue",
+        inputSchema: emptyObjectSchema(),
+      },
+      {
+        name: "reopen_issue",
+        title: "Reopen Issue",
+        inputSchema: emptyObjectSchema(),
+      },
+    ];
+  }
+  if (handle.surface === "pull_request_comment") {
+    return [
+      {
+        name: "add_comment",
+        title: "Add Comment",
+        inputSchema: deliveryBodySchema(),
+        canonicalTextAlias: true,
+      },
+      {
+        name: "close_issue",
+        title: "Close Pull Request",
+        inputSchema: emptyObjectSchema(),
+      },
+      {
+        name: "reopen_issue",
+        title: "Reopen Pull Request",
+        inputSchema: emptyObjectSchema(),
+      },
+      {
+        name: "merge_pull_request",
+        title: "Merge Pull Request",
+        inputSchema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            mergeMethod: { type: "string", enum: ["merge", "squash", "rebase"] },
+            commitTitle: { type: "string" },
+            commitMessage: { type: "string" },
+          },
+        },
+      },
+    ];
+  }
+  return [];
+}
+
+export async function invokeGithubDeliveryOperation(
+  handle: DeliveryHandle,
+  operation: string,
+  input: Record<string, unknown>,
+  client: GithubUxcClient = new GithubUxcClient(),
+): Promise<{ status: "sent"; note: string }> {
+  const target = parseTargetRef(handle.targetRef);
+  if (operation === "add_comment") {
+    const body = requireDeliveryBody(input, operation);
+    await client.createIssueComment({
+      owner: target.owner,
+      repo: target.repo,
+      issueNumber: target.number,
+      body,
+    });
+    return { status: "sent", note: "sent GitHub issue comment" };
+  }
+  if (operation === "reply_in_review_thread") {
+    const body = requireDeliveryBody(input, operation);
+    if (!handle.threadRef || !handle.threadRef.startsWith("review_comment:")) {
+      throw new Error("reply_in_review_thread requires threadRef=review_comment:<id>");
+    }
+    await client.replyToReviewComment({
+      owner: target.owner,
+      repo: target.repo,
+      pullNumber: target.number,
+      commentId: Number(handle.threadRef.slice("review_comment:".length)),
+      body,
+    });
+    return { status: "sent", note: "sent GitHub review comment reply" };
+  }
+  if (operation === "close_issue") {
+    await client.updateIssueState({
+      owner: target.owner,
+      repo: target.repo,
+      issueNumber: target.number,
+      state: "closed",
+    });
+    return { status: "sent", note: "closed GitHub issue" };
+  }
+  if (operation === "reopen_issue") {
+    await client.updateIssueState({
+      owner: target.owner,
+      repo: target.repo,
+      issueNumber: target.number,
+      state: "open",
+    });
+    return { status: "sent", note: "reopened GitHub issue" };
+  }
+  if (operation === "merge_pull_request") {
+    await client.mergePullRequest({
+      owner: target.owner,
+      repo: target.repo,
+      pullNumber: target.number,
+      mergeMethod: asMergeMethod(input.mergeMethod),
+      commitTitle: asString(input.commitTitle) ?? undefined,
+      commitMessage: asString(input.commitMessage) ?? undefined,
+    });
+    return { status: "sent", note: "merged GitHub pull request" };
+  }
+  throw new Error(`unknown GitHub delivery operation: ${operation}`);
 }
 
 export function normalizeGithubRepoEvent(
@@ -359,6 +509,47 @@ function stringifyDeliveryPayload(payload: Record<string, unknown>): string {
     return payload.text;
   }
   return JSON.stringify(payload, null, 2);
+}
+
+function canonicalGithubOperationForSurface(surface: string): string {
+  if (surface === "issue_comment" || surface === "pull_request_comment") {
+    return "add_comment";
+  }
+  if (surface === "review_comment") {
+    return "reply_in_review_thread";
+  }
+  throw new Error(`deliver send only supports canonical GitHub text surfaces; use deliver invoke for ${surface}`);
+}
+
+function deliveryBodySchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["body"],
+    properties: {
+      body: { type: "string", minLength: 1 },
+    },
+  };
+}
+
+function emptyObjectSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {},
+  };
+}
+
+function requireDeliveryBody(input: Record<string, unknown>, operation: string): string {
+  const body = asString(input.body);
+  if (!body || body.trim().length === 0) {
+    throw new Error(`${operation} requires input.body`);
+  }
+  return body;
+}
+
+function asMergeMethod(value: unknown): "merge" | "squash" | "rebase" | undefined {
+  return value === "merge" || value === "squash" || value === "rebase" ? value : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

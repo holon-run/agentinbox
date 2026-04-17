@@ -2,6 +2,8 @@ import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import {
   AppendSourceEventInput,
   DeliveryAttempt,
+  DeliveryHandle,
+  DeliveryOperationDescriptor,
   DeliveryRequest,
   SubscriptionSource,
 } from "../model";
@@ -93,38 +95,69 @@ export class FeishuDeliveryAdapter {
   }
 
   async send(request: DeliveryRequest, attempt: DeliveryAttempt): Promise<{ status: "sent"; note: string }> {
-    const config = parseDeliveryConfig(request.payload);
-    const message = normalizeDeliveryMessage(request.payload);
-
-    if (attempt.surface === "message_reply") {
-      await this.client.replyToMessage({
-        endpoint: config.endpoint,
-        schemaUrl: config.schemaUrl,
-        auth: config.auth,
-        messageId: attempt.targetRef,
-        msgType: message.msgType,
-        content: message.content,
-        replyInThread: config.replyInThread,
-        uuid: config.uuid,
-      });
-      return { status: "sent", note: "sent Feishu message reply" };
-    }
-
-    if (attempt.surface === "chat_message") {
-      await this.client.sendChatMessage({
-        endpoint: config.endpoint,
-        schemaUrl: config.schemaUrl,
-        auth: config.auth,
-        chatId: attempt.targetRef,
-        msgType: message.msgType,
-        content: message.content,
-        uuid: config.uuid,
-      });
-      return { status: "sent", note: "sent Feishu chat message" };
-    }
-
-    throw new Error(`unsupported Feishu surface: ${attempt.surface}`);
+    return invokeFeishuDeliveryOperation(attempt, "send_text", request.payload, this.client);
   }
+}
+
+export function feishuDeliveryOperationsForHandle(handle: DeliveryHandle): DeliveryOperationDescriptor[] {
+  if (handle.surface !== "message_reply" && handle.surface !== "chat_message") {
+    return [];
+  }
+  return [{
+    name: "send_text",
+    title: handle.surface === "message_reply" ? "Reply With Text" : "Send Text Message",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["text"],
+      properties: {
+        text: { type: "string", minLength: 1 },
+      },
+    },
+    canonicalTextAlias: true,
+  }];
+}
+
+export async function invokeFeishuDeliveryOperation(
+  handle: DeliveryHandle,
+  operation: string,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient = new FeishuUxcClient(),
+): Promise<{ status: "sent"; note: string }> {
+  if (operation !== "send_text") {
+    throw new Error(`unknown Feishu delivery operation: ${operation}`);
+  }
+  const config = parseDeliveryConfig(input);
+  const message = normalizeDeliveryMessage(input);
+
+  if (handle.surface === "message_reply") {
+    await client.replyToMessage({
+      endpoint: config.endpoint,
+      schemaUrl: config.schemaUrl,
+      auth: config.auth,
+      messageId: handle.targetRef,
+      msgType: message.msgType,
+      content: message.content,
+      replyInThread: config.replyInThread,
+      uuid: config.uuid,
+    });
+    return { status: "sent", note: "sent Feishu message reply" };
+  }
+
+  if (handle.surface === "chat_message") {
+    await client.sendChatMessage({
+      endpoint: config.endpoint,
+      schemaUrl: config.schemaUrl,
+      auth: config.auth,
+      chatId: handle.targetRef,
+      msgType: message.msgType,
+      content: message.content,
+      uuid: config.uuid,
+    });
+    return { status: "sent", note: "sent Feishu chat message" };
+  }
+
+  throw new Error(`deliver send only supports canonical Feishu text surfaces; use deliver invoke for ${handle.surface}`);
 }
 
 export function normalizeFeishuBotEvent(
