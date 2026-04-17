@@ -12,6 +12,21 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [0.7.0] - 2026-04-17
+
+### Added
+
+- Added configurable daemon log levels plus structured activation-gate tracing so terminal delivery decisions can be debugged directly from daemon logs.
+
+### Fixed
+
+- Hardened the iTerm2 Python cursor probe so its tail normalization and busy semantics align with the existing CLI-based terminal probe path.
+- Restored remote runtime compatibility for downstream callers still using the deprecated `profileRegistry` alias after the RemoteSourceModule naming transition.
+
+### Changed
+
+- Renamed remote source profile-facing APIs and docs to `RemoteSourceModule` terminology while keeping compatibility shims for existing callers.
+
 ## [0.6.0] - 2026-04-16
 
 ### Added
