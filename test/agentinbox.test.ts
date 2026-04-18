@@ -4038,6 +4038,84 @@ test("gate reopening suppresses duplicate terminal dispatches for an already-not
   }
 });
 
+test("successful terminal dispatch suppresses unchanged reinjection even outside the dirty reminder path", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const activationGate = new MutableActivationGate("defer", "terminal_busy");
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-terminal-success-suppress",
+      tmuxPaneId: "%140",
+      notifyLeaseMs: 50,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "terminal-success-suppress",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-terminal-success-suppress-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 0);
+
+    activationGate.set("inject", "gate_unknown_or_idle");
+    const deferred = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const deferredSummary = deferred.pendingSummary;
+    const deferredNewItemCount = deferred.pendingNewItemCount;
+    const deferredSubscriptionIds = deferred.pendingSubscriptionIds;
+    const deferredSourceIds = deferred.pendingSourceIds;
+    store.upsertActivationDispatchState({
+      ...deferred,
+      leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
+      updatedAt: nowIso(),
+    });
+    await (service as any).syncActivationDispatchStates();
+    await sleep(40);
+
+    assert.equal(terminalDispatcher.calls.length, 1);
+
+    const entries = store.listInboxEntries(registered.inbox.inboxId, { includeAcked: false });
+    const outcome = await (service as any).dispatchActivationTarget({
+      agentId: registered.agent.agentId,
+      targetId: registered.terminalTarget.targetId,
+      newItemCount: deferredNewItemCount,
+      totalUnackedCount: entries.length,
+      summary: deferredSummary,
+      subscriptionIds: deferredSubscriptionIds,
+      sourceIds: deferredSourceIds,
+      entries,
+    });
+
+    assert.equal(outcome, "suppressed");
+    assert.equal(terminalDispatcher.calls.length, 1);
+    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.equal(state.status, "notified");
+    assert.equal(state.pendingFingerprint, null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("offline terminal gate marks the target offline before dispatch", async () => {
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { store, service, dir } = await makeService({
