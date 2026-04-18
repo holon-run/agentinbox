@@ -11,7 +11,7 @@ import { startControlServer } from "../src/control_server";
 import { daemonStatus } from "../src/daemon";
 import { createServer } from "../src/http";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveDaemonPaths, resolveServeConfig } from "../src/paths";
-import { Activation, InboxItem, RegisterSourceInput, SubscriptionPollResult } from "../src/model";
+import { Activation, InboxItem, SubscriptionPollResult } from "../src/model";
 import { AgentInboxService } from "../src/service";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
@@ -77,6 +77,28 @@ function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?
   });
 }
 
+function addCliSource(
+  env: NodeJS.ProcessEnv,
+  hostType: string,
+  hostKey: string,
+  streamKind: string,
+  streamKey: string,
+  configJson?: string,
+) {
+  const hostAddArgs = ["host", "add", hostType, hostKey];
+  const hostAdd = runCli(hostAddArgs, env);
+  assert.equal(hostAdd.status, 0, hostAdd.stderr);
+  const host = JSON.parse(hostAdd.stdout) as { hostId: string };
+
+  const sourceAddArgs = ["source", "add", host.hostId, streamKind, streamKey];
+  if (configJson != null) {
+    sourceAddArgs.push("--config-json", configJson);
+  }
+  const sourceAdd = runCli(sourceAddArgs, env);
+  assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
+  return JSON.parse(sourceAdd.stdout) as { sourceId: string; hostId?: string };
+}
+
 test("cli version and help subcommands print text output", () => {
   const repoDir = path.resolve(__dirname, "..");
   const version = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "--version"], {
@@ -104,7 +126,7 @@ test("cli version and help subcommands print text output", () => {
     encoding: "utf8",
   });
   assert.equal(helpSource.status, 0);
-  assert.match(helpSource.stdout, /agentinbox source schema <sourceId\|sourceType>/);
+  assert.match(helpSource.stdout, /agentinbox source schema <sourceId>/);
 });
 
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
@@ -363,11 +385,18 @@ test("control plane validates sources/events occurredAt and deliveries/send requ
         socketPath,
         source: "flag",
       });
-      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "local_event",
-        sourceKey: "schema-validate-demo",
+      const hostResponse = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "schema-validate-demo",
         config: {},
-      } satisfies RegisterSourceInput);
+      });
+      assert.equal(hostResponse.statusCode, 200);
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        hostId: hostResponse.data.hostId,
+        streamKind: "events",
+        streamKey: "schema-validate-demo",
+        config: {},
+      });
       assert.equal(sourceResponse.statusCode, 200);
 
       const invalidOccurredAt = await client.request<{ error: string }>(
@@ -415,10 +444,10 @@ test("control plane exposes delivery actions and invoke for remote modules", asy
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-delivery-ops-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "delivery-hook.mjs"),
+    path.join(moduleDir, "delivery-hook.mjs"),
     `export default {
   id: "demo.delivery-hook",
   validateConfig() {},
@@ -473,14 +502,21 @@ test("control plane exposes delivery actions and invoke for remote modules", asy
     const started = await startControlServer(server, { kind: "socket", socketPath });
     try {
       const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const hostResponse = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "remote_source",
+        hostKey: "demo-delivery",
+        config: {},
+      });
+      assert.equal(hostResponse.statusCode, 200);
       const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "remote_source",
-        sourceKey: "demo-delivery",
+        hostId: hostResponse.data.hostId,
+        streamKind: "default",
+        streamKey: "demo-delivery",
         config: {
-          profilePath: "delivery-hook.mjs",
-          profileConfig: {},
+          modulePath: "delivery-hook.mjs",
+          moduleConfig: {},
         },
-      } satisfies RegisterSourceInput);
+      });
       assert.equal(sourceResponse.statusCode, 200);
 
       const actions = await client.request<{ operations: Array<{ name: string }> }>("/deliveries/actions", {
@@ -607,10 +643,10 @@ test("control plane pause and resume endpoints update source lifecycle", async (
   })));
   const server = createServer(service);
 
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "demo-pause.mjs"),
+    path.join(moduleDir, "demo-pause.mjs"),
     `export default {
   id: "demo.pause",
   validateConfig() {},
@@ -639,12 +675,19 @@ test("control plane pause and resume endpoints update source lifecycle", async (
     const started = await startControlServer(server, { kind: "socket", socketPath });
     try {
       const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const hostResponse = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "remote_source",
+        hostKey: "pause-http-key",
+        config: {},
+      });
+      assert.equal(hostResponse.statusCode, 200);
       const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "remote_source",
-        sourceKey: "pause-http-key",
+        hostId: hostResponse.data.hostId,
+        streamKind: "default",
+        streamKey: "pause-http-key",
         config: {
-          profilePath: "demo-pause.mjs",
-          profileConfig: {},
+          modulePath: "demo-pause.mjs",
+          moduleConfig: {},
         },
       });
       assert.equal(sourceResponse.statusCode, 200);
@@ -701,9 +744,16 @@ test("control plane can update source config while preserving source identity", 
     const started = await startControlServer(server, { kind: "socket", socketPath });
     try {
       const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const hostResponse = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "http-update-demo",
+        config: {},
+      });
+      assert.equal(hostResponse.statusCode, 200);
       const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "local_event",
-        sourceKey: "http-update-demo",
+        hostId: hostResponse.data.hostId,
+        streamKind: "events",
+        streamKey: "http-update-demo",
         configRef: "config://before",
         config: {
           channel: "engineering",
@@ -770,9 +820,7 @@ test("cli resolves current agent, auto-registers session workflows, and warns on
   };
 
   try {
-    const sourceAdd = runCli(["source", "add", "local_event", "cli-current-demo"], envBase);
-    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
-    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+    const source = addCliSource(envBase, "local_event", "cli-current-demo", "events", "cli-current-demo");
 
     const subscribeCurrent = runCli(["subscription", "add", source.sourceId], envCurrent);
     assert.equal(subscribeCurrent.status, 0, subscribeCurrent.stderr);
@@ -853,9 +901,7 @@ test("cli source schema resolves source ids to instance schema", () => {
   };
 
   try {
-    const sourceAdd = runCli(["source", "add", "local_event", "cli-source-schema-demo"], env);
-    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
-    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+    const source = addCliSource(env, "local_event", "cli-source-schema-demo", "events", "cli-source-schema-demo");
 
     const schema = runCli(["source", "schema", source.sourceId], env);
     assert.equal(schema.status, 0, schema.stderr);
@@ -877,7 +923,7 @@ test("cli source schema resolves source ids to instance schema", () => {
   }
 });
 
-test("cli source schema preview resolves remote module-backed schemas before registration", () => {
+test("cli stream schema preview resolves remote module-backed schemas before registration", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-schema-preview-"));
   const env = {
     ...process.env,
@@ -890,10 +936,10 @@ test("cli source schema preview resolves remote module-backed schemas before reg
   };
 
   try {
-    const profileDir = path.join(homeDir, "source-profiles");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(homeDir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "preview.mjs"),
+      path.join(moduleDir, "preview.mjs"),
       `export default {
   id: "demo.preview",
   validateConfig(source) {
@@ -922,12 +968,12 @@ test("cli source schema preview resolves remote module-backed schemas before reg
     );
 
     const schema = runCli([
-      "source",
+      "stream",
       "schema",
       "preview",
       "remote:demo.preview",
       "--config-json",
-      "{\"profilePath\":\"preview.mjs\",\"profileConfig\":{\"token\":\"demo-token\"}}",
+      "{\"modulePath\":\"preview.mjs\",\"moduleConfig\":{\"token\":\"demo-token\"}}",
     ], env);
     assert.equal(schema.status, 0, schema.stderr);
     const payload = JSON.parse(schema.stdout) as {
@@ -1187,9 +1233,7 @@ test("cli subscription add accepts filter-file and filter-stdin and echoes norma
   };
 
   try {
-    const sourceAdd = runCli(["source", "add", "local_event", "cli-filter-demo"], env);
-    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
-    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+    const source = addCliSource(env, "local_event", "cli-filter-demo", "events", "cli-filter-demo");
 
     const filterFilePath = path.join(homeDir, "filter.json");
     fs.writeFileSync(filterFilePath, JSON.stringify({
@@ -1348,10 +1392,10 @@ test("cli subscription add supports generic shortcut invocation", async () => {
 
   try {
     const store = await AgentInboxStore.open(dbPath);
-    const profileDir = path.join(homeDir, "source-profiles");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(homeDir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "cli-shortcut.mjs"),
+      path.join(moduleDir, "cli-shortcut.mjs"),
       `export default {
   id: "demo.cli.shortcut",
   validateConfig() {},
@@ -1383,12 +1427,15 @@ test("cli subscription add supports generic shortcut invocation", async () => {
     );
     const source = {
       sourceId: "src_cli_shortcut_demo",
+      hostId: "hst_cli_shortcut_demo",
+      streamKind: "default",
+      streamKey: "cli-shortcut-demo",
       sourceType: "remote_source" as const,
       sourceKey: "cli-shortcut-demo",
       configRef: null,
       config: {
-        profilePath: "cli-shortcut.mjs",
-        profileConfig: {},
+        modulePath: "cli-shortcut.mjs",
+        moduleConfig: {},
       },
       status: "active" as const,
       checkpoint: null,
@@ -1439,10 +1486,10 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "http-shortcut.mjs"),
+    path.join(moduleDir, "http-shortcut.mjs"),
     `export default {
   id: "demo.http.shortcut",
   validateConfig() {},
@@ -1496,12 +1543,19 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
         socketPath,
         source: "flag",
       });
+      const host = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "remote_source",
+        hostKey: "http-shortcut-demo",
+        config: {},
+      });
+      assert.equal(host.statusCode, 200);
       const source = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "remote_source",
-        sourceKey: "http-shortcut-demo",
+        hostId: host.data.hostId,
+        streamKind: "default",
+        streamKey: "http-shortcut-demo",
         config: {
-          profilePath: "http-shortcut.mjs",
-          profileConfig: {},
+          modulePath: "http-shortcut.mjs",
+          moduleConfig: {},
         },
       });
       const registered = await client.request<{ agent: { agentId: string } }>("/agents", {
@@ -1536,14 +1590,14 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
   }
 });
 
-test("control plane source schema preview resolves remote modules without persistence", async () => {
+test("control plane stream schema preview resolves remote modules without persistence", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "preview.mjs"),
+    path.join(moduleDir, "preview.mjs"),
     `export default {
   id: "demo.http.preview",
   validateConfig(source) {
@@ -1592,11 +1646,11 @@ test("control plane source schema preview resolves remote modules without persis
         hostType: string;
         sourceKind: string;
         implementationId: string;
-      }>("/sources/schema-preview", {
+      }>("/streams/schema-preview", {
         sourceRef: "remote:demo.http.preview",
         config: {
-          profilePath: "preview.mjs",
-          profileConfig: { token: "demo-token" },
+          modulePath: "preview.mjs",
+          moduleConfig: { token: "demo-token" },
         },
       }, "POST");
       assert.equal(preview.statusCode, 200);
@@ -1615,14 +1669,14 @@ test("control plane source schema preview resolves remote modules without persis
   }
 });
 
-test("control plane source schema preview returns 400 for invalid preview inputs", async () => {
+test("control plane stream schema preview returns 400 for invalid preview inputs", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-error-"));
   const socketPath = path.join(os.tmpdir(), `aix-preview-${process.pid}-${Date.now()}.sock`);
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "preview-error.mjs"),
+    path.join(moduleDir, "preview-error.mjs"),
     `export default {
   id: "demo.http.preview.error",
   validateConfig(source) {
@@ -1660,11 +1714,11 @@ test("control plane source schema preview returns 400 for invalid preview inputs
         socketPath,
         source: "flag",
       });
-      const preview = await client.request<{ error: string }>("/sources/schema-preview", {
+      const preview = await client.request<{ error: string }>("/streams/schema-preview", {
         sourceRef: "remote:demo.http.preview.error",
         config: {
-          profilePath: "preview-error.mjs",
-          profileConfig: {},
+          modulePath: "preview-error.mjs",
+          moduleConfig: {},
         },
       }, "POST");
       assert.equal(preview.statusCode, 400);
@@ -1684,10 +1738,10 @@ test("control plane shortcut validation errors return 400 instead of 500", async
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-error-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "http-shortcut-error.mjs"),
+    path.join(moduleDir, "http-shortcut-error.mjs"),
     `export default {
   id: "demo.http.shortcut.error",
   validateConfig() {},
@@ -1724,12 +1778,15 @@ test("control plane shortcut validation errors return 400 instead of 500", async
   try {
     const source = {
       sourceId: "src_http_shortcut_error_demo",
+      hostId: "hst_http_shortcut_error_demo",
+      streamKind: "default",
+      streamKey: "http-shortcut-error-demo",
       sourceType: "remote_source" as const,
       sourceKey: "http-shortcut-error-demo",
       configRef: null,
       config: {
-        profilePath: "http-shortcut-error.mjs",
-        profileConfig: {},
+        modulePath: "http-shortcut-error.mjs",
+        moduleConfig: {},
       },
       status: "active" as const,
       checkpoint: null,
@@ -1785,9 +1842,7 @@ test("cli source pause rejects unsupported local_event sources", () => {
   };
 
   try {
-    const sourceAdd = runCli(["source", "add", "local_event", "cli-pause-demo"], env);
-    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
-    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+    const source = addCliSource(env, "local_event", "cli-pause-demo", "events", "cli-pause-demo");
 
     const paused = runCli(["source", "pause", source.sourceId], env);
     assert.notEqual(paused.status, 0);
@@ -1813,16 +1868,14 @@ test("cli source update patches config in place", () => {
   };
 
   try {
-    const sourceAdd = runCli([
-      "source",
-      "add",
+    const source = addCliSource(
+      env,
       "local_event",
       "cli-update-demo",
-      "--config-json",
+      "events",
+      "cli-update-demo",
       "{\"channel\":\"engineering\"}",
-    ], env);
-    assert.equal(sourceAdd.status, 0, sourceAdd.stderr);
-    const source = JSON.parse(sourceAdd.stdout) as { sourceId: string };
+    );
 
     const updated = runCli([
       "source",
@@ -1941,20 +1994,27 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       });
       assert.equal(targetResponse.statusCode, 200);
 
-      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "local_event",
-        sourceKey: "e2e-demo",
+      const hostResponse = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "e2e-local",
         config: {},
-      } satisfies RegisterSourceInput);
+      });
+      assert.equal(hostResponse.statusCode, 200);
+
+      const sourceResponse = await client.request<{ sourceId: string }>("/sources", {
+        hostId: hostResponse.data.hostId,
+        streamKind: "events",
+        streamKey: "e2e-demo",
+        config: {},
+      });
       assert.equal(sourceResponse.statusCode, 200);
 
-      const schemaResponse = await client.request<{ sourceType: string; metadataFields: unknown[] }>(
-        "/source-types/github_repo_ci/schema",
+      const schemaResponse = await client.request<{ sourceId: string; metadataFields: unknown[] }>(
+        `/sources/${encodeURIComponent(sourceResponse.data.sourceId)}/schema`,
         undefined,
         "GET",
       );
       assert.equal(schemaResponse.statusCode, 200);
-      assert.equal(schemaResponse.data.sourceType, "github_repo_ci");
       assert.ok(schemaResponse.data.metadataFields.length > 0);
 
       const subscriptionResponse = await client.request<{
@@ -2156,14 +2216,15 @@ test("control plane accepts direct inbox text messages and rejects blank payload
       assert.equal(activation.newItemCount, 1);
       assert.equal(activation.items?.[0]?.eventVariant, "agentinbox.direct_text_message");
 
-      const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/raw-items?include_acked=true`,
+      const inboxResponse = await client.request<{ entries: Array<{ kind: string; item: { rawPayload: Record<string, unknown> } }> }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/entries?include_acked=true`,
         undefined,
         "GET",
       );
       assert.equal(inboxResponse.statusCode, 200);
-      assert.equal(inboxResponse.data.items.length, 1);
-      assert.deepEqual(inboxResponse.data.items[0].rawPayload, {
+      assert.equal(inboxResponse.data.entries.length, 1);
+      assert.equal(inboxResponse.data.entries[0].kind, "item");
+      assert.deepEqual(inboxResponse.data.entries[0].item.rawPayload, {
         type: "direct_text_message",
         message: "Review PR #51 CI failure and push a fix.",
         sender: "local-script",
@@ -2326,14 +2387,15 @@ test("control plane exposes timer lifecycle endpoints and timer firing writes in
       assert.equal(listResponse.data.timers.length, 1);
 
       await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
-      const inboxResponse = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/raw-items?include_acked=true`,
+      const inboxResponse = await client.request<{ entries: Array<{ kind: string; item: { rawPayload: Record<string, unknown> } }> }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/entries?include_acked=true`,
         undefined,
         "GET",
       );
       assert.equal(inboxResponse.statusCode, 200);
-      assert.equal(inboxResponse.data.items.length, 1);
-      assert.deepEqual(inboxResponse.data.items[0].rawPayload, {
+      assert.equal(inboxResponse.data.entries.length, 1);
+      assert.equal(inboxResponse.data.entries[0].kind, "item");
+      assert.deepEqual(inboxResponse.data.entries[0].item.rawPayload, {
         type: "timer_fired",
         scheduleId,
         message: "Prepare today's task plan.",
@@ -2426,6 +2488,7 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
         deliveryHandle: null,
         ackedAt: null,
       });
+      (store as unknown as { ensureInboxEntryBackfill(): void }).ensureInboxEntryBackfill();
 
       const compactResponse = await client.request<{ deleted: number; retentionMs: number }>(
         `/agents/${encodeURIComponent(agentId)}/inbox/compact`,
@@ -2434,13 +2497,13 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
       assert.equal(compactResponse.statusCode, 200);
       assert.equal(compactResponse.data.deleted, 1);
 
-      const compactRead = await client.request<{ items: InboxItem[] }>(
-        `/agents/${encodeURIComponent(agentId)}/inbox/raw-items?include_acked=true`,
+      const compactRead = await client.request<{ entries: Array<{ kind: string; item: { itemId: string } }> }>(
+        `/agents/${encodeURIComponent(agentId)}/inbox/entries?include_acked=true`,
         undefined,
         "GET",
       );
       assert.equal(compactRead.statusCode, 200);
-      assert.equal(compactRead.data.items.length, 1);
+      assert.equal(compactRead.data.entries.length, 1);
 
       store.insertInboxItem({
         itemId: "item-old-global",
@@ -2454,6 +2517,7 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
         deliveryHandle: null,
         ackedAt: oldAckedAt,
       });
+      (store as unknown as { ensureInboxEntryBackfill(): void }).ensureInboxEntryBackfill();
 
       const gcResponse = await client.request<{ deleted: number; retentionMs: number }>(
         "/gc",
@@ -2711,10 +2775,10 @@ test("control plane accepts remote_source registration", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-src-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "demo.mjs"),
+    path.join(moduleDir, "demo.mjs"),
     `export default {
   id: "demo.control",
   validateConfig() {},
@@ -2760,20 +2824,28 @@ test("control plane accepts remote_source registration", async () => {
         socketPath,
         source: "flag",
       });
+      const host = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "remote_source",
+        hostKey: "invalid-remote",
+        config: {},
+      });
+      assert.equal(host.statusCode, 200);
       const invalid = await client.request<{ error: string }>("/sources", {
-        sourceType: "remote_source",
-        sourceKey: "invalid-remote",
+        hostId: host.data.hostId,
+        streamKind: "default",
+        streamKey: "invalid-remote",
         config: {},
       });
       assert.equal(invalid.statusCode, 400);
-      assert.match(invalid.data.error, /remote_source requires config.profilePath/);
+      assert.match(invalid.data.error, /remote_source requires config.modulePath/);
 
       const response = await client.request<{ error: string }>("/sources", {
-        sourceType: "remote_source",
-        sourceKey: "remote-demo",
+        hostId: host.data.hostId,
+        streamKind: "default",
+        streamKey: "remote-demo",
         config: {
-          profilePath: "demo.mjs",
-          profileConfig: {},
+          modulePath: "demo.mjs",
+          moduleConfig: {},
         },
       });
       assert.equal(response.statusCode, 200);
@@ -2825,8 +2897,8 @@ test("control plane source details degrade when remote_source resolution fails b
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-resolve-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-profiles");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
 
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;
@@ -2855,12 +2927,15 @@ test("control plane source details degrade when remote_source resolution fails b
       const sourceId = "src_missing_profile";
       store.insertSource({
         sourceId,
+        hostId: "hst_missing_profile",
+        streamKind: "default",
+        streamKey: "resolve-demo",
         sourceType: "remote_source",
         sourceKey: "resolve-demo",
         configRef: null,
         config: {
-          profilePath: "missing.mjs",
-          profileConfig: {},
+          modulePath: "missing.mjs",
+          moduleConfig: {},
         },
         status: "active",
         checkpoint: null,
@@ -2893,7 +2968,7 @@ test("control plane source details degrade when remote_source resolution fails b
   }
 });
 
-test("control plane groups compatible GitHub source aliases under one host", async () => {
+test("control plane groups compatible GitHub streams under one host", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-host-stream-grouping-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
@@ -2917,14 +2992,22 @@ test("control plane groups compatible GitHub source aliases under one host", asy
     try {
       const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
 
+      const host = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "github",
+        hostKey: "uxcAuth:github-default",
+        config: { uxcAuth: "github-default" },
+      });
+      assert.equal(host.statusCode, 200);
       const repoEvents = await client.request<{ hostId: string; sourceId: string }>("/sources", {
-        sourceType: "github_repo",
-        sourceKey: "holon-run/agentinbox",
+        hostId: host.data.hostId,
+        streamKind: "repo_events",
+        streamKey: "holon-run/agentinbox",
         config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
       });
       const ciRuns = await client.request<{ hostId: string; sourceId: string }>("/sources", {
-        sourceType: "github_repo_ci",
-        sourceKey: "holon-run/agentinbox",
+        hostId: host.data.hostId,
+        streamKind: "ci_runs",
+        streamKey: "holon-run/agentinbox",
         config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
       });
 
@@ -2993,7 +3076,6 @@ test("control plane creates streams under explicit hosts", async () => {
           hostId: host.data.hostId,
           streamKind: "events",
           streamKey: "local-default",
-          compatSourceType: "local_event",
           config: {},
         },
       );
@@ -3113,9 +3195,16 @@ test("control plane source remove accepts with_subscriptions for explicit cascad
         socketPath,
         source: "flag",
       });
+      const host = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "control-plane-remove-cascade",
+        config: {},
+      });
+      assert.equal(host.statusCode, 200);
       const source = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "local_event",
-        sourceKey: "control-plane-remove-cascade",
+        hostId: host.data.hostId,
+        streamKind: "events",
+        streamKey: "control-plane-remove-cascade",
         config: {},
       });
       const registered = await client.request<{ agent: { agentId: string } }>("/agents", {
@@ -3185,9 +3274,16 @@ test("control plane source remove rejects invalid with_subscriptions query value
         socketPath,
         source: "flag",
       });
+      const host = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "control-plane-remove-invalid",
+        config: {},
+      });
+      assert.equal(host.statusCode, 200);
       const source = await client.request<{ sourceId: string }>("/sources", {
-        sourceType: "local_event",
-        sourceKey: "control-plane-remove-invalid",
+        hostId: host.data.hostId,
+        streamKind: "events",
+        streamKey: "control-plane-remove-invalid",
         config: {},
       });
 

@@ -37,18 +37,26 @@ agentinbox agent show <agent_id>
 agentinbox agent remove <agent_id>
 ```
 
+## Hosts
+
+```bash
+agentinbox host add <host_type> <host_key> [--config-json ...]
+agentinbox host list
+agentinbox host show <host_id>
+agentinbox host schema <host_id>
+```
+
 ## Sources
 
 ```bash
-agentinbox source add <source_type> <source_key> [--config-json ...]
+agentinbox source add <host_id> <stream_kind> <stream_key> [--config-json ...]
 agentinbox source list
 agentinbox source show <source_id>
 agentinbox source update <source_id> [--config-json ...] [--config-ref ...]
 agentinbox source remove <source_id>
 agentinbox source pause <remote_source_id>
 agentinbox source resume <remote_source_id>
-agentinbox source schema <source_id|source_type>
-agentinbox source schema preview <source_kind|source_type> [--config-json ...] [--config-ref ...]
+agentinbox source schema <source_id>
 agentinbox source poll <source_id>
 agentinbox source event <source_id> --native-id <id> --event <variant>
 ```
@@ -60,11 +68,6 @@ resume a paused source.
 
 `source update` replaces persisted `config` and/or `configRef` in place while
 preserving the existing `sourceId` and attached subscriptions.
-
-`source schema preview` resolves a schema before source registration. Builtin
-remote-backed kinds can be previewed directly, for example `github_repo`.
-User-defined remote modules can be previewed with either `remote_source` or
-`remote:<moduleId>` plus `--config-json '{"profilePath":"...","profileConfig":{}}'`.
 
 Managed remote sources now auto-pause after a grace period once their last
 subscription is removed. `source show <sourceId>` includes `idleState` when a
@@ -113,8 +116,8 @@ agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
 agentinbox inbox send --agent-id <agent_id> --message "..." [--sender <sender>]
 agentinbox inbox watch [--agent-id <agent_id>]
-agentinbox inbox ack [--agent-id <agent_id>] --through <item_id>
-agentinbox inbox ack [--agent-id <agent_id>] --item <item_id>
+agentinbox inbox ack [--agent-id <agent_id>] --through <entry_id>
+agentinbox inbox ack [--agent-id <agent_id>] --item <entry_id>
 agentinbox inbox ack [--agent-id <agent_id>] --all
 agentinbox inbox compact <agent_id>
 ```

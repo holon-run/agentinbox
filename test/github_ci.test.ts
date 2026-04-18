@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { AgentInboxStore } from "../src/store";
 import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
-import { AppendSourceEventInput, SubscriptionSource } from "../src/model";
+import { AppendSourceEventInput, SourceStream } from "../src/model";
 import { nowIso } from "../src/util";
 import { GithubActionsUxcClient, GithubCiSourceRuntime, normalizeGithubWorkflowRunEvent } from "../src/sources/github_ci";
 import { TerminalDispatcher } from "../src/terminal";
@@ -53,7 +53,7 @@ async function makeService(): Promise<{ store: AgentInboxStore; service: AgentIn
 }
 
 test("normalizeGithubWorkflowRunEvent extracts workflow run metadata", () => {
-  const source: SubscriptionSource = {
+  const source: SourceStream = {
     sourceId: "src_ci",
     sourceType: "github_repo_ci",
     sourceKey: "holon-run/agentinbox",
@@ -93,7 +93,7 @@ test("normalizeGithubWorkflowRunEvent extracts workflow run metadata", () => {
 });
 
 test("normalizeGithubWorkflowRunEvent falls back to observed status and display title", () => {
-  const source: SubscriptionSource = {
+  const source: SourceStream = {
     sourceId: "src_ci_observed",
     sourceType: "github_repo_ci",
     sourceKey: "holon-run/agentinbox",
@@ -122,8 +122,11 @@ test("github_repo_ci source runtime appends workflow run events and subscription
   try {
     const fake = new FakeGithubActionsClient();
     const runtime = new GithubCiSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
-    const source: SubscriptionSource = {
+    const source: SourceStream = {
       sourceId: "src_ci",
+      hostId: "hst_ci",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
       sourceType: "github_repo_ci",
       sourceKey: "holon-run/agentinbox",
       configRef: null,
@@ -208,8 +211,11 @@ test("github_repo_ci runtime start does not crash when GitHub polling fails", as
     const fake = new FakeGithubActionsClient();
     fake.error = new Error("runtime.invoke timeout");
     const runtime = new GithubCiSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
-    const source: SubscriptionSource = {
+    const source: SourceStream = {
       sourceId: "src_ci_error",
+      hostId: "hst_ci_error",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
       sourceType: "github_repo_ci",
       sourceKey: "holon-run/agentinbox",
       configRef: null,
@@ -267,8 +273,11 @@ test("github_repo_ci runtime retries errored sources and recovers after a transi
       ];
     };
     runtime = new GithubCiSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
-    const source: SubscriptionSource = {
+    const source: SourceStream = {
       sourceId: "src_ci_retry",
+      hostId: "hst_ci_retry",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
       sourceType: "github_repo_ci",
       sourceKey: "holon-run/agentinbox",
       configRef: null,

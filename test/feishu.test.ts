@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DeliveryAttempt, SubscriptionSource } from "../src/model";
+import { DeliveryAttempt, SourceStream } from "../src/model";
 import {
   feishuDeliveryOperationsForHandle,
   FeishuDeliveryAdapter,
@@ -23,7 +23,7 @@ class FakeFeishuUxcClient implements FeishuCallClient {
 }
 
 test("normalizeFeishuBotEvent extracts metadata and delivery handle", () => {
-  const source: SubscriptionSource = {
+  const source: SourceStream = {
     sourceId: "src_feishu",
     sourceType: "feishu_bot",
     sourceKey: "tenant-default",

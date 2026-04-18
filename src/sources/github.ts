@@ -6,8 +6,8 @@ import {
   DeliveryOperationDescriptor,
   DeliveryRequest,
   SourceSchemaField,
+  SourceStream,
   SubscriptionFilter,
-  SubscriptionSource,
 } from "../model";
 
 export const GITHUB_ENDPOINT = "https://api.github.com";
@@ -256,7 +256,7 @@ export async function invokeGithubDeliveryOperation(
 }
 
 export function normalizeGithubRepoEvent(
-  source: SubscriptionSource,
+  source: SourceStream,
   config: GithubSourceConfig,
   raw: unknown,
 ): AppendSourceEventInput | null {
@@ -440,7 +440,7 @@ function buildGithubDeliveryHandle(
   };
 }
 
-export function parseGithubSourceConfig(source: SubscriptionSource): GithubSourceConfig {
+export function parseGithubSourceConfig(source: SourceStream): GithubSourceConfig {
   const config = source.config ?? {};
   const owner = asString(config.owner);
   const repo = asString(config.repo);

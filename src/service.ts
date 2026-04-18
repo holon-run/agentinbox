@@ -41,7 +41,6 @@ import {
   CleanupPolicy,
   SubscriptionLifecycleRetirement,
   SubscriptionPollResult,
-  SubscriptionSource,
   TerminalActivationTarget,
   UpdateTimerStatusResult,
   UpdateSourceInput,
@@ -73,7 +72,7 @@ import {
 import { LifecycleSignal } from "./sources/remote_modules";
 import { ActivationGate, DefaultActivationGate, GatingPolicy } from "./runtime_gate";
 import { Logger, NoopLogger } from "./logging";
-import { compatSourceTypeForStream, hostTypeForSourceType, resolveLegacySource, streamKindForSourceType } from "./source_hosts";
+import { resolveSourceRegistration } from "./source_hosts";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -230,12 +229,12 @@ export class AgentInboxService {
     await this.awaitInFlightNotificationBuffers();
   }
 
-  async registerSource(input: RegisterSourceInput): Promise<SubscriptionSource> {
+  async registerSource(input: RegisterSourceInput): Promise<SourceStream> {
     const existing = this.store.getSourceByKey(input.sourceType, input.sourceKey);
     if (existing) {
       return existing;
     }
-    const resolved = resolveLegacySource(input);
+    const resolved = resolveSourceRegistration(input);
     const now = nowIso();
     let host = this.store.getSourceHostByKey(resolved.hostType, resolved.hostKey);
     if (!host) {
@@ -251,13 +250,12 @@ export class AgentInboxService {
       };
       this.store.insertSourceHost(host);
     }
-    const source: SubscriptionSource = {
+    const source: SourceStream = {
       sourceId: generateCanonicalId("src"),
       hostId: host.hostId,
       streamKind: resolved.streamKind,
       streamKey: resolved.streamKey,
-      compatSourceType: resolved.compatSourceType,
-      sourceType: input.sourceType,
+      sourceType: resolved.sourceType,
       sourceKey: input.sourceKey,
       configRef: input.configRef ?? null,
       config: resolved.streamConfig,
@@ -272,7 +270,7 @@ export class AgentInboxService {
     return source;
   }
 
-  listSources(): SubscriptionSource[] {
+  listSources(): SourceStream[] {
     return this.store.listSources();
   }
 
@@ -298,7 +296,7 @@ export class AgentInboxService {
     };
   }
 
-  getSource(sourceId: string): SubscriptionSource {
+  getSource(sourceId: string): SourceStream {
     const source = this.store.getSource(sourceId);
     if (!source) {
       throw new Error(`unknown source: ${sourceId}`);
@@ -308,7 +306,7 @@ export class AgentInboxService {
 
   async getSourceDetails(sourceId: string): Promise<Record<string, unknown>> {
     const source = this.getSource(sourceId);
-    const fallbackSchema = getSourceSchema(compatSourceTypeForStream(source));
+    const fallbackSchema = getSourceSchema(source.sourceType);
     let resolvedIdentity: ResolvedSourceIdentity | null = null;
     let resolutionError: string | null = null;
     let schema: SourceSchema | ResolvedSourceSchema = fallbackSchema;
@@ -335,7 +333,7 @@ export class AgentInboxService {
     };
   }
 
-  getSourceSchema(sourceType: SubscriptionSource["sourceType"]): SourceSchema {
+  getSourceSchema(sourceType: SourceStream["sourceType"]): SourceSchema {
     return getSourceSchema(sourceType);
   }
 
@@ -371,7 +369,6 @@ export class AgentInboxService {
     hostId: string;
     streamKind: string;
     streamKey: string;
-    compatSourceType?: SourceStream["compatSourceType"];
     configRef?: string | null;
     config?: Record<string, unknown>;
   }): Promise<SourceStream> {
@@ -384,7 +381,7 @@ export class AgentInboxService {
     if (existing) {
       return Promise.resolve(existing);
     }
-    const compatSourceType = input.compatSourceType ?? sourceTypeForStreamRegistration(host.hostType, input.streamKind);
+    const sourceType = sourceTypeForStreamRegistration(host.hostType, input.streamKind);
     const now = nowIso();
     const stream: SourceStream = {
       sourceId: generateCanonicalId("src"),
@@ -392,8 +389,7 @@ export class AgentInboxService {
       hostId: input.hostId,
       streamKind: input.streamKind,
       streamKey: input.streamKey,
-      compatSourceType,
-      sourceType: compatSourceType,
+      sourceType,
       sourceKey: input.streamKey,
       configRef: input.configRef ?? host.configRef ?? null,
       config: input.config ?? {},
@@ -403,7 +399,7 @@ export class AgentInboxService {
       updatedAt: now,
     };
     this.store.insertSource(stream);
-    return this.adapters.sourceAdapterFor(compatSourceType)
+    return this.adapters.sourceAdapterFor(sourceType)
       .ensureSource(stream)
       .then(async () => {
         await this.ensureStreamForSource(stream);
@@ -487,7 +483,7 @@ export class AgentInboxService {
     };
   }
 
-  async updateSource(sourceId: string, input: UpdateSourceInput): Promise<{ updated: boolean; source: SubscriptionSource | null }> {
+  async updateSource(sourceId: string, input: UpdateSourceInput): Promise<{ updated: boolean; source: SourceStream | null }> {
     const source = this.store.getSource(sourceId);
     if (!source) {
       return { updated: false, source: null };
@@ -534,7 +530,7 @@ export class AgentInboxService {
     };
   }
 
-  async pauseSource(sourceId: string): Promise<{ paused: boolean; source: SubscriptionSource | null }> {
+  async pauseSource(sourceId: string): Promise<{ paused: boolean; source: SourceStream | null }> {
     const source = this.store.getSource(sourceId);
     if (!source) {
       return { paused: false, source: null };
@@ -550,7 +546,7 @@ export class AgentInboxService {
     };
   }
 
-  async resumeSource(sourceId: string): Promise<{ resumed: boolean; source: SubscriptionSource | null }> {
+  async resumeSource(sourceId: string): Promise<{ resumed: boolean; source: SourceStream | null }> {
     const source = this.store.getSource(sourceId);
     if (!source) {
       return { resumed: false, source: null };
@@ -1215,7 +1211,7 @@ export class AgentInboxService {
   private async materializeInboxEntryForItem(input: {
     agentId: string;
     inbox: Inbox;
-    source: SubscriptionSource | null;
+    source: SourceStream | null;
     subscriptionId: string | null;
     item: InboxItem;
     summary: string;
@@ -1286,7 +1282,7 @@ export class AgentInboxService {
   }
 
   private async flushDigestThread(
-    source: SubscriptionSource,
+    source: SourceStream,
     threadId: string,
     groupingHint?: NotificationGrouping | null,
   ): Promise<InboxEntry | null> {
@@ -1373,7 +1369,7 @@ export class AgentInboxService {
     let initialItems: InboxEntry[];
     try {
       initialItems = this.store.listInboxEntries(inbox.inboxId, {
-        afterEntryId: options.afterEntryId ?? options.afterItemId,
+        afterEntryId: options.afterEntryId,
         includeAcked: options.includeAcked ?? false,
       });
     } catch (error) {
@@ -1441,17 +1437,15 @@ export class AgentInboxService {
     entryIds?: string[];
     throughEntryId?: string | null;
     all?: boolean;
-    itemIds?: string[];
-    throughItemId?: string | null;
   }): Promise<{ acked: number }> {
     if (input.all) {
       return this.ackAllInboxItems(agentId);
     }
-    const throughEntryId = input.throughEntryId ?? input.throughItemId ?? null;
+    const throughEntryId = input.throughEntryId ?? null;
     if (throughEntryId) {
       return this.ackInboxItemsThrough(agentId, throughEntryId);
     }
-    return this.ackInboxItems(agentId, input.entryIds ?? input.itemIds ?? []);
+    return this.ackInboxItems(agentId, input.entryIds ?? []);
   }
 
   compactInbox(agentId: string): { deleted: number; retentionMs: number } {
@@ -1683,7 +1677,7 @@ export class AgentInboxService {
   }
 
   private async sendCanonicalDeliveryViaModule(
-    source: SubscriptionSource,
+    source: SourceStream,
     handle: DeliveryHandle,
     payload: Record<string, unknown>,
     attempt: DeliveryAttempt,
@@ -1758,7 +1752,7 @@ export class AgentInboxService {
     this.gcAckedInboxItems();
   }
 
-  private async ensureStreamForSource(source: SubscriptionSource) {
+  private async ensureStreamForSource(source: SourceStream) {
     return this.backend.ensureStream({
       sourceId: source.sourceId,
       streamKey: streamKeyForSource(source.sourceId),
@@ -1767,7 +1761,7 @@ export class AgentInboxService {
   }
 
   private async collectLifecycleSignal(
-    source: SubscriptionSource,
+    source: SourceStream,
     rawPayload: Record<string, unknown>,
     signals: Map<string, LifecycleSignal>,
     fallbackOccurredAt?: string,
@@ -1793,7 +1787,7 @@ export class AgentInboxService {
   }
 
   private scheduleLifecycleRetirements(
-    source: SubscriptionSource,
+    source: SourceStream,
     subscription: Subscription,
     signal: LifecycleSignal,
   ): void {
@@ -3020,7 +3014,7 @@ function hasSubscriptionFieldOverride(input: RegisterSubscriptionInput): boolean
   return input.filter != null && Object.keys(input.filter).length > 0;
 }
 
-function buildPreviewSource(input: PreviewSourceSchemaInput): SubscriptionSource {
+function buildPreviewSource(input: PreviewSourceSchemaInput): SourceStream {
   const sourceType = sourceTypeForPreviewRef(input.sourceRef);
   const now = nowIso();
   return {
@@ -3036,7 +3030,7 @@ function buildPreviewSource(input: PreviewSourceSchemaInput): SubscriptionSource
   };
 }
 
-function sourceTypeForPreviewRef(sourceRef: string): SubscriptionSource["sourceType"] {
+function sourceTypeForPreviewRef(sourceRef: string): SourceStream["sourceType"] {
   if (sourceRef === "local_event" || sourceRef === "remote_source" || sourceRef === "github_repo" || sourceRef === "github_repo_ci" || sourceRef === "feishu_bot") {
     return sourceRef;
   }
@@ -3235,7 +3229,7 @@ function resolveDeliverySource(
   store: AgentInboxStore,
   sourceId: string | undefined,
   handle: DeliveryHandle,
-): SubscriptionSource | null {
+): SourceStream | null {
   if (!sourceId) {
     return null;
   }
@@ -3250,7 +3244,7 @@ function resolveDeliverySource(
   return source;
 }
 
-function providerForSourceType(sourceType: SubscriptionSource["sourceType"]): string | null {
+function providerForSourceType(sourceType: SourceStream["sourceType"]): string | null {
   if (sourceType === "github_repo") {
     return "github";
   }
@@ -3896,10 +3890,7 @@ function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: st
     case "local_event":
       return [];
     case "remote_source":
-      return [
-        { name: "profilePath", type: "string", description: "Local module path under $AGENTINBOX_HOME/source-profiles.", required: true },
-        { name: "profileConfig", type: "object", description: "Module-specific host configuration.", required: false },
-      ];
+      return [];
   }
 }
 

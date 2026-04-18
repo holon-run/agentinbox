@@ -1,5 +1,5 @@
 import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { AppendSourceEventInput, SourcePollResult, SubscriptionSource } from "../model";
+import { AppendSourceEventInput, SourcePollResult, SourceStream } from "../model";
 import { AgentInboxStore } from "../store";
 
 export const GITHUB_CI_ENDPOINT = "https://api.github.com";
@@ -86,7 +86,7 @@ export class GithubCiSourceRuntime {
     this.client = client ?? new GithubActionsUxcClient();
   }
 
-  async ensureSource(source: SubscriptionSource): Promise<void> {
+  async ensureSource(source: SourceStream): Promise<void> {
     if (source.sourceType !== "github_repo_ci") {
       return;
     }
@@ -269,7 +269,7 @@ function computeErrorBackoffMs(pollIntervalSecs: number, errorCount: number): nu
 }
 
 export function normalizeGithubWorkflowRunEvent(
-  source: SubscriptionSource,
+  source: SourceStream,
   config: GithubCiSourceConfig,
   raw: unknown,
 ): AppendSourceEventInput | null {
@@ -335,7 +335,7 @@ export function normalizeGithubWorkflowRunEvent(
   };
 }
 
-export function parseGithubCiSourceConfig(source: SubscriptionSource): GithubCiSourceConfig {
+export function parseGithubCiSourceConfig(source: SourceStream): GithubCiSourceConfig {
   const config = source.config ?? {};
   const owner = asString(config.owner);
   const repo = asString(config.repo);

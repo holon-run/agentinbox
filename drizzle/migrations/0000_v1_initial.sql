@@ -3,7 +3,6 @@ create table if not exists sources (
   host_id text not null,
   stream_kind text not null,
   stream_key text not null,
-  compat_source_type text,
   source_type text not null,
   source_key text not null,
   config_ref text,

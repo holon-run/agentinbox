@@ -36,7 +36,6 @@ export interface SourceStream {
   hostId?: string;
   streamKind?: string;
   streamKey?: string;
-  compatSourceType?: SourceType | null;
   sourceType: SourceType;
   sourceKey: string;
   configRef?: string | null;
@@ -46,9 +45,6 @@ export interface SourceStream {
   createdAt: string;
   updatedAt: string;
 }
-
-// Deprecated compatibility alias. Product-level "sources" now resolve to streams.
-export type SubscriptionSource = SourceStream;
 
 export interface SourceIdleState {
   sourceId: string;
@@ -315,7 +311,6 @@ export interface RegisterStreamInput {
   hostId: string;
   streamKind: string;
   streamKey: string;
-  compatSourceType?: SourceType | null;
   configRef?: string | null;
   config?: Record<string, unknown>;
 }
@@ -547,7 +542,6 @@ export interface SubscriptionPollResult {
 
 export interface ListInboxItemsOptions {
   afterEntryId?: string;
-  afterItemId?: string;
   includeAcked?: boolean;
 }
 

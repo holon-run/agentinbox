@@ -6,10 +6,10 @@ import {
   DeliveryHandle,
   DeliveryOperationDescriptor,
   NotificationGrouping,
-  SubscriptionSource,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
   SourcePollResult,
+  SourceStream,
   SourceType,
 } from "./model";
 import { AgentInboxStore } from "./store";
@@ -19,11 +19,10 @@ import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { ExpandedSubscriptionInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
-import { compatSourceTypeForStream } from "./source_hosts";
 
 export interface SourceAdapter {
-  ensureSource(source: SubscriptionSource): Promise<void>;
-  validateSource?(source: SubscriptionSource): Promise<void>;
+  ensureSource(source: SourceStream): Promise<void>;
+  validateSource?(source: SourceStream): Promise<void>;
   pollSource?(sourceId: string): Promise<SourcePollResult>;
   pauseSource?(sourceId: string): Promise<void>;
   resumeSource?(sourceId: string): Promise<void>;
@@ -40,11 +39,11 @@ export interface DeliveryAdapter {
 class NoopSourceAdapter implements SourceAdapter {
   constructor(private readonly sourceType: SourceType) {}
 
-  async ensureSource(_source: SubscriptionSource): Promise<void> {
+  async ensureSource(_source: SourceStream): Promise<void> {
     return;
   }
 
-  async validateSource(_source: SubscriptionSource): Promise<void> {
+  async validateSource(_source: SourceStream): Promise<void> {
     return;
   }
 
@@ -131,13 +130,12 @@ export class AdapterRegistry {
     await this.remoteSource.stop?.();
   }
 
-  async pollSource(source: SubscriptionSource): Promise<SourcePollResult> {
-    const compatSourceType = compatSourceTypeForStream(source);
-    const adapter = this.sourceAdapterFor(compatSourceType);
+  async pollSource(source: SourceStream): Promise<SourcePollResult> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
     if (!adapter.pollSource) {
       return {
         sourceId: source.sourceId,
-        sourceType: compatSourceType,
+        sourceType: source.sourceType,
         appended: 0,
         deduped: 0,
         eventsRead: 0,
@@ -147,87 +145,85 @@ export class AdapterRegistry {
     return adapter.pollSource(source.sourceId);
   }
 
-  async pauseSource(source: SubscriptionSource): Promise<void> {
-    const compatSourceType = compatSourceTypeForStream(source);
-    const adapter = this.sourceAdapterFor(compatSourceType);
+  async pauseSource(source: SourceStream): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
     if (!adapter.pauseSource) {
-      throw new Error(`source type ${compatSourceType} does not support pause`);
+      throw new Error(`source type ${source.sourceType} does not support pause`);
     }
     await adapter.pauseSource?.(source.sourceId);
   }
 
-  async resumeSource(source: SubscriptionSource): Promise<void> {
-    const compatSourceType = compatSourceTypeForStream(source);
-    const adapter = this.sourceAdapterFor(compatSourceType);
+  async resumeSource(source: SourceStream): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
     if (!adapter.resumeSource) {
-      throw new Error(`source type ${compatSourceType} does not support resume`);
+      throw new Error(`source type ${source.sourceType} does not support resume`);
     }
     await adapter.resumeSource?.(source.sourceId);
   }
 
-  async removeSource(source: SubscriptionSource): Promise<void> {
-    const adapter = this.sourceAdapterFor(compatSourceTypeForStream(source));
+  async removeSource(source: SourceStream): Promise<void> {
+    const adapter = this.sourceAdapterFor(source.sourceType);
     await adapter.removeSource?.(source.sourceId);
   }
 
-  async resolveSourceIdentity(source: SubscriptionSource): Promise<ResolvedSourceIdentity> {
+  async resolveSourceIdentity(source: SourceStream): Promise<ResolvedSourceIdentity> {
     return resolveSourceIdentity(source, {
       homeDir: this.homeDir,
       moduleRegistry: this.remoteModuleRegistry,
     });
   }
 
-  async resolveSourceSchema(source: SubscriptionSource): Promise<ResolvedSourceSchema> {
+  async resolveSourceSchema(source: SourceStream): Promise<ResolvedSourceSchema> {
     return resolveSourceSchema(source, {
       homeDir: this.homeDir,
       moduleRegistry: this.remoteModuleRegistry,
     });
   }
 
-  async projectLifecycleSignal(source: SubscriptionSource, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
-    if (compatSourceTypeForStream(source) === "local_event") {
+  async projectLifecycleSignal(source: SourceStream, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
+    if (source.sourceType === "local_event") {
       return null;
     }
     return this.remoteSource.projectLifecycleSignal(source, rawPayload);
   }
 
   async expandSubscriptionShortcut(
-    source: SubscriptionSource,
+    source: SourceStream,
     input: { name: string; args?: Record<string, unknown> },
   ): Promise<ExpandedSubscriptionInput | null> {
-    if (compatSourceTypeForStream(source) === "local_event") {
+    if (source.sourceType === "local_event") {
       return null;
     }
     return this.remoteSource.expandSubscriptionShortcut(source, input);
   }
 
-  async deriveInlinePreview(source: SubscriptionSource, item: ActivationItem): Promise<string | null> {
-    if (compatSourceTypeForStream(source) === "local_event") {
+  async deriveInlinePreview(source: SourceStream, item: ActivationItem): Promise<string | null> {
+    if (source.sourceType === "local_event") {
       return null;
     }
     return this.remoteSource.deriveInlinePreview(source, item);
   }
 
-  async deriveNotificationGrouping(source: SubscriptionSource, item: ActivationItem): Promise<NotificationGrouping | null> {
-    if (compatSourceTypeForStream(source) === "local_event") {
+  async deriveNotificationGrouping(source: SourceStream, item: ActivationItem): Promise<NotificationGrouping | null> {
+    if (source.sourceType === "local_event") {
       return null;
     }
     return this.remoteSource.deriveNotificationGrouping(source, item);
   }
 
   async summarizeDigestThread(
-    source: SubscriptionSource,
+    source: SourceStream,
     items: ActivationItem[],
     grouping: NotificationGrouping,
   ): Promise<string | null> {
-    if (compatSourceTypeForStream(source) === "local_event") {
+    if (source.sourceType === "local_event") {
       return null;
     }
     return this.remoteSource.summarizeDigestThread(source, items, grouping);
   }
 
   async listDeliveryOperations(
-    source: SubscriptionSource | null,
+    source: SourceStream | null,
     handle: DeliveryHandle,
   ): Promise<DeliveryOperationDescriptor[]> {
     const module = await this.resolveDeliveryModule(source, handle);
@@ -238,7 +234,7 @@ export class AdapterRegistry {
   }
 
   async invokeDeliveryOperation(
-    source: SubscriptionSource | null,
+    source: SourceStream | null,
     handle: DeliveryHandle,
     operation: string,
     input: Record<string, unknown>,
@@ -257,9 +253,9 @@ export class AdapterRegistry {
     };
   }
 
-  private async resolveDeliveryModule(source: SubscriptionSource | null, handle: DeliveryHandle): Promise<RemoteSourceModule | null> {
+  private async resolveDeliveryModule(source: SourceStream | null, handle: DeliveryHandle): Promise<RemoteSourceModule | null> {
     if (source) {
-      if (compatSourceTypeForStream(source) === "local_event") {
+      if (source.sourceType === "local_event") {
         return null;
       }
       return this.remoteModuleRegistry.resolve(source, this.homeDir);
@@ -274,13 +270,12 @@ export class AdapterRegistry {
   }
 }
 
-function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot"): SubscriptionSource {
+function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot"): SourceStream {
   return {
     sourceId: `builtin:${sourceType}`,
     hostId: `builtin-host:${sourceType}`,
     streamKind: sourceType === "github_repo" ? "repo_events" : "message_events",
     streamKey: sourceType,
-    compatSourceType: sourceType,
     sourceType,
     sourceKey: sourceType,
     status: "active",
