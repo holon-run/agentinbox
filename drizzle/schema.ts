@@ -184,14 +184,14 @@ export const inboxItems = sqliteTable("inbox_items", {
 }));
 
 export const digestThreads = sqliteTable("digest_threads", {
-  threadId: integer("thread_id").primaryKey({ autoIncrement: true }),
+  threadId: text("thread_id").primaryKey(),
   inboxId: text("inbox_id").notNull(),
   sourceId: text("source_id").notNull(),
   groupKey: text("group_key").notNull(),
   resourceRef: text("resource_ref"),
   eventFamily: text("event_family"),
   latestRevision: integer("latest_revision").notNull(),
-  latestEntryId: integer("latest_entry_id"),
+  latestEntryId: text("latest_entry_id"),
   status: text("status").notNull(),
   summary: text("summary").notNull(),
   firstItemAt: text("first_item_at").notNull(),
@@ -206,11 +206,11 @@ export const digestThreads = sqliteTable("digest_threads", {
 }));
 
 export const inboxEntries = sqliteTable("inbox_entries", {
-  entryId: integer("entry_id").primaryKey({ autoIncrement: true }),
+  entryId: text("entry_id").primaryKey(),
   inboxId: text("inbox_id").notNull(),
   kind: text("kind").notNull(),
   sequence: integer("sequence").notNull(),
-  threadId: integer("thread_id"),
+  threadId: text("thread_id"),
   revision: integer("revision"),
   groupKey: text("group_key"),
   resourceRef: text("resource_ref"),
@@ -233,7 +233,7 @@ export const inboxEntries = sqliteTable("inbox_entries", {
 }));
 
 export const inboxEntryItems = sqliteTable("inbox_entry_items", {
-  entryId: integer("entry_id").notNull(),
+  entryId: text("entry_id").notNull(),
   itemId: text("item_id").notNull(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.entryId, table.itemId] }),
@@ -241,7 +241,7 @@ export const inboxEntryItems = sqliteTable("inbox_entry_items", {
 }));
 
 export const digestThreadItems = sqliteTable("digest_thread_items", {
-  threadId: integer("thread_id").notNull(),
+  threadId: text("thread_id").notNull(),
   itemId: text("item_id").notNull(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.threadId, table.itemId] }),

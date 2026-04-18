@@ -55,11 +55,10 @@ import {
   ConsumerLag,
   EventBusBackend,
   SqliteEventBusBackend,
-  defaultInboxIdForAgent,
   streamKeyForSource,
   toAppendResult,
 } from "./backend";
-import { formatEntryRef, generateId, nowIso } from "./util";
+import { formatEntryRef, generateCanonicalId, nowIso } from "./util";
 import { getSourceSchema } from "./source_schema";
 import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
@@ -241,7 +240,7 @@ export class AgentInboxService {
     let host = this.store.getSourceHostByKey(resolved.hostType, resolved.hostKey);
     if (!host) {
       host = {
-        hostId: generateId("hst"),
+        hostId: generateCanonicalId("hst"),
         hostType: resolved.hostType,
         hostKey: resolved.hostKey,
         configRef: input.configRef ?? null,
@@ -253,7 +252,7 @@ export class AgentInboxService {
       this.store.insertSourceHost(host);
     }
     const source: SubscriptionSource = {
-      sourceId: generateId("src"),
+      sourceId: generateCanonicalId("src"),
       hostId: host.hostId,
       streamKind: resolved.streamKind,
       streamKey: resolved.streamKey,
@@ -355,7 +354,7 @@ export class AgentInboxService {
     }
     const now = nowIso();
     const host: SourceHost = {
-      hostId: generateId("hst"),
+      hostId: generateCanonicalId("hst"),
       hostType: input.hostType,
       hostKey: input.hostKey,
       configRef: input.configRef ?? null,
@@ -388,7 +387,7 @@ export class AgentInboxService {
     const compatSourceType = input.compatSourceType ?? sourceTypeForStreamRegistration(host.hostType, input.streamKind);
     const now = nowIso();
     const stream: SourceStream = {
-      sourceId: generateId("src"),
+      sourceId: generateCanonicalId("src"),
       streamId: null,
       hostId: input.hostId,
       streamKind: input.streamKind,
@@ -573,7 +572,7 @@ export class AgentInboxService {
     validateTerminalRegistration(input);
 
     const runtimeKind = input.runtimeKind ?? "unknown";
-    const agentId = input.agentId ?? assignedAgentIdFromContext({
+    const agentId = input.agentId ?? this.resolveAutoAgentId({
       runtimeKind,
       runtimeSessionId: input.runtimeSessionId ?? null,
       backend: input.backend,
@@ -696,7 +695,7 @@ export class AgentInboxService {
       restartRecovery: false,
     });
     const timer: AgentTimer = {
-      scheduleId: generateId("sched"),
+      scheduleId: generateCanonicalId("sch"),
       agentId: input.agentId,
       status: nextFireAt ? "active" : "paused",
       mode: normalized.mode,
@@ -789,7 +788,7 @@ export class AgentInboxService {
     const mode = normalizeWebhookActivationMode(input.activationMode);
     const now = nowIso();
     const target: WebhookActivationTarget = {
-      targetId: generateId("tgt"),
+      targetId: generateCanonicalId("tgt"),
       agentId,
       kind: "webhook",
       status: "active",
@@ -928,7 +927,7 @@ export class AgentInboxService {
       this.store.deleteSourceIdleState(source.sourceId);
     }
     const subscription: Subscription = {
-      subscriptionId: generateId("sub"),
+      subscriptionId: generateCanonicalId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
       filter: input.filter ?? {},
@@ -1106,7 +1105,7 @@ export class AgentInboxService {
     const sender = normalizeDirectInboxSender(input.sender) ?? this.detectDirectInboxSender(env);
     return this.materializeAgentInboxItem(agentId, {
       sourceId: DIRECT_INBOX_SOURCE_ID,
-      sourceNativeId: generateId("direct"),
+      sourceNativeId: generateCanonicalId("direct"),
       eventVariant: DIRECT_INBOX_EVENT_VARIANT,
       summary: summarizeDirectInboxMessage(sender),
       rawPayload: {
@@ -1167,7 +1166,7 @@ export class AgentInboxService {
     const inbox = this.ensureInboxForAgent(agentId);
     const occurredAt = input.occurredAt ?? nowIso();
     const item: InboxItem = {
-      itemId: generateId("item"),
+      itemId: generateCanonicalId("itm"),
       sourceId: input.sourceId,
       sourceNativeId: input.sourceNativeId,
       eventVariant: input.eventVariant,
@@ -1288,7 +1287,7 @@ export class AgentInboxService {
 
   private async flushDigestThread(
     source: SubscriptionSource,
-    threadId: number,
+    threadId: string,
     groupingHint?: NotificationGrouping | null,
   ): Promise<InboxEntry | null> {
     const thread = this.store.getDigestThread(threadId);
@@ -1542,7 +1541,7 @@ export class AgentInboxService {
           }
           matched += 1;
           const item: InboxItem = {
-            itemId: generateId("item"),
+            itemId: generateCanonicalId("itm"),
             sourceId: event.sourceId,
             sourceNativeId: event.sourceNativeId,
             eventVariant: event.eventVariant,
@@ -1628,7 +1627,7 @@ export class AgentInboxService {
     const handle = resolveDeliveryHandle(request);
     const source = resolveDeliverySource(this.store, request.sourceId, handle);
     const attempt: DeliveryAttempt = {
-      deliveryId: generateId("dlv"),
+      deliveryId: generateCanonicalId("dlv"),
       provider: handle.provider,
       surface: handle.surface,
       targetRef: handle.targetRef,
@@ -1666,7 +1665,7 @@ export class AgentInboxService {
     const handle = resolveDeliveryHandle(request);
     const source = resolveDeliverySource(this.store, request.sourceId, handle);
     const attempt: DeliveryAttempt = {
-      deliveryId: generateId("dlv"),
+      deliveryId: generateCanonicalId("dlv"),
       provider: handle.provider,
       surface: handle.surface,
       targetRef: handle.targetRef,
@@ -1731,7 +1730,7 @@ export class AgentInboxService {
       return existing;
     }
     const inbox: Inbox = {
-      inboxId: defaultInboxIdForAgent(agentId),
+      inboxId: generateCanonicalId("inb"),
       ownerAgentId: agentId,
       createdAt: nowIso(),
     };
@@ -1834,6 +1833,37 @@ export class AgentInboxService {
     }
   }
 
+  private resolveAutoAgentId(input: {
+    runtimeKind?: Agent["runtimeKind"] | null;
+    runtimeSessionId?: string | null;
+    backend: RegisterAgentInput["backend"];
+    tmuxPaneId?: string | null;
+    itermSessionId?: string | null;
+    tty?: string | null;
+  }): string {
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const candidate = assignedAgentIdFromContext({
+        runtimeKind: input.runtimeKind,
+        runtimeSessionId: input.runtimeSessionId,
+        backend: input.backend,
+        tmuxPaneId: input.tmuxPaneId,
+        itermSessionId: input.itermSessionId,
+        tty: input.tty,
+      }, attempt);
+      const existing = this.store.getAgent(candidate);
+      if (!existing) {
+        return candidate;
+      }
+      const targets = this.store
+        .listActivationTargetsForAgent(candidate)
+        .filter((target): target is TerminalActivationTarget => target.kind === "terminal");
+      if (targets.length === 0 || targets.some((target) => isSameTerminalIdentity(target, input))) {
+        return candidate;
+      }
+    }
+    throw new Error("unable to derive a unique agentId from terminal context");
+  }
+
   private handleAgentRegistrationConflicts(agentId: string, input: RegisterAgentInput): void {
     const currentTarget = findExistingTerminalActivationTarget(this.store, input);
     if (currentTarget && currentTarget.agentId !== agentId) {
@@ -1889,7 +1919,7 @@ export class AgentInboxService {
     }
 
     const target: TerminalActivationTarget = {
-      targetId: generateId("tgt"),
+      targetId: generateCanonicalId("tgt"),
       agentId,
       kind: "terminal",
       status: "active",
@@ -2152,7 +2182,7 @@ export class AgentInboxService {
         this.store.closeDigestThread(thread.threadId, nowIso());
         continue;
       }
-      const head = thread.latestEntryId != null ? this.store.getInboxEntry(formatEntryRef(thread.latestEntryId)) : null;
+      const head = thread.latestEntryId != null ? this.store.getInboxEntry(thread.latestEntryId) : null;
       const currentIds = items.map((item) => item.itemId);
       const headIds = head?.itemIds ?? [];
       if (!sameStringArray(currentIds, headIds)) {
@@ -2409,7 +2439,7 @@ export class AgentInboxService {
       } else {
         const activation: Activation = {
           kind: "agentinbox.activation",
-          activationId: generateId("act"),
+          activationId: generateCanonicalId("act"),
           agentId: input.agentId,
           inboxId: inbox.inboxId,
           targetId: target.targetId,

@@ -40,7 +40,7 @@ test("assignedAgentIdFromContext prefers runtime session ids", () => {
     itermSessionId: "4B4CB6B2-A73B-4420-94A7-BD2CA216A285",
   });
 
-  assert.equal(agentId, "agent_codex_019d57fd65247e20a850a89e81957100");
+  assert.match(agentId, /^agt_[a-z]+-[a-z]+$/);
 });
 
 test("renderAgentPrompt accepts legacy newItemCount input", () => {
@@ -83,7 +83,7 @@ test("renderAgentPrompt does not add duplicate punctuation after previews", () =
 
 test("deriveInlineItemPreview truncates short text payloads and skips structured payloads", () => {
   const preview = deriveInlineItemPreview({
-    itemId: "item_1",
+    itemId: "itm_1",
     sourceId: "src_1",
     sourceNativeId: "evt_1",
     eventVariant: "message.created",
@@ -100,7 +100,7 @@ test("deriveInlineItemPreview truncates short text payloads and skips structured
   assert.ok(preview!.endsWith("..."));
 
   const structured = deriveInlineItemPreview({
-    itemId: "item_2",
+    itemId: "itm_2",
     sourceId: "src_1",
     sourceNativeId: "evt_2",
     eventVariant: "message.created",
@@ -133,7 +133,7 @@ test("TerminalDispatcher uses two-step it2api submission for iTerm2 targets", as
 
   const target: TerminalActivationTarget = {
     targetId: "tgt_1",
-    agentId: "agent_codex_abc",
+    agentId: "agt_copper-fox",
     kind: "terminal",
     status: "active",
     offlineSince: null,
@@ -186,7 +186,7 @@ test("TerminalDispatcher uses literal text plus carriage return for tmux targets
 
   const target: TerminalActivationTarget = {
     targetId: "tgt_tmux_1",
-    agentId: "agent_codex_tmux",
+    agentId: "agt_river-otter",
     kind: "terminal",
     status: "active",
     offlineSince: null,
@@ -231,7 +231,7 @@ test("TerminalDispatcher uses literal text plus carriage return for tmux targets
 test("TerminalDispatcher probeStatus distinguishes tmux available, gone, and unknown", async () => {
   const target: TerminalActivationTarget = {
     targetId: "tgt_tmux_probe",
-    agentId: "agent_codex_tmux",
+    agentId: "agt_river-otter",
     kind: "terminal",
     status: "offline",
     offlineSince: "2026-04-07T00:00:00.000Z",

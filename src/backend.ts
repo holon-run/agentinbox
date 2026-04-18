@@ -4,7 +4,7 @@ import {
   SubscriptionStartPolicy,
 } from "./model";
 import { AgentInboxStore } from "./store";
-import { nowIso } from "./util";
+import { generateCanonicalId, nowIso } from "./util";
 
 export interface StreamRecord {
   streamId: string;
@@ -137,7 +137,7 @@ export class SqliteEventBusBackend implements EventBusBackend {
       return existing;
     }
     const stream: StreamRecord = {
-      streamId: streamIdForSource(input.sourceId),
+      streamId: generateCanonicalId("str"),
       sourceId: input.sourceId,
       streamKey: input.streamKey,
       backend: input.backend,
@@ -172,7 +172,7 @@ export class SqliteEventBusBackend implements EventBusBackend {
       input.startTime ?? null,
     );
     const consumer: ConsumerRecord = {
-      consumerId: consumerIdForSubscription(input.subscriptionId),
+      consumerId: generateCanonicalId("con"),
       streamId: input.streamId,
       subscriptionId: input.subscriptionId,
       consumerKey: input.consumerKey,
@@ -296,18 +296,6 @@ export class SqliteEventBusBackend implements EventBusBackend {
     }
     throw new Error(`unsupported start policy: ${String(startPolicy)}`);
   }
-}
-
-export function streamIdForSource(sourceId: string): string {
-  return `stream_${sourceId}`;
-}
-
-export function consumerIdForSubscription(subscriptionId: string): string {
-  return `consumer_${subscriptionId}`;
-}
-
-export function defaultInboxIdForAgent(agentId: string): string {
-  return `inbox_${agentId}`;
 }
 
 export function streamKeyForSource(sourceId: string): string {

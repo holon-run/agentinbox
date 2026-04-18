@@ -28,6 +28,30 @@ export interface DetectedTerminalContext {
   itermSessionId?: string | null;
 }
 
+const AGENT_ADJECTIVES = [
+  "amber", "ancient", "autumn", "brisk", "bright", "bronze", "calm", "cedar",
+  "cinder", "clear", "cobalt", "cool", "copper", "crisp", "dawn", "deep",
+  "drift", "ember", "falling", "fern", "frost", "gentle", "glint", "golden",
+  "granite", "harbor", "hazel", "hidden", "hollow", "ice", "indigo", "iron",
+  "ivory", "jade", "juniper", "kind", "lake", "lively", "lunar", "maple",
+  "meadow", "misty", "moss", "night", "north", "oak", "olive", "opal",
+  "orchid", "pale", "pine", "plum", "quiet", "rapid", "river", "rose",
+  "royal", "rust", "sage", "silver", "soft", "solar", "spring", "stone",
+  "summer", "swift", "timber", "velvet", "warm", "west", "whisper", "winter",
+];
+
+const AGENT_ANIMALS = [
+  "antelope", "badger", "beaver", "bison", "bittern", "boar", "bobcat", "buffalo",
+  "canary", "cougar", "crane", "crow", "deer", "dingo", "dolphin", "dragonfly",
+  "eagle", "falcon", "finch", "firefly", "fox", "frog", "gazelle", "gecko",
+  "gull", "hare", "hawk", "heron", "ibis", "jaguar", "jay", "kingfisher",
+  "koala", "koi", "lemur", "leopard", "lizard", "lynx", "magpie", "martin",
+  "mink", "mole", "narwhal", "newt", "ocelot", "orca", "otter", "owl",
+  "panther", "parrot", "pebble", "pelican", "pika", "puma", "quail", "raven",
+  "robin", "seal", "sparrow", "stoat", "stork", "swift", "tern", "tiger",
+  "toad", "toucan", "trout", "viper", "weasel", "wren", "yak", "zebra",
+];
+
 export function detectTerminalContext(env: NodeJS.ProcessEnv = process.env): DetectedTerminalContext {
   const tmuxPaneId = normalizeOptionalString(env.TMUX_PANE);
   const termProgram = normalizeOptionalString(env.TERM_PROGRAM);
@@ -123,7 +147,7 @@ export function assignedAgentIdFromContext(input: {
   tmuxPaneId?: string | null;
   itermSessionId?: string | null;
   tty?: string | null;
-}): string {
+}, attempt = 0): string {
   const primary = normalizeOptionalString(input.runtimeSessionId)
     ?? normalizeOptionalString(input.tmuxPaneId)
     ?? normalizeOptionalString(input.itermSessionId)
@@ -131,12 +155,17 @@ export function assignedAgentIdFromContext(input: {
   if (!primary) {
     throw new Error("unable to derive agentId from terminal context");
   }
-  const normalized = primary.replace(/[^a-zA-Z0-9]+/g, "").toLowerCase();
-  if (normalized.length > 0) {
-    return `agent_${input.runtimeKind ?? "unknown"}_${normalized.slice(0, 40)}`;
+
+  const digest = crypto.createHash("sha256")
+    .update(`${input.runtimeKind ?? "unknown"}:${input.backend}:${primary}:${attempt}`)
+    .digest();
+  const adjective = AGENT_ADJECTIVES[digest[0] % AGENT_ADJECTIVES.length];
+  const animal = AGENT_ANIMALS[digest[1] % AGENT_ANIMALS.length];
+  if (attempt < 16) {
+    return `agt_${adjective}-${animal}`;
   }
-  const digest = crypto.createHash("sha256").update(primary).digest("hex").slice(0, 16);
-  return `agent_${input.runtimeKind ?? "unknown"}_${digest}`;
+  const suffix = digest.toString("hex").slice(0, 3);
+  return `agt_${adjective}-${animal}-${suffix}`;
 }
 
 export class TerminalDispatcher {
