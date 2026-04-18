@@ -1,16 +1,16 @@
-import { HostType, RegisterSourceInput, SourceHost, SourceType, SubscriptionSource } from "./model";
+import { HostType, RegisterSourceInput, SourceType } from "./model";
 
-export interface LegacySourceResolution {
+export interface SourceRegistrationResolution {
   hostType: HostType;
   hostKey: string;
   hostConfig: Record<string, unknown>;
   streamKind: string;
   streamKey: string;
   streamConfig: Record<string, unknown>;
-  compatSourceType: SourceType;
+  sourceType: SourceType;
 }
 
-export function resolveLegacySource(input: RegisterSourceInput): LegacySourceResolution {
+export function resolveSourceRegistration(input: RegisterSourceInput): SourceRegistrationResolution {
   const config = input.config ?? {};
   if (input.sourceType === "github_repo") {
     return {
@@ -22,7 +22,7 @@ export function resolveLegacySource(input: RegisterSourceInput): LegacySourceRes
       streamKind: "repo_events",
       streamKey: input.sourceKey,
       streamConfig: config,
-      compatSourceType: input.sourceType,
+      sourceType: input.sourceType,
     };
   }
   if (input.sourceType === "github_repo_ci") {
@@ -35,7 +35,7 @@ export function resolveLegacySource(input: RegisterSourceInput): LegacySourceRes
       streamKind: "ci_runs",
       streamKey: input.sourceKey,
       streamConfig: config,
-      compatSourceType: input.sourceType,
+      sourceType: input.sourceType,
     };
   }
   if (input.sourceType === "feishu_bot") {
@@ -52,7 +52,7 @@ export function resolveLegacySource(input: RegisterSourceInput): LegacySourceRes
       streamKind: "message_events",
       streamKey: input.sourceKey,
       streamConfig: config,
-      compatSourceType: input.sourceType,
+      sourceType: input.sourceType,
     };
   }
   if (input.sourceType === "local_event") {
@@ -63,7 +63,7 @@ export function resolveLegacySource(input: RegisterSourceInput): LegacySourceRes
       streamKind: "events",
       streamKey: input.sourceKey,
       streamConfig: config,
-      compatSourceType: input.sourceType,
+      sourceType: input.sourceType,
     };
   }
   return {
@@ -73,33 +73,8 @@ export function resolveLegacySource(input: RegisterSourceInput): LegacySourceRes
     streamKind: "default",
     streamKey: input.sourceKey,
     streamConfig: config,
-    compatSourceType: input.sourceType,
+    sourceType: input.sourceType,
   };
-}
-
-export function hostTypeForSourceType(sourceType: SourceType): HostType {
-  return resolveLegacySource({ sourceType, sourceKey: sourceType, config: {} }).hostType;
-}
-
-export function compatSourceTypeForStream(stream: SubscriptionSource): SourceType {
-  return stream.compatSourceType ?? stream.sourceType;
-}
-
-export function streamKindForSourceType(sourceType: SourceType): string {
-  return resolveLegacySource({ sourceType, sourceKey: sourceType, config: {} }).streamKind;
-}
-
-export function sourceTypeFromHost(host: SourceHost): SourceType {
-  if (host.hostType === "github") {
-    return "github_repo";
-  }
-  if (host.hostType === "feishu") {
-    return "feishu_bot";
-  }
-  if (host.hostType === "local_event") {
-    return "local_event";
-  }
-  return "remote_source";
 }
 
 function stringOrDefault(value: unknown, fallback: string): string {

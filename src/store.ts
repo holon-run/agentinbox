@@ -28,10 +28,10 @@ import {
   RegisterAgentInput,
   SourceHost,
   SourceIdleState,
+  SourceStream,
   Subscription,
   SubscriptionLifecycleRetirement,
   SubscriptionFilter,
-  SubscriptionSource,
   SubscriptionStartPolicy,
   TerminalActivationTarget,
   WebhookActivationTarget,
@@ -448,7 +448,7 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  getSourceByKey(sourceType: string, sourceKey: string): SubscriptionSource | null {
+  getSourceByKey(sourceType: string, sourceKey: string): SourceStream | null {
     const row = this.getOne(
       "select * from sources where source_type = ? and source_key = ?",
       [sourceType, sourceKey],
@@ -456,30 +456,29 @@ export class AgentInboxStore {
     return row ? this.mapSource(row) : null;
   }
 
-  getSource(sourceId: string): SubscriptionSource | null {
+  getSource(sourceId: string): SourceStream | null {
     const row = this.getOne("select * from sources where source_id = ?", [sourceId]);
     return row ? this.mapSource(row) : null;
   }
 
-  insertSource(source: SubscriptionSource): void {
+  insertSource(source: SourceStream): void {
     this.inTransaction(() => {
-      const hostId = source.hostId ?? this.ensureCompatibilityHostForSource(source);
-      const streamKind = source.streamKind ?? "default";
-      const streamKey = source.streamKey ?? source.sourceKey;
+      if (!source.hostId || !source.streamKind || !source.streamKey) {
+        throw new Error("source insert requires hostId, streamKind, and streamKey");
+      }
       this.db.run(
         `
         insert into sources (
-          source_id, host_id, stream_kind, stream_key, compat_source_type,
+          source_id, host_id, stream_kind, stream_key,
           source_type, source_key, config_ref, config_json,
           status, checkpoint, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           source.sourceId,
-          hostId,
-          streamKind,
-          streamKey,
-          source.compatSourceType ?? null,
+          source.hostId,
+          source.streamKind,
+          source.streamKey,
           source.sourceType,
           source.sourceKey,
           source.configRef ?? null,
@@ -494,7 +493,7 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  listSources(): SubscriptionSource[] {
+  listSources(): SourceStream[] {
     const rows = this.getAll("select * from sources order by created_at asc");
     return rows.map((row) => this.mapSource(row));
   }
@@ -544,7 +543,7 @@ export class AgentInboxStore {
   updateSourceDefinition(
     sourceId: string,
     input: { configRef?: string | null; config?: Record<string, unknown> },
-  ): SubscriptionSource {
+  ): SourceStream {
     const current = this.getSource(sourceId);
     if (!current) {
       throw new Error(`unknown source: ${sourceId}`);
@@ -568,7 +567,7 @@ export class AgentInboxStore {
 
   updateSourceRuntime(
     sourceId: string,
-    input: { status?: SubscriptionSource["status"]; checkpoint?: string | null },
+    input: { status?: SourceStream["status"]; checkpoint?: string | null },
   ): void {
     const current = this.getSource(sourceId);
     if (!current) {
@@ -590,7 +589,7 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  deleteSource(sourceId: string): SubscriptionSource | null {
+  deleteSource(sourceId: string): SourceStream | null {
     const source = this.getSource(sourceId);
     if (!source) {
       return null;
@@ -1414,24 +1413,6 @@ export class AgentInboxStore {
       }
       filters.push("sequence > ?");
       params.push(Number(anchor.sequence));
-    } else if (options?.afterItemId) {
-      const anchor = this.getOne(
-        `
-        select ie.sequence
-        from inbox_entries ie
-        join inbox_entry_items iei on iei.entry_id = ie.entry_id
-        where ie.inbox_id = ?
-          and iei.item_id = ?
-        order by ie.sequence desc
-        limit 1
-        `,
-        [inboxId, options.afterItemId],
-      );
-      if (!anchor) {
-        throw new Error(`unknown inbox item: ${options.afterItemId}`);
-      }
-      filters.push("sequence > ?");
-      params.push(Number(anchor.sequence));
     }
     const rows = this.getAll(
       `select * from inbox_entries where ${filters.join(" and ")} order by sequence asc`,
@@ -1700,18 +1681,6 @@ export class AgentInboxStore {
 
     if (!includeAcked) {
       filters.push("acked_at is null");
-    }
-
-    if (options?.afterItemId) {
-      const anchor = this.getOne(
-        "select coalesce(inbox_sequence, rowid) as inbox_sequence from inbox_items where inbox_id = ? and item_id = ?",
-        [inboxId, options.afterItemId],
-      );
-      if (!anchor) {
-        throw new Error(`unknown inbox item: ${options.afterItemId}`);
-      }
-      filters.push("coalesce(inbox_sequence, rowid) > ?");
-      params.push(Number(anchor.inbox_sequence));
     }
 
     const rows = this.getAll(
@@ -2165,7 +2134,7 @@ export class AgentInboxStore {
     }
   }
 
-  private mapSource(row: Record<string, unknown>): SubscriptionSource {
+  private mapSource(row: Record<string, unknown>): SourceStream {
     const hostId = requiredText(row, "host_id");
     const streamKind = requiredText(row, "stream_kind");
     const streamKey = requiredText(row, "stream_key");
@@ -2175,64 +2144,15 @@ export class AgentInboxStore {
       hostId,
       streamKind,
       streamKey,
-      compatSourceType: row.compat_source_type ? String(row.compat_source_type) as SubscriptionSource["compatSourceType"] : null,
-      sourceType: row.source_type as SubscriptionSource["sourceType"],
+      sourceType: row.source_type as SourceStream["sourceType"],
       sourceKey: String(row.source_key),
       configRef: row.config_ref ? String(row.config_ref) : null,
       config: parseJson<Record<string, unknown>>(row.config_json as string),
-      status: row.status as SubscriptionSource["status"],
+      status: row.status as SourceStream["status"],
       checkpoint: row.checkpoint ? String(row.checkpoint) : null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
-  }
-
-  private ensureCompatibilityHostForSource(source: SubscriptionSource): string {
-    const hostType = source.sourceType === "github_repo" || source.sourceType === "github_repo_ci"
-      ? "github"
-      : source.sourceType === "feishu_bot"
-        ? "feishu"
-        : source.sourceType === "local_event"
-          ? "local_event"
-          : "remote_source";
-    const hostKey = source.sourceType === "github_repo" || source.sourceType === "github_repo_ci"
-      ? `uxcAuth:${String((source.config ?? {}).uxcAuth ?? source.configRef ?? "default")}`
-      : source.sourceType === "feishu_bot"
-        ? `app:${String((source.config ?? {}).appId ?? source.configRef ?? source.sourceId)}`
-        : source.sourceKey;
-    const existing = this.getSourceHostByKey(hostType, hostKey);
-    if (existing) {
-      return existing.hostId;
-    }
-    const now = nowIso();
-    const host: SourceHost = {
-      hostId: generateCanonicalId("hst"),
-      hostType: hostType as SourceHost["hostType"],
-      hostKey,
-      configRef: source.configRef ?? null,
-      config: source.config ?? {},
-      status: source.status,
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.db.run(
-      `
-      insert into source_hosts (
-        host_id, host_type, host_key, config_ref, config_json, status, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
-        host.hostId,
-        host.hostType,
-        host.hostKey,
-        host.configRef ?? null,
-        JSON.stringify(host.config ?? {}),
-        host.status,
-        host.createdAt,
-        host.updatedAt,
-      ],
-    );
-    return host.hostId;
   }
 
   private mapSourceHost(row: Record<string, unknown>): SourceHost {

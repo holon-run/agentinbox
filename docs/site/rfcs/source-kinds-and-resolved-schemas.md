@@ -216,7 +216,7 @@ Suggested CLI shapes:
 
 ```bash
 agentinbox source schema <sourceId>
-agentinbox source schema preview <sourceKind> [--config-json JSON]
+agentinbox stream schema preview <sourceKind> [--config-json JSON]
 ```
 
 The existing type-level schema can remain as a catalog/overview surface, but it
@@ -289,15 +289,15 @@ Suggested shape:
 ```ts
 interface RemoteSourceModule {
   id: string
-  validateConfig(source: SubscriptionSource): void
-  buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec
+  validateConfig(source: SourceStream): void
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec
   mapRawEvent(
     rawPayload: Record<string, unknown>,
-    source: SubscriptionSource,
+    source: SourceStream,
   ): MappedRemoteEvent | null
 
   describeCapabilities?(
-    source: SubscriptionSource,
+    source: SourceStream,
   ): {
     sourceKind?: string
     aliases?: string[]
@@ -307,7 +307,7 @@ interface RemoteSourceModule {
   }
 
   listSubscriptionShortcuts?(
-    source: SubscriptionSource,
+    source: SourceStream,
   ): SubscriptionShortcutSpec[]
 
   expandSubscriptionShortcut?(
@@ -316,12 +316,12 @@ interface RemoteSourceModule {
 
   deriveTrackedResource?(
     filter: SubscriptionFilter,
-    source: SubscriptionSource,
+    source: SourceStream,
   ): { ref: string } | null
 
   projectLifecycleSignal?(
     rawPayload: Record<string, unknown>,
-    source: SubscriptionSource,
+    source: SourceStream,
   ): LifecycleSignal | null
 }
 ```
@@ -390,9 +390,9 @@ current design.
 
 The module code should live under:
 
-- `$AGENTINBOX_HOME/source-profiles/`
+- `$AGENTINBOX_HOME/source-modules/`
 
-Today `AgentInbox` loads them from local disk through `config.profilePath`.
+Today `AgentInbox` loads them from local disk through `config.modulePath`.
 That field name is a compatibility detail, not the target architectural term.
 Future API cleanup may rename it to something like `modulePath`.
 
@@ -424,7 +424,7 @@ Before creating a remote user-defined source, the system should support schema
 preview:
 
 ```bash
-agentinbox source schema preview remote:acme.my_profile --config-json '{...}'
+agentinbox stream schema preview remote:acme.my_profile --config-json '{...}'
 ```
 
 or an equivalent shape that resolves the implementation before registration.
@@ -457,7 +457,7 @@ Suggested migration:
 
 ## Open Questions
 
-- should `source schema preview` take `sourceKind`, `sourceType`, or both
+- should `stream schema preview` take `sourceKind`, `sourceType`, or both
 - should builtin kinds remain persisted as current enum values forever, or only
   survive as input aliases
 - should non-remote native sources eventually expose the same introspection hook

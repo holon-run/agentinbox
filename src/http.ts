@@ -230,7 +230,6 @@ function buildFastifyServer(service: AgentInboxService) {
           hostId: { type: "string", minLength: 1 },
           streamKind: { type: "string", minLength: 1 },
           streamKey: { type: "string", minLength: 1 },
-          compatSourceType: { type: "string" },
           configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
           config: jsonObjectSchema,
         },
@@ -304,10 +303,11 @@ function buildFastifyServer(service: AgentInboxService) {
       body: {
         type: "object",
         additionalProperties: false,
-        required: ["sourceType", "sourceKey"],
+        required: ["hostId", "streamKind", "streamKey"],
         properties: {
-          sourceType: { type: "string", minLength: 1 },
-          sourceKey: { type: "string", minLength: 1 },
+          hostId: { type: "string", minLength: 1 },
+          streamKind: { type: "string", minLength: 1 },
+          streamKey: { type: "string", minLength: 1 },
           configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
           config: jsonObjectSchema,
         },
@@ -317,7 +317,7 @@ function buildFastifyServer(service: AgentInboxService) {
         400: errorResponseSchema,
       },
     },
-  }, async (request) => service.registerSource(request.body as never));
+  }, async (request) => service.registerStream(request.body as never));
 
   app.get("/sources/:sourceId", {
     schema: {
@@ -647,45 +647,6 @@ function buildFastifyServer(service: AgentInboxService) {
     const params = request.params as { sourceId: string };
     return service.resumeSource(decodeURIComponent(params.sourceId));
   });
-
-  app.get("/source-types/:sourceType/schema", {
-    schema: {
-      tags: ["sources"],
-      params: {
-        type: "object",
-        required: ["sourceType"],
-        properties: {
-          sourceType: { type: "string", minLength: 1 },
-        },
-      },
-      response: {
-        200: jsonObjectSchema,
-      },
-    },
-  }, async (request) => {
-    const params = request.params as { sourceType: string };
-    return service.getSourceSchema(decodeURIComponent(params.sourceType) as never);
-  });
-
-  app.post("/sources/schema-preview", {
-    schema: {
-      tags: ["sources"],
-      body: {
-        type: "object",
-        additionalProperties: false,
-        required: ["sourceRef"],
-        properties: {
-          sourceRef: { type: "string", minLength: 1 },
-          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
-          config: jsonObjectSchema,
-        },
-      },
-      response: {
-        200: jsonObjectSchema,
-        400: errorResponseSchema,
-      },
-    },
-  }, async (request) => service.previewSourceSchema(request.body as PreviewSourceSchemaInput));
 
   app.post("/sources/:sourceId/poll", {
     schema: {
@@ -1386,45 +1347,6 @@ function buildFastifyServer(service: AgentInboxService) {
     return {
       entries: service.listInboxItems(decodeURIComponent(params.agentId), {
         afterEntryId: query.after_entry_id,
-        includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
-      }),
-    };
-  });
-
-  app.get("/agents/:agentId/inbox/raw-items", {
-    schema: {
-      tags: ["inbox"],
-      params: {
-        type: "object",
-        required: ["agentId"],
-        properties: {
-          agentId: { type: "string", minLength: 1 },
-        },
-      },
-      querystring: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          after_item_id: { type: "string" },
-          include_acked: { type: "string", enum: ["true", "false"] },
-        },
-      },
-      response: {
-        200: {
-          type: "object",
-          required: ["items"],
-          properties: {
-            items: { type: "array", items: jsonObjectSchema },
-          },
-        },
-      },
-    },
-  }, async (request) => {
-    const params = request.params as { agentId: string };
-    const query = request.query as { after_item_id?: string; include_acked?: "true" | "false" };
-    return {
-      items: service.listRawInboxItems(decodeURIComponent(params.agentId), {
-        afterItemId: query.after_item_id,
         includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
       }),
     };

@@ -12,7 +12,7 @@ import {
   projectGithubLifecycleSignal,
   type GithubCallClient,
 } from "../src/sources/github";
-import { DeliveryAttempt, SubscriptionSource, SubscriptionFilter } from "../src/model";
+import { DeliveryAttempt, SourceStream, SubscriptionFilter } from "../src/model";
 
 class FakeUxcClient implements GithubCallClient {
   public calls: Array<Record<string, unknown>> = [];
@@ -24,7 +24,7 @@ class FakeUxcClient implements GithubCallClient {
 }
 
 test("normalizeGithubRepoEvent extracts metadata and delivery handle", async () => {
-  const source: SubscriptionSource = {
+  const source: SourceStream = {
     sourceId: "src_1",
     sourceType: "github_repo",
     sourceKey: "holon-run/agentinbox",
@@ -68,7 +68,7 @@ test("normalizeGithubRepoEvent extracts metadata and delivery handle", async () 
 });
 
 test("normalizeGithubRepoEvent includes PullRequestReviewEvent by default", async () => {
-  const source: SubscriptionSource = {
+  const source: SourceStream = {
     sourceId: "src_review",
     sourceType: "github_repo",
     sourceKey: "holon-run/agentinbox",
@@ -118,7 +118,7 @@ test("normalizeGithubRepoEvent includes PullRequestReviewEvent by default", asyn
 });
 
 test("normalizeGithubRepoEvent preserves pull request merged state for lifecycle hooks", async () => {
-  const source: SubscriptionSource = {
+  const source: SourceStream = {
     sourceId: "src_pr",
     sourceType: "github_repo",
     sourceKey: "holon-run/agentinbox",

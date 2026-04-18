@@ -109,7 +109,7 @@ The separation is:
 
 The initial model should stay small.
 
-### `SubscriptionSource`
+### `SourceStream`
 
 A shared hosted source in the local environment.
 
@@ -136,7 +136,7 @@ Non-responsibilities:
 
 ### `Interest`
 
-An agent-specific filter and delivery rule on top of a `SubscriptionSource`.
+An agent-specific filter and delivery rule on top of a `SourceStream`.
 
 Responsibilities:
 
@@ -200,7 +200,7 @@ Responsibilities:
 Recommended first-pass inbound flow:
 
 1. runtime or agent registers one or more `Interest` records
-2. `AgentInbox` ensures the needed `SubscriptionSource` is hosted
+2. `AgentInbox` ensures the needed `SourceStream` is hosted
 3. source activity produces `InboxItem` records
 4. matching interests create `Activation`
 5. runtime receives the activation and decides whether/how to read items

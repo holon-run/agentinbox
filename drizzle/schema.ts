@@ -18,7 +18,6 @@ export const sources = sqliteTable("sources", {
   hostId: text("host_id").notNull(),
   streamKind: text("stream_kind").notNull(),
   streamKey: text("stream_key").notNull(),
-  compatSourceType: text("compat_source_type"),
   sourceType: text("source_type").notNull(),
   sourceKey: text("source_key").notNull(),
   configRef: text("config_ref"),

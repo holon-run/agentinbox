@@ -18,5 +18,5 @@ test("getSourceSchema exposes local and remote source schemas", () => {
   assert.ok(localEvent.metadataFields.some((field) => field.name === "channel"));
   const remote = getSourceSchema("remote_source");
   assert.equal(remote.sourceType, "remote_source");
-  assert.ok(remote.configFields.some((field) => field.name === "profilePath" && field.required === true));
+  assert.ok(remote.configFields.some((field) => field.name === "modulePath" && field.required === true));
 });

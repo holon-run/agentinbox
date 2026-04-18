@@ -31,8 +31,8 @@ instance schema discovery:
 
 Configuration fields:
 
-- `profilePath` (required): path under `$AGENTINBOX_HOME/source-profiles`
-- `profileConfig` (optional): module-specific config object
+- `modulePath` (required): path under `$AGENTINBOX_HOME/source-modules`
+- `moduleConfig` (optional): module-specific config object
 
 ## `github_repo`
 

@@ -21,12 +21,10 @@ going forward.
 - `POST /sources`
 - `GET /sources/{sourceId}`
 - `GET /sources/{sourceId}/schema`
-- `POST /sources/schema-preview`
 - `PATCH /sources/{sourceId}`
 - `DELETE /sources/{sourceId}`
 - `POST /sources/{sourceId}/pause`
 - `POST /sources/{sourceId}/resume`
-- `GET /source-types/{sourceType}/schema`
 - `POST /sources/{sourceId}/poll`
 - `POST /sources/{sourceId}/events`
 
@@ -115,11 +113,11 @@ Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseco
 `POST /agents/{agentId}/inbox/ack` accepts exactly one of:
 
 ```json
-{ "throughItemId": "itm_..." }
+{ "throughEntryId": "ent_..." }
 ```
 
 ```json
-{ "itemIds": ["itm_..."] }
+{ "entryIds": ["ent_..."] }
 ```
 
 ```json
@@ -133,12 +131,8 @@ Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseco
 
 - `local_event` is the only source type that supports direct manual append through
   `POST /sources/{sourceId}/events`.
-- `remote_source` is supported and requires `config.profilePath` (and optional
-  `config.profileConfig`) when registering.
-- `POST /sources/schema-preview` previews resolved schema without persisting a
-  source. It accepts `sourceRef` plus optional `config` and `configRef`. For a
-  user-defined remote implementation, use either `remote_source` with
-  `config.profilePath`, or `remote:<moduleId>` with the same config payload.
+- `remote_source` is supported and requires `config.modulePath` (and optional
+  `config.moduleConfig`) when registering.
 - `PATCH /sources/{sourceId}` updates persisted `config` and/or `configRef`
   without changing the `sourceId` or existing subscriptions. Active/error
   sources are re-ensured after update; paused sources keep their paused

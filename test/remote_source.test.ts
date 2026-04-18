@@ -8,8 +8,7 @@ import { AppendSourceEventInput } from "../src/model";
 import { AgentInboxService } from "../src/service";
 import { resolveSourceIdentity } from "../src/source_resolution";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "../src/sources/remote";
-import { ManagedSourceSpec } from "../src/sources/remote_modules";
-import { RemoteSourceProfileRegistry, builtInProfileIdForSourceType, profileConfigForSource } from "../src/sources/remote_profiles";
+import { ManagedSourceSpec, RemoteSourceModuleRegistry, builtInModuleIdForSourceType, moduleConfigForSource } from "../src/sources/remote_modules";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 import { nowIso } from "../src/util";
@@ -143,7 +142,7 @@ test("remote_source with local module ingests stream events", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo.mjs"),
@@ -181,8 +180,8 @@ test("remote_source with local module ingests stream events", async () => {
       sourceType: "remote_source",
       sourceKey: "demo-key",
       config: {
-        profilePath: "demo.mjs",
-        profileConfig: { tenant: "team-a" },
+        modulePath: "demo.mjs",
+        moduleConfig: { tenant: "team-a" },
       },
     });
     const agent = service.registerAgent({
@@ -214,7 +213,7 @@ test("remote_source with local module ingests stream events", async () => {
   }
 });
 
-test("remote_source profilePath must stay under source-profiles root", async () => {
+test("remote_source modulePath must stay under source-modules root", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
@@ -223,8 +222,8 @@ test("remote_source profilePath must stay under source-profiles root", async () 
         sourceType: "remote_source",
         sourceKey: "bad-key",
         config: {
-          profilePath: "../outside.mjs",
-          profileConfig: {},
+          modulePath: "../outside.mjs",
+          moduleConfig: {},
         },
       }),
       /must stay under/,
@@ -491,7 +490,7 @@ test("removeSource deletes managed source binding when no subscriptions remain",
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo-remove.mjs"),
@@ -520,8 +519,8 @@ test("removeSource deletes managed source binding when no subscriptions remain",
       sourceType: "remote_source",
       sourceKey: "remove-key",
       config: {
-        profilePath: "demo-remove.mjs",
-        profileConfig: {},
+        modulePath: "demo-remove.mjs",
+        moduleConfig: {},
       },
     });
     const removed = await service.removeSource(source.sourceId);
@@ -540,7 +539,7 @@ test("remote_source remove --with-subscriptions stops remote binding and deletes
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo-remove-cascade.mjs"),
@@ -569,8 +568,8 @@ test("remote_source remove --with-subscriptions stops remote binding and deletes
       sourceType: "remote_source",
       sourceKey: "remove-cascade-key",
       config: {
-        profilePath: "demo-remove-cascade.mjs",
-        profileConfig: {},
+        modulePath: "demo-remove-cascade.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({
@@ -602,17 +601,17 @@ test("remote_source remove --with-subscriptions stops remote binding and deletes
   }
 });
 
-test("deprecated remote profile exports still alias the module contract", async () => {
-  const registry = new RemoteSourceProfileRegistry();
-  assert.ok(registry instanceof RemoteSourceProfileRegistry);
-  assert.equal(builtInProfileIdForSourceType("github_repo"), "builtin.github_repo");
+test("remote module helpers expose builtin module ids and config projection", async () => {
+  const registry = new RemoteSourceModuleRegistry();
+  assert.ok(registry instanceof RemoteSourceModuleRegistry);
+  assert.equal(builtInModuleIdForSourceType("github_repo"), "builtin.github_repo");
   assert.deepEqual(
-    profileConfigForSource({
+    moduleConfigForSource({
       sourceId: "src_compat",
       sourceType: "remote_source",
       sourceKey: "compat",
       configRef: null,
-      config: { profileConfig: { answer: 42 } },
+      config: { moduleConfig: { answer: 42 } },
       status: "active",
       checkpoint: null,
       createdAt: nowIso(),
@@ -622,97 +621,11 @@ test("deprecated remote profile exports still alias the module contract", async 
   );
 });
 
-test("resolveSourceIdentity still honors deprecated profileRegistry context", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-source-compat-"));
-  try {
-    const profileDir = path.join(homeDir, "source-profiles");
-    fs.mkdirSync(profileDir, { recursive: true });
-    const modulePath = path.join(profileDir, "compat.mjs");
-    fs.writeFileSync(modulePath, `
-      export default {
-        id: "demo.compat",
-        validateConfig() {},
-        buildManagedSourceSpec() { return { endpoint: "https://example.invalid", mode: "poll" }; },
-        mapRawEvent() { return null; },
-        describeCapabilities() { return { sourceKind: "remote:compat-demo" }; },
-      };
-    `);
-
-    const identity = await resolveSourceIdentity({
-      sourceId: "src_compat_identity",
-      sourceType: "remote_source",
-      sourceKey: "compat-demo",
-      configRef: null,
-      config: { profilePath: "compat.mjs" },
-      status: "active",
-      checkpoint: null,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    }, {
-      homeDir,
-      profileRegistry: new RemoteSourceProfileRegistry(),
-    });
-
-    assert.deepEqual(identity, {
-      hostType: "remote_source",
-      sourceKind: "remote:compat-demo",
-      implementationId: "demo.compat",
-    });
-  } finally {
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
-test("RemoteSourceRuntime still honors deprecated profileRegistry option", async () => {
-  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-runtime-compat-"));
-  const store = await AgentInboxStore.open(path.join(homeDir, "agentinbox.sqlite"));
-  try {
-    const profileDir = path.join(homeDir, "source-profiles");
-    fs.mkdirSync(profileDir, { recursive: true });
-    fs.writeFileSync(path.join(profileDir, "compat-runtime.mjs"), `
-      export default {
-        id: "demo.compat.runtime",
-        validateConfig(source) {
-          if (!source.config?.tenant) throw new Error("tenant required");
-        },
-        buildManagedSourceSpec(source) {
-          return { endpoint: "https://example.invalid", mode: "poll", args: { tenant: source.config.tenant } };
-        },
-        mapRawEvent() { return null; },
-      };
-    `);
-
-    const runtime = new RemoteSourceRuntime(store, async () => ({ appended: 0, deduped: 0 }), {
-      homeDir,
-      client: new FakeRemoteSourceClient(),
-      profileRegistry: new RemoteSourceProfileRegistry(),
-    });
-
-    await assert.doesNotReject(runtime.validateSource({
-      sourceId: "src_runtime_compat",
-      sourceType: "remote_source",
-      sourceKey: "compat-runtime",
-      configRef: null,
-      config: {
-        profilePath: "compat-runtime.mjs",
-        profileConfig: { tenant: "team-a" },
-      },
-      status: "active",
-      checkpoint: null,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    }));
-  } finally {
-    store.close();
-    fs.rmSync(homeDir, { recursive: true, force: true });
-  }
-});
-
 test("user-defined remote_source modules can expose delivery actions and invoke them", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "delivery-hook.mjs"),
@@ -767,8 +680,8 @@ export default {
       sourceType: "remote_source",
       sourceKey: "demo-delivery",
       config: {
-        profilePath: "delivery-hook.mjs",
-        profileConfig: {},
+        modulePath: "delivery-hook.mjs",
+        moduleConfig: {},
       },
     });
 
@@ -864,7 +777,7 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service, adapters } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo-pause.mjs"),
@@ -894,8 +807,8 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
       sourceType: "remote_source",
       sourceKey: "pause-key",
       config: {
-        profilePath: "demo-pause.mjs",
-        profileConfig: {},
+        modulePath: "demo-pause.mjs",
+        moduleConfig: {},
       },
     });
     const initialEnsureCount = fake.ensuredSources.length;
@@ -954,7 +867,7 @@ test("updateSource re-ensures active remote sources but does not resume paused o
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo-update.mjs"),
@@ -987,8 +900,8 @@ test("updateSource re-ensures active remote sources but does not resume paused o
       sourceType: "remote_source",
       sourceKey: "update-key",
       config: {
-        profilePath: "demo-update.mjs",
-        profileConfig: { tenant: "team-a" },
+        modulePath: "demo-update.mjs",
+        moduleConfig: { tenant: "team-a" },
       },
     });
 
@@ -996,8 +909,8 @@ test("updateSource re-ensures active remote sources but does not resume paused o
 
     const updatedActive = await service.updateSource(source.sourceId, {
       config: {
-        profilePath: "demo-update.mjs",
-        profileConfig: { tenant: "team-b" },
+        modulePath: "demo-update.mjs",
+        moduleConfig: { tenant: "team-b" },
       },
     });
     assert.equal(updatedActive.updated, true);
@@ -1008,8 +921,8 @@ test("updateSource re-ensures active remote sources but does not resume paused o
     const ensureCountBeforePausedUpdate = fake.ensuredSources.length;
     const updatedPaused = await service.updateSource(source.sourceId, {
       config: {
-        profilePath: "demo-update.mjs",
-        profileConfig: { tenant: "team-c" },
+        modulePath: "demo-update.mjs",
+        moduleConfig: { tenant: "team-c" },
       },
     });
     assert.equal(updatedPaused.updated, true);
@@ -1019,8 +932,8 @@ test("updateSource re-ensures active remote sources but does not resume paused o
     await assert.rejects(
       service.updateSource(source.sourceId, {
         config: {
-          profilePath: "demo-update.mjs",
-          profileConfig: {},
+          modulePath: "demo-update.mjs",
+          moduleConfig: {},
         },
       }),
       /tenant required/,
@@ -1038,7 +951,7 @@ test("idle remote sources auto-pause after the last subscription is removed and 
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo-idle.mjs"),
@@ -1068,8 +981,8 @@ test("idle remote sources auto-pause after the last subscription is removed and 
       sourceType: "remote_source",
       sourceKey: "idle-key",
       config: {
-        profilePath: "demo-idle.mjs",
-        profileConfig: {},
+        modulePath: "demo-idle.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({

@@ -21,7 +21,7 @@ The format is intentionally simple during public beta:
 ### Fixed
 
 - Hardened the iTerm2 Python cursor probe so its tail normalization and busy semantics align with the existing CLI-based terminal probe path.
-- Restored remote runtime compatibility for downstream callers still using the deprecated `profileRegistry` alias after the RemoteSourceModule naming transition.
+- Restored remote runtime compatibility during the RemoteSourceModule naming transition before the final v1 cleanup removed the deprecated alias.
 
 ### Changed
 
@@ -89,7 +89,7 @@ The format is intentionally simple during public beta:
 ### Added
 
 - Added cleanup-policy-driven subscription lifecycle management, including tracked resource refs, terminal retirement, and GitHub PR lifecycle projection.
-- Added generic subscription shortcuts plus source schema preview for implementation-backed sources.
+- Added generic subscription shortcuts plus stream schema preview for implementation-backed sources.
 - Added explicit `source remove --with-subscriptions` cleanup and idle source auto-pause after the last subscription is removed.
 
 ### Changed

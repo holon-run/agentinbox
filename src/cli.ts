@@ -106,13 +106,12 @@ async function main(): Promise<void> {
   if (command === "stream" && normalized[1] === "add") {
     const [hostId, streamKind, streamKey] = normalized.slice(2, 5);
     if (!hostId || !streamKind || !streamKey) {
-      throw new Error("usage: agentinbox stream add <hostId> <streamKind> <streamKey> [--compat-source-type TYPE] [--config-json JSON] [--config-ref REF]");
+      throw new Error("usage: agentinbox stream add <hostId> <streamKind> <streamKey> [--config-json JSON] [--config-ref REF]");
     }
     await printRemote(client, "/streams", {
       hostId,
       streamKind,
       streamKey,
-      compatSourceType: takeFlagValue(normalized, "--compat-source-type") ?? undefined,
       configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
       config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
     });
@@ -201,13 +200,9 @@ async function main(): Promise<void> {
     }
     const streamRef = normalized[2];
     if (!streamRef) {
-      throw new Error("usage: agentinbox stream schema <streamId|sourceType>");
+      throw new Error("usage: agentinbox stream schema <streamId>");
     }
-    if (streamRef.startsWith("src_")) {
-      await printRemote(client, `/streams/${encodeURIComponent(streamRef)}/schema`, undefined, "GET");
-      return;
-    }
-    await printRemote(client, `/source-types/${encodeURIComponent(streamRef)}/schema`, undefined, "GET");
+    await printRemote(client, `/streams/${encodeURIComponent(streamRef)}/schema`, undefined, "GET");
     return;
   }
 
@@ -238,13 +233,14 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "add") {
-    const [type, sourceKey] = normalized.slice(2, 4);
-    if (!type || !sourceKey) {
-      throw new Error("usage: agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]");
+    const [hostId, streamKind, streamKey] = normalized.slice(2, 5);
+    if (!hostId || !streamKind || !streamKey) {
+      throw new Error("usage: agentinbox source add <hostId> <streamKind> <streamKey> [--config-json JSON] [--config-ref REF]");
     }
     await printRemote(client, "/sources", {
-      sourceType: type,
-      sourceKey,
+      hostId,
+      streamKind,
+      streamKey,
       configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
       config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
     });
@@ -319,27 +315,11 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "schema") {
-    if (normalized[2] === "preview") {
-      const sourceRef = normalized[3];
-      if (!sourceRef) {
-        throw new Error("usage: agentinbox source schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]");
-      }
-      await printRemote(client, "/sources/schema-preview", {
-        sourceRef,
-        configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
-        config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
-      });
-      return;
-    }
     const sourceRef = normalized[2];
     if (!sourceRef) {
-      throw new Error("usage: agentinbox source schema <sourceId|sourceType>");
+      throw new Error("usage: agentinbox source schema <sourceId>");
     }
-    if (sourceRef.startsWith("src_")) {
-      await printRemote(client, `/sources/${encodeURIComponent(sourceRef)}/schema`, undefined, "GET");
-      return;
-    }
-    await printRemote(client, `/source-types/${encodeURIComponent(sourceRef)}/schema`, undefined, "GET");
+    await printRemote(client, `/sources/${encodeURIComponent(sourceRef)}/schema`, undefined, "GET");
     return;
   }
 
@@ -671,25 +651,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "inbox" && normalized[1] === "read-raw") {
-    const args = normalized.slice(2);
-    const allowedFlags = ["--agent-id", "--after-item", "--include-acked"];
-    if (positionalArgs(args, ["--agent-id", "--after-item"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
-      throw new Error("usage: agentinbox inbox read-raw [--agent-id ID] [--after-item ID] [--include-acked]");
-    }
-    const selection = await selectAgentForCommand(client, {
-      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
-      autoRegister: true,
-    });
-    const query = buildQuery({
-      after_item_id: takeFlagValue(normalized, "--after-item"),
-      include_acked: hasFlag(normalized, "--include-acked") ? "true" : undefined,
-    });
-    const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/raw-items${query}`, undefined, "GET");
-    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
-    return;
-  }
-
   if (command === "inbox" && normalized[1] === "send") {
     const args = normalized.slice(2);
     const allowedFlags = ["--agent-id", "--message", "--sender"];
@@ -739,9 +700,9 @@ async function main(): Promise<void> {
   if (command === "inbox" && normalized[1] === "ack") {
     const args = normalized.slice(2);
     const itemId = takeFlagValue(normalized, "--entry");
-    const throughItemId = takeFlagValue(normalized, "--through");
+    const throughEntryId = takeFlagValue(normalized, "--through");
     const ackAll = hasFlag(normalized, "--all");
-    const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughItemId)) + Number(ackAll);
+    const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughEntryId)) + Number(ackAll);
     if (positionalArgs(args, ["--agent-id", "--entry", "--through"]).length > 0 || modeCount !== 1) {
       throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)");
     }
@@ -752,7 +713,7 @@ async function main(): Promise<void> {
     const response = await requestRemote<Record<string, unknown>>(
       client,
       `/agents/${encodeURIComponent(selection.agentId)}/inbox/ack`,
-      ackAll ? { all: true } : (throughItemId ? { throughEntryId: throughItemId } : { entryIds: [itemId] }),
+      ackAll ? { all: true } : (throughEntryId ? { throughEntryId } : { entryIds: [itemId] }),
     );
     console.log(jsonResponse(withCommandMetadata(response.data, selection)));
     return;
@@ -1324,14 +1285,14 @@ Usage:
     stream: `agentinbox stream
 
 Usage:
-  agentinbox stream add <hostId> <streamKind> <streamKey> [--compat-source-type TYPE] [--config-json JSON] [--config-ref REF]
+  agentinbox stream add <hostId> <streamKind> <streamKey> [--config-json JSON] [--config-ref REF]
   agentinbox stream list
   agentinbox stream show <streamId>
   agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox stream remove <streamId> [--with-subscriptions]
   agentinbox stream pause <streamId>
   agentinbox stream resume <streamId>
-  agentinbox stream schema <streamId|sourceType>
+  agentinbox stream schema <streamId>
   agentinbox stream schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]
   agentinbox stream poll <streamId>
   agentinbox stream event <streamId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
@@ -1339,15 +1300,14 @@ Usage:
     source: `agentinbox source
 
 Usage:
-  agentinbox source add <type> <sourceKey> [--config-json JSON] [--config-ref REF]
+  agentinbox source add <hostId> <streamKind> <streamKey> [--config-json JSON] [--config-ref REF]
   agentinbox source list
   agentinbox source show <sourceId>
   agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox source remove <sourceId> [--with-subscriptions]
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>
-  agentinbox source schema <sourceId|sourceType>
-  agentinbox source schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]
+  agentinbox source schema <sourceId>
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
 `,
@@ -1391,7 +1351,6 @@ Usage:
   agentinbox inbox list
   agentinbox inbox show <agentId>
   agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked]
-  agentinbox inbox read-raw [--agent-id ID] [--after-item ID] [--include-acked]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]
   agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)

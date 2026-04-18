@@ -1,11 +1,11 @@
 import { ManagedSourceEnsureResponse, ManagedStreamReadResponse, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePollResult, SubscriptionSource } from "../model";
+import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePollResult, SourceStream } from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
 import { ExpandedSubscriptionInput, LifecycleSignal, ManagedSourceSpec, RemoteSourceModuleRegistry } from "./remote_modules";
 
-const REMOTE_SOURCE_TYPES = new Set<SubscriptionSource["sourceType"]>([
+const REMOTE_SOURCE_TYPES = new Set<SourceStream["sourceType"]>([
   "remote_source",
   "github_repo",
   "github_repo_ci",
@@ -97,25 +97,23 @@ export class RemoteSourceRuntime {
     private readonly appendSourceEvent: (input: AppendSourceEventInput) => Promise<{ appended: number; deduped: number }>,
     options?: {
       moduleRegistry?: RemoteSourceModuleRegistry;
-      /** @deprecated Use `moduleRegistry` instead. Kept as a backwards-compatible alias. */
-      profileRegistry?: RemoteSourceModuleRegistry;
       client?: UxcRemoteSourceClient;
       homeDir?: string;
     },
   ) {
-    this.moduleRegistry = options?.moduleRegistry ?? options?.profileRegistry ?? new RemoteSourceModuleRegistry();
+    this.moduleRegistry = options?.moduleRegistry ?? new RemoteSourceModuleRegistry();
     this.client = options?.client ?? new RpcUxcRemoteSourceClient();
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
   }
 
-  async ensureSource(source: SubscriptionSource): Promise<void> {
+  async ensureSource(source: SourceStream): Promise<void> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return;
     }
     await this.syncSource(source.sourceId, true);
   }
 
-  async validateSource(source: SubscriptionSource): Promise<void> {
+  async validateSource(source: SourceStream): Promise<void> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return;
     }
@@ -214,7 +212,7 @@ export class RemoteSourceRuntime {
     };
   }
 
-  async projectLifecycleSignal(source: SubscriptionSource, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
+  async projectLifecycleSignal(source: SourceStream, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
@@ -226,7 +224,7 @@ export class RemoteSourceRuntime {
   }
 
   async expandSubscriptionShortcut(
-    source: SubscriptionSource,
+    source: SourceStream,
     input: { name: string; args?: Record<string, unknown> },
   ): Promise<ExpandedSubscriptionInput | null> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
@@ -243,7 +241,7 @@ export class RemoteSourceRuntime {
     });
   }
 
-  async deriveInlinePreview(source: SubscriptionSource, item: ActivationItem): Promise<string | null> {
+  async deriveInlinePreview(source: SourceStream, item: ActivationItem): Promise<string | null> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
@@ -254,7 +252,7 @@ export class RemoteSourceRuntime {
     return module.deriveInlinePreview(item, moduleInputSource(source));
   }
 
-  async deriveNotificationGrouping(source: SubscriptionSource, item: ActivationItem): Promise<NotificationGrouping | null> {
+  async deriveNotificationGrouping(source: SourceStream, item: ActivationItem): Promise<NotificationGrouping | null> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
@@ -266,7 +264,7 @@ export class RemoteSourceRuntime {
   }
 
   async summarizeDigestThread(
-    source: SubscriptionSource,
+    source: SourceStream,
     items: ActivationItem[],
     grouping: NotificationGrouping,
   ): Promise<string | null> {
@@ -430,25 +428,25 @@ export class RemoteSourceRuntime {
   }
 }
 
-function moduleInputSource(source: SubscriptionSource): SubscriptionSource {
+function moduleInputSource(source: SourceStream): SourceStream {
   if (source.sourceType !== "remote_source") {
     return source;
   }
   const config = asRecord(source.config);
   return {
     ...source,
-    config: asRecord(config.profileConfig),
+    config: asRecord(config.moduleConfig),
   };
 }
 
-function defaultManagedBindingForSource(source: SubscriptionSource): { namespace: string; sourceKey: string } {
+function defaultManagedBindingForSource(source: SourceStream): { namespace: string; sourceKey: string } {
   return {
     namespace: MANAGED_SOURCE_NAMESPACE,
     sourceKey: `${source.sourceType}:${source.sourceKey}`,
   };
 }
 
-function managedBindingForSource(source: SubscriptionSource): { namespace: string; sourceKey: string } {
+function managedBindingForSource(source: SourceStream): { namespace: string; sourceKey: string } {
   const checkpoint = parseRemoteCheckpoint(source.checkpoint);
   const defaultBinding = defaultManagedBindingForSource(source);
   return {

@@ -29,7 +29,7 @@ Do not let `AgentInbox` drift into:
 
 Default conceptual model:
 
-- `SubscriptionSource`
+- `SourceStream`
   - shared source instance, reusable across many agents
 - `Interest`
   - agent-specific filter and delivery rule on top of a source

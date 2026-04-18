@@ -1,22 +1,18 @@
 import { resolveAgentInboxHome } from "./paths";
-import { ResolvedSourceIdentity, ResolvedSourceSchema, SourceSchema, SubscriptionSource } from "./model";
+import { ResolvedSourceIdentity, ResolvedSourceSchema, SourceSchema, SourceStream } from "./model";
 import { RemoteSourceModule, RemoteSourceModuleRegistry, builtInModuleIdForSourceType, moduleConfigForSource } from "./sources/remote_modules";
 import { getSourceSchema } from "./source_schema";
-import { compatSourceTypeForStream } from "./source_hosts";
 
 export interface ResolveSourceContext {
   homeDir?: string;
   moduleRegistry?: RemoteSourceModuleRegistry;
-  // Deprecated compatibility alias for callers that still pass the old option name.
-  profileRegistry?: RemoteSourceModuleRegistry;
 }
 
 export async function resolveSourceIdentity(
-  source: SubscriptionSource,
+  source: SourceStream,
   context: ResolveSourceContext = {},
 ): Promise<ResolvedSourceIdentity> {
-  const compatSourceType = compatSourceTypeForStream(source);
-  if (compatSourceType === "local_event") {
+  if (source.sourceType === "local_event") {
     return {
       hostType: "local_event",
       sourceKind: "local_event",
@@ -24,20 +20,20 @@ export async function resolveSourceIdentity(
     };
   }
 
-  const builtinImplementationId = builtInModuleIdForSourceType(compatSourceType);
+  const builtinImplementationId = builtInModuleIdForSourceType(source.sourceType);
   if (builtinImplementationId) {
     return {
       hostType: "remote_source",
-      sourceKind: compatSourceType,
+      sourceKind: source.sourceType,
       implementationId: builtinImplementationId,
     };
   }
 
-  if (compatSourceType !== "remote_source") {
-    throw new Error(`unsupported source type for source resolution: ${compatSourceType}`);
+  if (source.sourceType !== "remote_source") {
+    throw new Error(`unsupported source type for source resolution: ${source.sourceType}`);
   }
 
-  const moduleRegistry = context.moduleRegistry ?? context.profileRegistry ?? new RemoteSourceModuleRegistry();
+  const moduleRegistry = context.moduleRegistry ?? new RemoteSourceModuleRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
   const module = await moduleRegistry.resolve(source, homeDir);
   const capabilityDescription = typeof module.describeCapabilities === "function"
@@ -51,14 +47,14 @@ export async function resolveSourceIdentity(
 }
 
 export async function resolveSourceSchema(
-  source: SubscriptionSource,
+  source: SourceStream,
   context: ResolveSourceContext = {},
 ): Promise<ResolvedSourceSchema> {
-  const moduleRegistry = context.moduleRegistry ?? context.profileRegistry ?? new RemoteSourceModuleRegistry();
+  const moduleRegistry = context.moduleRegistry ?? new RemoteSourceModuleRegistry();
   const homeDir = context.homeDir ?? resolveAgentInboxHome(process.env);
   const resolvedContext: ResolveSourceContext = { ...context, moduleRegistry, homeDir };
   const identity = await resolveSourceIdentity(source, resolvedContext);
-  const staticSchema = getSourceSchema(compatSourceTypeForStream(source));
+  const staticSchema = getSourceSchema(source.sourceType);
   let capabilityDescription: ReturnType<NonNullable<RemoteSourceModule["describeCapabilities"]>> | undefined;
   let module: RemoteSourceModule | null = null;
   if (identity.hostType === "remote_source") {
@@ -126,8 +122,8 @@ export function withResolvedIdentity(
   };
 }
 
-function moduleInputSource(source: SubscriptionSource): SubscriptionSource {
-  if (compatSourceTypeForStream(source) !== "remote_source") {
+function moduleInputSource(source: SourceStream): SourceStream {
+  if (source.sourceType !== "remote_source") {
     return source;
   }
   return {

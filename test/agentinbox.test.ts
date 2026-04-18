@@ -599,7 +599,7 @@ test("local_event source can act as a programmable event bus source", async () =
 test("remote_source registration succeeds", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "demo.mjs"),
@@ -628,8 +628,8 @@ test("remote_source registration succeeds", async () => {
       sourceType: "remote_source",
       sourceKey: "remote-demo",
       config: {
-        profilePath: "demo.mjs",
-        profileConfig: {},
+        modulePath: "demo.mjs",
+        moduleConfig: {},
       },
     });
     assert.equal(source.sourceType, "remote_source");
@@ -725,10 +725,10 @@ test("builtin remote-backed source details expose resolved remote identity", asy
   }
 });
 
-test("source schema preview resolves a user-defined remote module without persisting a source", async () => {
+test("stream schema preview resolves a user-defined remote module without persisting a source", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "preview.mjs"),
@@ -765,8 +765,8 @@ test("source schema preview resolves a user-defined remote module without persis
     const preview = await service.previewSourceSchema({
       sourceRef: "remote:demo.preview",
       config: {
-        profilePath: "preview.mjs",
-        profileConfig: { token: "demo-token" },
+        modulePath: "preview.mjs",
+        moduleConfig: { token: "demo-token" },
       },
     });
     assert.equal(preview.sourceType, "remote_source");
@@ -787,7 +787,7 @@ test("source schema preview resolves a user-defined remote module without persis
   }
 });
 
-test("source schema preview supports builtin remote-backed aliases without persisting a source", async () => {
+test("stream schema preview supports builtin remote-backed aliases without persisting a source", async () => {
   const { store, service, dir } = await makeService();
   try {
     const preview = await service.previewSourceSchema({
@@ -815,7 +815,7 @@ test("source schema preview supports builtin remote-backed aliases without persi
 test("remote_source capability hooks override resolved schema fields and advertise shortcut/lifecycle support", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "capabilities.mjs"),
@@ -867,8 +867,8 @@ test("remote_source capability hooks override resolved schema fields and adverti
       sourceType: "remote_source",
       sourceKey: "capabilities-demo",
       config: {
-        profilePath: "capabilities.mjs",
-        profileConfig: {},
+        modulePath: "capabilities.mjs",
+        moduleConfig: {},
       },
     });
 
@@ -929,7 +929,7 @@ test("local_event resolved schema does not expose remote-only subscription capab
 test("source details keep a wrapped fallback schema when non-identity capability hooks throw", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "broken-shortcuts.mjs"),
@@ -962,8 +962,8 @@ test("source details keep a wrapped fallback schema when non-identity capability
       sourceType: "remote_source",
       sourceKey: "broken-shortcuts-demo",
       config: {
-        profilePath: "broken-shortcuts.mjs",
-        profileConfig: {},
+        modulePath: "broken-shortcuts.mjs",
+        moduleConfig: {},
       },
     });
 
@@ -1001,7 +1001,7 @@ test("source details keep a wrapped fallback schema when non-identity capability
 test("subscription add can expand a remote module shortcut into standard subscription fields", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "shortcut-expand.mjs"),
@@ -1044,8 +1044,8 @@ test("subscription add can expand a remote module shortcut into standard subscri
       sourceType: "remote_source",
       sourceKey: "shortcut-expand-demo",
       config: {
-        profilePath: "shortcut-expand.mjs",
-        profileConfig: {},
+        modulePath: "shortcut-expand.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({
@@ -1079,7 +1079,7 @@ test("subscription add can expand a remote module shortcut into standard subscri
 test("remote_source module contract rejects non-function optional hooks", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "invalid-hook.mjs"),
@@ -1112,8 +1112,8 @@ test("remote_source module contract rejects non-function optional hooks", async 
         sourceType: "remote_source",
         sourceKey: "invalid-hook-demo",
         config: {
-          profilePath: "invalid-hook.mjs",
-          profileConfig: {},
+          modulePath: "invalid-hook.mjs",
+          moduleConfig: {},
         },
       }),
       /listSubscriptionShortcuts must be a function/,
@@ -1244,7 +1244,7 @@ test("source details expose idle auto-pause state for operators", async () => {
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "idle-details.mjs"),
@@ -1270,8 +1270,8 @@ test("source details expose idle auto-pause state for operators", async () => {
       sourceType: "remote_source",
       sourceKey: "idle-details-demo",
       config: {
-        profilePath: "idle-details.mjs",
-        profileConfig: {},
+        modulePath: "idle-details.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({
@@ -1352,7 +1352,7 @@ test("invalid subscription input does not resume an auto-paused source", async (
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "idle-invalid-filter.mjs"),
@@ -1378,8 +1378,8 @@ test("invalid subscription input does not resume an auto-paused source", async (
       sourceType: "remote_source",
       sourceKey: "idle-invalid-filter-demo",
       config: {
-        profilePath: "idle-invalid-filter.mjs",
-        profileConfig: {},
+        modulePath: "idle-invalid-filter.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({
@@ -1424,7 +1424,7 @@ test("lifecycle gc refreshes idle state when it removes the last subscription", 
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "idle-lifecycle.mjs"),
@@ -1450,8 +1450,8 @@ test("lifecycle gc refreshes idle state when it removes the last subscription", 
       sourceType: "remote_source",
       sourceKey: "idle-lifecycle-demo",
       config: {
-        profilePath: "idle-lifecycle.mjs",
-        profileConfig: {},
+        modulePath: "idle-lifecycle.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({
@@ -1486,7 +1486,7 @@ test("manual pause does not create idle auto-pause state after the last subscrip
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "idle-manual-pause.mjs"),
@@ -1512,8 +1512,8 @@ test("manual pause does not create idle auto-pause state after the last subscrip
       sourceType: "remote_source",
       sourceKey: "idle-manual-pause-demo",
       config: {
-        profilePath: "idle-manual-pause.mjs",
-        profileConfig: {},
+        modulePath: "idle-manual-pause.mjs",
+        moduleConfig: {},
       },
     });
     const agent = service.registerAgent({
@@ -1820,7 +1820,7 @@ test("gc removes subscriptions whose cleanupPolicy deadline has passed", async (
 test("terminal lifecycle signals schedule retirements and gc removes matching subscriptions after delivery", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "lifecycle-demo.mjs"),
@@ -1852,8 +1852,8 @@ test("terminal lifecycle signals schedule retirements and gc removes matching su
       sourceType: "remote_source",
       sourceKey: "lifecycle-demo",
       config: {
-        profilePath: "lifecycle-demo.mjs",
-        profileConfig: {},
+        modulePath: "lifecycle-demo.mjs",
+        moduleConfig: {},
       },
     });
     const agentA = await registerTmuxAgent(service, "lifecycle-a");
@@ -1917,7 +1917,7 @@ test("terminal lifecycle signals schedule retirements and gc removes matching su
 test("terminal lifecycle retirements honor gracePeriodSecs until gc reaches retireAt", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "lifecycle-grace.mjs"),
@@ -1948,8 +1948,8 @@ test("terminal lifecycle retirements honor gracePeriodSecs until gc reaches reti
       sourceType: "remote_source",
       sourceKey: "lifecycle-grace-demo",
       config: {
-        profilePath: "lifecycle-grace.mjs",
-        profileConfig: {},
+        modulePath: "lifecycle-grace.mjs",
+        moduleConfig: {},
       },
     });
     const agent = await registerTmuxAgent(service, "lifecycle-grace");
@@ -2265,54 +2265,6 @@ test("ack through still follows visible order when older binaries left inbox_seq
     try {
       store.close();
     } catch {}
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("legacy afterItemId paging still works against entry-backed inbox reads", async () => {
-  const { store, service, dir } = await makeService();
-  try {
-    const alpha = await registerTmuxAgent(service, "after-item");
-    const inboxId = (service.getInboxDetailsByAgent(alpha.agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
-
-    store.insertInboxItem({
-      itemId: "item-after-1",
-      sourceId: "src-after",
-      sourceNativeId: "evt-after-1",
-      eventVariant: "message.created",
-      inboxId,
-      occurredAt: "2026-04-01T00:00:00Z",
-      metadata: {},
-      rawPayload: { message: "first" },
-      deliveryHandle: null,
-      ackedAt: null,
-    });
-    store.insertInboxItem({
-      itemId: "item-after-2",
-      sourceId: "src-after",
-      sourceNativeId: "evt-after-2",
-      eventVariant: "message.created",
-      inboxId,
-      occurredAt: "2026-04-01T00:00:01Z",
-      metadata: {},
-      rawPayload: { message: "second" },
-      deliveryHandle: null,
-      ackedAt: null,
-    });
-    (store as unknown as { ensureInboxEntryBackfill(): void }).ensureInboxEntryBackfill();
-
-    const visible = service.listInboxItems(alpha.agentId, { includeAcked: true });
-    assert.equal(visible.length, 2);
-
-    const afterFirst = service.listInboxItems(alpha.agentId, {
-      includeAcked: true,
-      afterItemId: visible[0]!.itemId,
-    });
-    assert.equal(afterFirst.length, 1);
-    assert.equal(afterFirst[0]!.itemId, "item-after-2");
-  } finally {
-    await service.stop();
-    store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -3237,7 +3189,7 @@ test("user-defined remote_source profiles can opt into source-specific inline pr
     activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "preview-hook.mjs"),
@@ -3281,7 +3233,7 @@ test("user-defined remote_source profiles can opt into source-specific inline pr
       sourceType: "remote_source",
       sourceKey: "demo/preview-hook",
       config: {
-        profilePath: "preview-hook.mjs",
+        modulePath: "preview-hook.mjs",
       },
     });
     const subscription = await service.registerSubscription({
@@ -3324,7 +3276,7 @@ test("source-specific preview hook failures fall back to the generic preview", a
     activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "preview-hook-error.mjs"),
@@ -3368,7 +3320,7 @@ test("source-specific preview hook failures fall back to the generic preview", a
       sourceType: "remote_source",
       sourceKey: "demo/preview-hook-error",
       config: {
-        profilePath: "preview-hook-error.mjs",
+        modulePath: "preview-hook-error.mjs",
       },
     });
     const subscription = await service.registerSubscription({
@@ -3410,7 +3362,7 @@ test("source-specific previews are normalized at the core call boundary", async 
     activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "preview-hook-unbounded.mjs"),
@@ -3454,7 +3406,7 @@ test("source-specific previews are normalized at the core call boundary", async 
       sourceType: "remote_source",
       sourceKey: "demo/preview-hook-unbounded",
       config: {
-        profilePath: "preview-hook-unbounded.mjs",
+        modulePath: "preview-hook-unbounded.mjs",
       },
     });
     const subscription = await service.registerSubscription({
@@ -4344,7 +4296,7 @@ test("resumeAgent partially recovers mixed offline targets and reconciles agent 
 test("gc does not retire subscriptions before they consume a terminal event", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "lifecycle-race.mjs"),
@@ -4375,8 +4327,8 @@ test("gc does not retire subscriptions before they consume a terminal event", as
       sourceType: "remote_source",
       sourceKey: "lifecycle-race-demo",
       config: {
-        profilePath: "lifecycle-race.mjs",
-        profileConfig: {},
+        modulePath: "lifecycle-race.mjs",
+        moduleConfig: {},
       },
     });
     const agent = await registerTmuxAgent(service, "lifecycle-race");
@@ -4419,7 +4371,7 @@ test("gc does not retire subscriptions before they consume a terminal event", as
 test("gc does not retire sibling subscriptions sharing a trackedResourceRef before they consume the terminal event", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-profiles");
+    const profileDir = path.join(dir, "source-modules");
     fs.mkdirSync(profileDir, { recursive: true });
     fs.writeFileSync(
       path.join(profileDir, "lifecycle-shared-ref.mjs"),
@@ -4450,8 +4402,8 @@ test("gc does not retire sibling subscriptions sharing a trackedResourceRef befo
       sourceType: "remote_source",
       sourceKey: "lifecycle-shared-ref-demo",
       config: {
-        profilePath: "lifecycle-shared-ref.mjs",
-        profileConfig: {},
+        modulePath: "lifecycle-shared-ref.mjs",
+        moduleConfig: {},
       },
     });
     const agentA = await registerTmuxAgent(service, "lifecycle-shared-ref-a");

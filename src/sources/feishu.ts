@@ -5,7 +5,7 @@ import {
   DeliveryHandle,
   DeliveryOperationDescriptor,
   DeliveryRequest,
-  SubscriptionSource,
+  SourceStream,
 } from "../model";
 
 export const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
@@ -173,7 +173,7 @@ export async function invokeFeishuDeliveryOperation(
 }
 
 export function normalizeFeishuBotEvent(
-  source: SubscriptionSource,
+  source: SourceStream,
   config: FeishuBotSourceConfig,
   raw: unknown,
 ): AppendSourceEventInput | null {
@@ -251,7 +251,7 @@ export function normalizeFeishuBotEvent(
   };
 }
 
-export function parseFeishuSourceConfig(source: SubscriptionSource): FeishuBotSourceConfig {
+export function parseFeishuSourceConfig(source: SourceStream): FeishuBotSourceConfig {
   const config = source.config ?? {};
   return {
     endpoint: asString(config.endpoint) ?? FEISHU_OPENAPI_ENDPOINT,

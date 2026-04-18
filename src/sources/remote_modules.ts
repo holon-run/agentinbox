@@ -11,10 +11,9 @@ import {
   DeliveryOperationDescriptor,
   NotificationGrouping,
   SourceSchemaField,
+  SourceStream,
   SubscriptionFilter,
-  SubscriptionSource,
 } from "../model";
-import { compatSourceTypeForStream } from "../source_hosts";
 import {
   deriveGithubTrackedResource,
   expandGithubSubscriptionShortcut,
@@ -88,7 +87,7 @@ export interface ExpandedSubscriptionInput {
 export interface ExpandSubscriptionShortcutInput {
   name: string;
   args?: Record<string, unknown>;
-  source: SubscriptionSource;
+  source: SourceStream;
 }
 
 export interface LifecycleSignal {
@@ -101,7 +100,7 @@ export interface LifecycleSignal {
 
 export interface ListDeliveryOperationsInput {
   handle: DeliveryHandle;
-  source?: SubscriptionSource | null;
+  source?: SourceStream | null;
 }
 
 export interface InvokeDeliveryOperationInput {
@@ -109,59 +108,58 @@ export interface InvokeDeliveryOperationInput {
   operation: string;
   input: Record<string, unknown>;
   attempt: DeliveryAttempt;
-  source?: SubscriptionSource | null;
+  source?: SourceStream | null;
 }
 
 export interface RemoteSourceModule {
   id: string;
-  validateConfig(source: SubscriptionSource): void;
-  buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec;
-  mapRawEvent(rawPayload: Record<string, unknown>, source: SubscriptionSource): MappedRemoteEvent | null;
+  validateConfig(source: SourceStream): void;
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec;
+  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null;
   // Optional capability hooks used by resolved schema and future subscription ergonomics.
-  describeCapabilities?(source: SubscriptionSource): RemoteSourceCapabilityDescription;
-  listSubscriptionShortcuts?(source: SubscriptionSource): SubscriptionShortcutSpec[];
+  describeCapabilities?(source: SourceStream): RemoteSourceCapabilityDescription;
+  listSubscriptionShortcuts?(source: SourceStream): SubscriptionShortcutSpec[];
   expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | null;
-  deriveTrackedResource?(filter: SubscriptionFilter, source: SubscriptionSource): { ref: string } | null;
-  projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SubscriptionSource): LifecycleSignal | null;
-  deriveInlinePreview?(item: ActivationItem, source: SubscriptionSource): string | null;
-  deriveNotificationGrouping?(item: ActivationItem, source: SubscriptionSource): NotificationGrouping | null;
+  deriveTrackedResource?(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null;
+  projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SourceStream): LifecycleSignal | null;
+  deriveInlinePreview?(item: ActivationItem, source: SourceStream): string | null;
+  deriveNotificationGrouping?(item: ActivationItem, source: SourceStream): NotificationGrouping | null;
   listDeliveryOperations?(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[];
   invokeDeliveryOperation?(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }>;
-  summarizeDigestThread?(items: ActivationItem[], source: SubscriptionSource, grouping: NotificationGrouping): string | null;
+  summarizeDigestThread?(items: ActivationItem[], source: SourceStream, grouping: NotificationGrouping): string | null;
 }
 
-const REMOTE_USER_MODULE_ROOT_DIR = "source-profiles";
+const REMOTE_USER_MODULE_ROOT_DIR = "source-modules";
 const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot"]);
 
 export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
 
-  resolve(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceModule> {
-    const compatSourceType = compatSourceTypeForStream(source);
-    if (compatSourceType === "github_repo") {
+  resolve(source: SourceStream, homeDir: string): Promise<RemoteSourceModule> {
+    if (source.sourceType === "github_repo") {
       return Promise.resolve(GITHUB_REPO_MODULE);
     }
-    if (compatSourceType === "github_repo_ci") {
+    if (source.sourceType === "github_repo_ci") {
       return Promise.resolve(GITHUB_REPO_CI_MODULE);
     }
-    if (compatSourceType === "feishu_bot") {
+    if (source.sourceType === "feishu_bot") {
       return Promise.resolve(FEISHU_BOT_MODULE);
     }
-    if (compatSourceType !== "remote_source") {
-      throw new Error(`unsupported source type for remote module: ${compatSourceType}`);
+    if (source.sourceType !== "remote_source") {
+      throw new Error(`unsupported source type for remote module: ${source.sourceType}`);
     }
     return this.loadUserModule(source, homeDir);
   }
 
-  private async loadUserModule(source: SubscriptionSource, homeDir: string): Promise<RemoteSourceModule> {
+  private async loadUserModule(source: SourceStream, homeDir: string): Promise<RemoteSourceModule> {
     const config = source.config ?? {};
-    const profilePath = asNonEmptyString(config.profilePath);
-    if (!profilePath) {
-      throw new Error("remote_source requires config.profilePath (module path)");
+    const modulePath = asNonEmptyString(config.modulePath);
+    if (!modulePath) {
+      throw new Error("remote_source requires config.modulePath (module path)");
     }
 
     const moduleRoot = path.resolve(homeDir, REMOTE_USER_MODULE_ROOT_DIR);
-    const resolvedPath = resolveAndValidateModulePath(moduleRoot, profilePath);
+    const resolvedPath = resolveAndValidateModulePath(moduleRoot, modulePath);
     const cacheKey = `${resolvedPath}:${source.sourceKey}`;
     const cached = this.moduleCache.get(cacheKey);
     if (cached) {
@@ -187,7 +185,7 @@ async function dynamicImportModule(moduleUrl: string): Promise<Record<string, un
   return importer(moduleUrl);
 }
 
-export function builtInModuleIdForSourceType(sourceType: SubscriptionSource["sourceType"]): string | null {
+export function builtInModuleIdForSourceType(sourceType: SourceStream["sourceType"]): string | null {
   if (sourceType === "github_repo") {
     return "builtin.github_repo";
   }
@@ -234,14 +232,14 @@ function validateOptionalHook(value: unknown, name: string, sourcePath: string):
   }
 }
 
-function resolveAndValidateModulePath(moduleRoot: string, profilePath: string): string {
-  const resolved = path.isAbsolute(profilePath)
-    ? path.resolve(profilePath)
-    : path.resolve(moduleRoot, profilePath);
+function resolveAndValidateModulePath(moduleRoot: string, modulePath: string): string {
+  const resolved = path.isAbsolute(modulePath)
+    ? path.resolve(modulePath)
+    : path.resolve(moduleRoot, modulePath);
   const normalizedRoot = ensureTrailingSep(path.resolve(moduleRoot));
   const normalizedResolved = path.resolve(resolved);
   if (!normalizedResolved.startsWith(normalizedRoot) && normalizedResolved !== path.resolve(moduleRoot)) {
-    throw new Error(`remote_source profilePath must stay under ${moduleRoot}`);
+    throw new Error(`remote_source modulePath must stay under ${moduleRoot}`);
   }
   return normalizedResolved;
 }
@@ -273,7 +271,7 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
   async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
     return invokeGithubDeliveryOperation(input.handle, input.operation, input.input);
   },
-  describeCapabilities(source: SubscriptionSource): RemoteSourceCapabilityDescription {
+  describeCapabilities(source: SourceStream): RemoteSourceCapabilityDescription {
     const config = parseGithubSourceConfig(source);
     return {
       sourceKind: "github_repo",
@@ -376,7 +374,7 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
     }
     return null;
   },
-  summarizeDigestThread(items: ActivationItem[], _source: SubscriptionSource, grouping: NotificationGrouping): string | null {
+  summarizeDigestThread(items: ActivationItem[], _source: SourceStream, grouping: NotificationGrouping): string | null {
     if (!grouping.summaryHint || items.length === 0) {
       return null;
     }
@@ -386,10 +384,10 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
   projectLifecycleSignal(rawPayload: Record<string, unknown>) {
     return projectGithubLifecycleSignal(rawPayload);
   },
-  validateConfig(source: SubscriptionSource): void {
+  validateConfig(source: SourceStream): void {
     parseGithubSourceConfig(source);
   },
-  buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec {
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
     const config = parseGithubSourceConfig(source);
     return {
       endpoint: GITHUB_ENDPOINT,
@@ -412,7 +410,7 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
       options: { auth: config.uxcAuth },
     };
   },
-  mapRawEvent(rawPayload: Record<string, unknown>, source: SubscriptionSource): MappedRemoteEvent | null {
+  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
     const config = parseGithubSourceConfig(source);
     const normalized = normalizeGithubRepoEvent(source, config, rawPayload);
     if (!normalized) {
@@ -504,16 +502,16 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
       flushClass: conclusion || status === "completed" ? "immediate" : "normal",
     };
   },
-  summarizeDigestThread(items: ActivationItem[], _source: SubscriptionSource, grouping: NotificationGrouping): string | null {
+  summarizeDigestThread(items: ActivationItem[], _source: SourceStream, grouping: NotificationGrouping): string | null {
     if (!grouping.summaryHint || items.length === 0) {
       return null;
     }
     return `${items.length} ${grouping.summaryHint}`;
   },
-  validateConfig(source: SubscriptionSource): void {
+  validateConfig(source: SourceStream): void {
     parseGithubCiSourceConfig(source);
   },
-  buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec {
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
     const config = parseGithubCiSourceConfig(source);
     const args: Record<string, unknown> = {
       owner: config.owner,
@@ -545,7 +543,7 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
       options: { auth: config.uxcAuth },
     };
   },
-  mapRawEvent(rawPayload: Record<string, unknown>, source: SubscriptionSource): MappedRemoteEvent | null {
+  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
     const config = parseGithubCiSourceConfig(source);
     const normalized = normalizeGithubWorkflowRunEvent(source, config, rawPayload);
     if (!normalized) {
@@ -600,10 +598,10 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
       eventVariantExamples: ["im.message.receive_v1.text"],
     };
   },
-  validateConfig(source: SubscriptionSource): void {
+  validateConfig(source: SourceStream): void {
     parseFeishuSourceConfig(source);
   },
-  buildManagedSourceSpec(source: SubscriptionSource): ManagedSourceSpec {
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
     const config = parseFeishuSourceConfig(source);
     return {
       endpoint: config.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
@@ -612,7 +610,7 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
       options: { auth: config.uxcAuth },
     };
   },
-  mapRawEvent(rawPayload: Record<string, unknown>, source: SubscriptionSource): MappedRemoteEvent | null {
+  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
     const config = parseFeishuSourceConfig(source);
     const normalized = normalizeFeishuBotEvent(source, config, rawPayload);
     if (!normalized) {
@@ -629,10 +627,10 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
   },
 };
 
-export function moduleConfigForSource(source: SubscriptionSource): Record<string, unknown> {
+export function moduleConfigForSource(source: SourceStream): Record<string, unknown> {
   const config = asRecord(source.config);
   if (source.sourceType === "remote_source") {
-    return asRecord(config.profileConfig);
+    return asRecord(config.moduleConfig);
   }
   return config;
 }
