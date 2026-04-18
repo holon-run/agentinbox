@@ -2392,11 +2392,12 @@ export class AgentInboxService {
             currentFingerprint: promptFingerprint,
           });
         }
-        if (state?.status === "dirty" && state.lastNotifiedFingerprint === promptFingerprint) {
+        if (state?.lastNotifiedFingerprint === promptFingerprint) {
           this.logger.debug("activation.dispatch_suppressed", {
             agentId: input.agentId,
             targetId: target.targetId,
             reason: "unchanged_terminal_prompt",
+            status: state.status,
           });
           this.store.upsertActivationDispatchState({
             agentId: input.agentId,
