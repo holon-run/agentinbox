@@ -38,8 +38,8 @@ import {
 } from "./model";
 import { formatEntryRef, formatThreadRef, generateId, nowIso, parseEntryRef } from "./util";
 
-const LEGACY_SCHEMA_VERSION = 12;
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
+const V1_BASELINE_TAG = "0000_v1_initial";
 type SqlBindParams = unknown[];
 
 interface SqlMigration {
@@ -98,10 +98,18 @@ export class AgentInboxStore {
   static async open(dbPath: string): Promise<AgentInboxStore> {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const SQL = await this.loadSqlJs();
-    const db = fs.existsSync(dbPath)
+    let db = fs.existsSync(dbPath)
       ? new SQL.Database(fs.readFileSync(dbPath))
       : new SQL.Database();
-    const store = new AgentInboxStore(dbPath, db);
+    let store = new AgentInboxStore(dbPath, db);
+    if (fs.existsSync(dbPath) && store.shouldArchivePreV1Database()) {
+      const archivedPath = store.archivePreV1Database();
+      console.warn(
+        `[agentinbox] archived pre-v1 local database to ${archivedPath}; starting with a fresh v1 database (no data imported).`,
+      );
+      db = new SQL.Database();
+      store = new AgentInboxStore(dbPath, db);
+    }
     store.migrate();
     store.persist();
     return store;
@@ -126,27 +134,12 @@ export class AgentInboxStore {
 
   private migrate(): void {
     const migrations = this.loadSqlMigrations();
-    const hasMigrationTable = this.tableExists(DRIZZLE_MIGRATIONS_TABLE);
     this.ensureDrizzleMigrationsTable();
     const applied = this.listAppliedMigrationTags();
-    const userVersion = this.userVersion();
-
-    if (applied.size === 0 && !hasMigrationTable && this.tableExists("sources")) {
-      if (userVersion !== 0 && userVersion !== LEGACY_SCHEMA_VERSION) {
-        throw new Error(`unsupported legacy database schema version ${userVersion} at ${this.dbPath}`);
-      }
-      this.recordAppliedMigration(migrations[0]!.tag);
-      applied.add(migrations[0]!.tag);
-    }
 
     const pending = migrations.filter((migration) => !applied.has(migration.tag));
-    if (pending.length > 0) {
-      if (this.shouldBackupBeforeMigration()) {
-        this.backupDatabase();
-      }
-      for (const migration of pending) {
-        this.applyMigration(migration);
-      }
+    for (const migration of pending) {
+      this.applyMigration(migration);
     }
 
     this.ensureInboxEntryBackfill();
@@ -214,17 +207,54 @@ export class AgentInboxStore {
     );
   }
 
-  private shouldBackupBeforeMigration(): boolean {
-    if (!fs.existsSync(this.dbPath)) {
+  private shouldArchivePreV1Database(): boolean {
+    if (this.isV1Database()) {
       return false;
     }
-    return this.tableExists("sources");
+    return this.hasRecognizablePreV1Schema();
   }
 
-  private backupDatabase(): void {
+  private isV1Database(): boolean {
+    if (!this.tableExists(DRIZZLE_MIGRATIONS_TABLE)) {
+      return false;
+    }
+    const applied = this.listAppliedMigrationTags();
+    if (applied.has(V1_BASELINE_TAG)) {
+      return true;
+    }
+    return this.tableExists("source_hosts")
+      && this.tableExists("inbox_entries")
+      && this.tableExists("digest_threads")
+      && this.columnExists("activation_dispatch_states", "pending_fingerprint");
+  }
+
+  private hasRecognizablePreV1Schema(): boolean {
+    return this.tableExists("sources")
+      || this.tableExists("agents")
+      || this.tableExists("subscriptions")
+      || this.tableExists("activation_targets")
+      || this.tableExists("inbox_items")
+      || this.tableExists(DRIZZLE_MIGRATIONS_TABLE);
+  }
+
+  private archivePreV1Database(): string {
+    this.close();
+    const archivedPath = this.nextArchivedDatabasePath();
+    fs.renameSync(this.dbPath, archivedPath);
+    return archivedPath;
+  }
+
+  private nextArchivedDatabasePath(): string {
     const safeStamp = nowIso().replace(/[:.]/g, "-");
-    const backupPath = `${this.dbPath}.backup-${safeStamp}`;
-    fs.copyFileSync(this.dbPath, backupPath);
+    const base = `${this.dbPath}.pre-v1.${safeStamp}.bak`;
+    if (!fs.existsSync(base)) {
+      return base;
+    }
+    let suffix = 1;
+    while (fs.existsSync(`${base}.${suffix}`)) {
+      suffix += 1;
+    }
+    return `${base}.${suffix}`;
   }
 
   private persist(): void {
@@ -243,14 +273,6 @@ export class AgentInboxStore {
     }
   }
 
-  private userVersion(): number {
-    const row = this.getOne("pragma user_version;");
-    if (!row) {
-      return 0;
-    }
-    return Number(row.user_version ?? 0);
-  }
-
   private setUserVersion(version: number): void {
     this.db.exec(`pragma user_version = ${version};`);
   }
@@ -261,6 +283,14 @@ export class AgentInboxStore {
       [name],
     );
     return Boolean(row);
+  }
+
+  private columnExists(tableName: string, columnName: string): boolean {
+    if (!this.tableExists(tableName)) {
+      return false;
+    }
+    const rows = this.getAll(`pragma table_info(${tableName});`);
+    return rows.some((row) => String(row.name) === columnName);
   }
 
   private ensureInboxEntryBackfill(): void {

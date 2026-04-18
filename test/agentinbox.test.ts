@@ -210,31 +210,92 @@ async function createLegacyDb(dbPath: string): Promise<void> {
     locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
   });
   const db = new SQL.Database();
-  const initialMigrationPath = path.join(__dirname, "..", "drizzle", "migrations", "0000_initial.sql");
-  db.exec(fs.readFileSync(initialMigrationPath, "utf8"));
+  db.exec(`
+    create table if not exists sources (
+      source_id text primary key,
+      source_type text not null,
+      source_key text not null,
+      config_ref text,
+      config_json text not null,
+      status text not null,
+      checkpoint text,
+      created_at text not null,
+      updated_at text not null,
+      unique(source_type, source_key)
+    );
+
+    create table if not exists agents (
+      agent_id text primary key,
+      status text not null,
+      offline_since text,
+      runtime_kind text not null,
+      runtime_session_id text,
+      created_at text not null,
+      updated_at text not null,
+      last_seen_at text not null
+    );
+
+    create table if not exists inboxes (
+      inbox_id text primary key,
+      owner_agent_id text not null unique,
+      created_at text not null
+    );
+
+    create table if not exists subscriptions (
+      subscription_id text primary key,
+      agent_id text not null,
+      source_id text not null,
+      filter_json text not null,
+      lifecycle_mode text not null,
+      expires_at text,
+      start_policy text not null,
+      start_offset integer,
+      start_time text,
+      created_at text not null
+    );
+
+    create table if not exists activation_targets (
+      target_id text primary key,
+      agent_id text not null,
+      kind text not null,
+      status text not null,
+      offline_since text,
+      consecutive_failures integer not null,
+      last_delivered_at text,
+      last_error text,
+      mode text not null,
+      notify_lease_ms integer not null,
+      url text,
+      runtime_kind text,
+      runtime_session_id text,
+      backend text,
+      tmux_pane_id text,
+      tty text,
+      term_program text,
+      iterm_session_id text,
+      created_at text not null,
+      updated_at text not null,
+      last_seen_at text not null
+    );
+  `);
   db.exec("pragma user_version = 12;");
   fs.writeFileSync(dbPath, Buffer.from(db.export()));
   db.close();
 }
 
-async function readMigrationState(dbPath: string): Promise<{ appliedCount: number; hasNewIndex: boolean }> {
+async function readMigrationState(dbPath: string): Promise<{ appliedTags: string[]; hasNewIndex: boolean }> {
   const SQL = await initSqlJs({
     locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
   });
   const db = new SQL.Database(fs.readFileSync(dbPath));
-  const migrationResult = db.exec("select count(*) as count from __drizzle_migrations;") as Array<{ values: unknown[][] }>;
-  const appliedCount = Number(migrationResult[0]?.values?.[0]?.[0] ?? 0);
+  const migrationResult = db.exec("select tag from __drizzle_migrations order by id asc;") as Array<{ values: unknown[][] }>;
+  const appliedTags = (migrationResult[0]?.values ?? []).map((row) => String(row[0]));
   const indexResult = db.exec("pragma index_list('inbox_items');") as Array<{ values: unknown[][] }>;
   const hasNewIndex = indexResult.some((set) =>
     set.values.some((row) => String(row[1]) === "idx_inbox_items_source_occurred_at"),
   );
   db.close();
-  return { appliedCount, hasNewIndex };
-}
-
-function expectedMigrationCount(): number {
-  const migrationsDir = path.join(__dirname, "..", "drizzle", "migrations");
-  return fs.readdirSync(migrationsDir).filter((name) => /^\d+_.*\.sql$/.test(name)).length;
+  return { appliedTags, hasNewIndex };
 }
 
 test("store migrates a new database using drizzle SQL migrations", async () => {
@@ -243,9 +304,9 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, expectedMigrationCount());
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial"]);
     assert.equal(state.hasNewIndex, true);
-    const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
+    const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 0);
   } finally {
     store.close();
@@ -253,53 +314,75 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   }
 });
 
-test("store upgrades a legacy v12 database with backup and forward migration", async () => {
+test("store reopens an existing v1 database without archiving it", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-reopen-v1-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  const first = await AgentInboxStore.open(dbPath);
+  first.close();
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(" "));
+  };
+  const reopened = await AgentInboxStore.open(dbPath);
+  try {
+    const state = await readMigrationState(dbPath);
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial"]);
+    assert.equal(warnings.length, 0);
+    const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
+    assert.equal(backups.length, 0);
+  } finally {
+    console.warn = originalWarn;
+    reopened.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store archives a pre-v1 database and starts fresh with the v1 baseline", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-legacy-"));
   const dbPath = path.join(dir, "agentinbox.sqlite");
   await createLegacyDb(dbPath);
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(" "));
+  };
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.equal(state.appliedCount, expectedMigrationCount());
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial"]);
     assert.equal(state.hasNewIndex, true);
-    const backups = fs.readdirSync(dir).filter((name) => name.startsWith("agentinbox.sqlite.backup-"));
+    const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 1);
+    assert.match(backups[0]!, /^agentinbox\.sqlite\.pre-v1\..+\.bak(?:\.\d+)?$/);
+    assert.match(warnings[0] ?? "", /archived pre-v1 local database/);
+    assert.match(warnings[0] ?? "", /no data imported/);
   } finally {
+    console.warn = originalWarn;
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("store migrates legacy subscription lifecycle fields into cleanupPolicy", async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-subscriptions-"));
+test("store archives repeated pre-v1 databases without clobbering earlier backups", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-legacy-repeat-"));
   const dbPath = path.join(dir, "agentinbox.sqlite");
   await createLegacyDb(dbPath);
-  const SQL = await initSqlJs({
-    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
-  });
-  const legacyDb = new SQL.Database(fs.readFileSync(dbPath));
-  legacyDb.exec(`
-    insert into subscriptions (
-      subscription_id, agent_id, source_id, filter_json, lifecycle_mode, expires_at, start_policy, start_offset, start_time, created_at
-    ) values
-      ('sub_standing', 'agent_1', 'src_1', '{}', 'standing', null, 'latest', null, null, '2026-01-01T00:00:00.000Z'),
-      ('sub_deadline', 'agent_1', 'src_1', '{}', 'standing', '2026-02-01T00:00:00.000Z', 'latest', null, null, '2026-01-01T00:00:00.000Z'),
-      ('sub_temporary', 'agent_1', 'src_1', '{}', 'temporary', null, 'latest', null, null, '2026-01-01T00:00:00.000Z');
-  `);
-  fs.writeFileSync(dbPath, Buffer.from(legacyDb.export()));
-  legacyDb.close();
-
-  const store = await AgentInboxStore.open(dbPath);
   try {
-    assert.deepEqual(store.getSubscription("sub_standing")?.cleanupPolicy, { mode: "manual" });
-    assert.equal(store.getSubscription("sub_standing")?.trackedResourceRef, null);
-    assert.deepEqual(store.getSubscription("sub_deadline")?.cleanupPolicy, {
-      mode: "at",
-      at: "2026-02-01T00:00:00.000Z",
-    });
-    assert.deepEqual(store.getSubscription("sub_temporary")?.cleanupPolicy, { mode: "manual" });
+    const first = await AgentInboxStore.open(dbPath);
+    first.close();
+
+    await createLegacyDb(dbPath);
+    const second = await AgentInboxStore.open(dbPath);
+    second.close();
+
+    const backups = fs.readdirSync(dir)
+      .filter((name) => name.includes(".pre-v1."))
+      .sort();
+    assert.equal(backups.length, 2);
+    assert.notEqual(backups[0], backups[1]);
   } finally {
-    store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
