@@ -166,9 +166,7 @@ export interface TerminalActivationTarget extends ActivationTargetBase {
 
 export type ActivationTarget = WebhookActivationTarget | TerminalActivationTarget;
 
-export type ActivationDispatchDeferReason =
-  | "terminal_busy"
-  | "terminal_recently_active";
+export type ActivationDispatchDeferReason = string;
 
 export interface ActivationDispatchState {
   agentId: string;

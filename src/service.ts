@@ -2071,9 +2071,6 @@ export class AgentInboxService {
           }
         }
       } else {
-        const target = this.getActivationTarget(buffer.targetId);
-        const inbox = this.ensureInboxForAgent(buffer.agentId);
-        const unackedItems = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
         const mergedNewItemCount = state.pendingNewItemCount + entries.length;
         const mergedSummary = latestSummary(entries) ?? state.pendingSummary;
         const mergedSubscriptionIds = uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]);
@@ -2084,29 +2081,14 @@ export class AgentInboxService {
         let lastDeferredAt = state.lastDeferredAt;
         let pendingFingerprint = state.pendingFingerprint;
         let leaseExpiresAt = state.leaseExpiresAt;
-        if (target.kind === "terminal" && state.status === "dirty" && state.leaseExpiresAt != null && state.deferReason) {
-          const reminder = await this.buildTerminalReminder(
-            target,
-            inbox.inboxId,
-            unackedItems.length,
-            mergedSummary,
-            unackedItems,
-          );
-          if (pendingFingerprint !== reminder.fingerprint) {
-            const deferredAt = nowIso();
-            pendingFingerprint = reminder.fingerprint;
-            deferAttempts = 1;
-            firstDeferredAt = deferredAt;
-            lastDeferredAt = deferredAt;
-            leaseExpiresAt = new Date(Date.now() + terminalDeferRetryMs(deferAttempts)).toISOString();
-            this.logger.debug("activation.defer_pending_replaced", {
-              agentId: buffer.agentId,
-              targetId: buffer.targetId,
-              deferReason: state.deferReason,
-              deferAttempts,
-              pendingFingerprint,
-            });
-          }
+        if (state.status === "dirty" && state.leaseExpiresAt != null && state.deferReason) {
+          pendingFingerprint = null;
+          this.logger.debug("activation.defer_pending_marked_stale", {
+            agentId: buffer.agentId,
+            targetId: buffer.targetId,
+            deferReason: state.deferReason,
+            deferAttempts: state.deferAttempts,
+          });
         }
         this.store.upsertActivationDispatchState({
           agentId: buffer.agentId,
@@ -2306,6 +2288,7 @@ export class AgentInboxService {
       return "suppressed";
     }
     let terminalPrompt: string | null = null;
+    let terminalPromptFingerprint: string | null = null;
     try {
       if (target.kind === "terminal") {
         const gate = await this.activationGate.evaluate(target);
@@ -2338,13 +2321,18 @@ export class AgentInboxService {
         const prompt = reminder.prompt;
         const promptFingerprint = reminder.fingerprint;
         terminalPrompt = prompt;
+        terminalPromptFingerprint = promptFingerprint;
         if (gate.outcome === "defer") {
-          const deferReason = toActivationDispatchDeferReason(gate.reason);
-          const sameFingerprint = state?.pendingFingerprint === promptFingerprint
-            && state.deferReason === deferReason;
-          const deferAttempts = sameFingerprint ? state.deferAttempts + 1 : 1;
+          const deferReason = toActivationDispatchDeferReason(gate.reason, this.logger);
+          const hasExistingDeferred = state?.deferReason != null;
+          const deferAttempts = hasExistingDeferred ? state.deferAttempts + 1 : 1;
           const deferredAt = nowIso();
           const retryMs = terminalDeferRetryMs(deferAttempts);
+          const existingLeaseMs = state?.leaseExpiresAt == null ? Number.NaN : Date.parse(state.leaseExpiresAt);
+          const candidateLeaseMs = Date.now() + retryMs;
+          const nextLeaseMs = Number.isNaN(existingLeaseMs)
+            ? candidateLeaseMs
+            : Math.max(existingLeaseMs, candidateLeaseMs);
           this.logger.debug("activation.dispatch_deferred", {
             agentId: input.agentId,
             targetId: target.targetId,
@@ -2357,11 +2345,11 @@ export class AgentInboxService {
             agentId: input.agentId,
             targetId: input.targetId,
             status: "dirty",
-            leaseExpiresAt: new Date(Date.now() + retryMs).toISOString(),
+            leaseExpiresAt: new Date(nextLeaseMs).toISOString(),
             lastNotifiedFingerprint: state?.lastNotifiedFingerprint ?? null,
             deferReason,
             deferAttempts,
-            firstDeferredAt: sameFingerprint ? state?.firstDeferredAt ?? deferredAt : deferredAt,
+            firstDeferredAt: state?.firstDeferredAt ?? deferredAt,
             lastDeferredAt: deferredAt,
             pendingFingerprint: promptFingerprint,
             pendingNewItemCount: input.newItemCount,
@@ -2453,7 +2441,7 @@ export class AgentInboxService {
         status: "notified",
         leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
         lastNotifiedFingerprint: target.kind === "terminal"
-          ? terminalReminderFingerprint(terminalPrompt ?? "", input.entries)
+          ? terminalPromptFingerprint
           : state?.lastNotifiedFingerprint ?? null,
         deferReason: null,
         deferAttempts: 0,
@@ -3451,11 +3439,15 @@ function terminalReminderFingerprint(prompt: string, items: InboxEntry[]): strin
   return createHash("sha256").update(payload).digest("hex");
 }
 
-function toActivationDispatchDeferReason(reason: string): ActivationDispatchDeferReason {
-  if (reason === "terminal_recently_active") {
+function toActivationDispatchDeferReason(reason: string, logger?: Logger): ActivationDispatchDeferReason {
+  if (reason === "terminal_recently_active" || reason === "terminal_busy") {
     return reason;
   }
-  return "terminal_busy";
+  logger?.warn("activation.unexpected_defer_reason", {
+    reason,
+    fallback: reason,
+  });
+  return reason;
 }
 
 function terminalDeferRetryMs(attempts: number): number {

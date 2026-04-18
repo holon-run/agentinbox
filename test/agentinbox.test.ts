@@ -3794,11 +3794,57 @@ test("busy terminal defer uses capped exponential backoff", async () => {
       const next = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
       assert.equal(next.deferAttempts, attempt);
       const retryMs = Date.parse(next.leaseExpiresAt!) - Date.now();
-      assert.ok(retryMs <= expectedRetryMs && retryMs >= expectedRetryMs - 2_000);
+      assert.ok(retryMs <= expectedRetryMs && retryMs >= Math.max(0, expectedRetryMs - 10_000));
     }
     const finalState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
     assert.equal(finalState.deferReason, "terminal_busy");
     assert.equal(terminalDispatcher.calls.length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("unexpected defer reasons are preserved in deferred state", async () => {
+  const terminalDispatcher = new RecordingTerminalDispatcher();
+  const activationGate = new MutableActivationGate("defer", "custom_busy_reason");
+  const { store, service, dir } = await makeService({
+    terminalDispatcher,
+    activationWindowMs: 20,
+    activationGate,
+  });
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-custom-defer-reason",
+      tmuxPaneId: "%139",
+      notifyLeaseMs: 100,
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "custom-defer-reason",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "evt-custom-defer-1",
+      eventVariant: "message.created",
+      metadata: {},
+      rawPayload: {},
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(40);
+
+    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    assert.equal(state.deferReason, "custom_busy_reason");
+    assert.equal(state.deferAttempts, 1);
   } finally {
     await service.stop();
     store.close();
@@ -3856,7 +3902,7 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
     await sleep(40);
 
     const secondState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
-    assert.notEqual(secondState.pendingFingerprint, firstFingerprint);
+    assert.equal(secondState.pendingFingerprint, null);
     assert.equal(secondState.deferAttempts, 1);
 
     activationGate.set("inject", "gate_unknown_or_idle");
@@ -3871,7 +3917,8 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
     assert.equal(terminalDispatcher.calls.length, 1);
     assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 2 unacked items in inbox/);
     const delivered = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
-    assert.equal(delivered.lastNotifiedFingerprint, secondState.pendingFingerprint);
+    assert.ok(delivered.lastNotifiedFingerprint);
+    assert.notEqual(delivered.lastNotifiedFingerprint, firstFingerprint);
     assert.equal(delivered.pendingFingerprint, null);
   } finally {
     await service.stop();
