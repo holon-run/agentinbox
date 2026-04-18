@@ -112,7 +112,7 @@ Suggested JSON response:
 
 ```json
 {
-  "agentId": "agent_codex_...",
+  "agentId": "agt_copper-fox",
   "bindingKind": "session_bound",
   "matchesCurrentTerminal": true,
   "matchesCurrentRuntime": true,
@@ -181,7 +181,7 @@ Suggested JSON response extension:
 
 ```json
 {
-  "agentId": "agent_codex_...",
+  "agentId": "agt_copper-fox",
   "autoRegistered": true
 }
 ```

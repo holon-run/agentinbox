@@ -1,11 +1,32 @@
 import crypto from "node:crypto";
 
+const CANONICAL_ID_ALPHABET = "23456789abcdefghjkmnpqrstvwxyz";
+const CANONICAL_ID_TOKEN_LENGTH = 12;
+
 export function nowIso(): string {
   return new Date().toISOString();
 }
 
+export function generateCanonicalId(prefix: string, length = CANONICAL_ID_TOKEN_LENGTH): string {
+  return `${prefix}_${generateShortToken(length)}`;
+}
+
 export function generateId(prefix: string): string {
-  return `${prefix}_${crypto.randomUUID()}`;
+  return generateCanonicalId(prefix);
+}
+
+export function generateShortToken(length = CANONICAL_ID_TOKEN_LENGTH): string {
+  let token = "";
+  while (token.length < length) {
+    const bytes = crypto.randomBytes(length - token.length);
+    for (const byte of bytes) {
+      token += CANONICAL_ID_ALPHABET[byte % CANONICAL_ID_ALPHABET.length];
+      if (token.length >= length) {
+        break;
+      }
+    }
+  }
+  return token;
 }
 
 export function parseJsonArg(
@@ -51,26 +72,26 @@ export function jsonResponse(data: unknown): string {
   return JSON.stringify(data, null, 2);
 }
 
-export function formatEntryRef(entryId: number): string {
-  return `ent_${entryId}`;
+export function formatEntryRef(entryId: string): string {
+  return parseEntryRef(entryId);
 }
 
-export function parseEntryRef(ref: string): number {
-  const match = /^ent_(\d+)$/.exec(ref.trim());
-  if (!match) {
+export function parseEntryRef(ref: string): string {
+  const value = ref.trim();
+  if (!/^ent_[23456789abcdefghjkmnpqrstvwxyz]+$/.test(value)) {
     throw new Error(`invalid inbox entry id: ${ref}`);
   }
-  return Number(match[1]);
+  return value;
 }
 
-export function formatThreadRef(threadId: number): string {
-  return `thr_${threadId}`;
+export function formatThreadRef(threadId: string): string {
+  return parseThreadRef(threadId);
 }
 
-export function parseThreadRef(ref: string): number {
-  const match = /^thr_(\d+)$/.exec(ref.trim());
-  if (!match) {
+export function parseThreadRef(ref: string): string {
+  const value = ref.trim();
+  if (!/^thr_[23456789abcdefghjkmnpqrstvwxyz]+$/.test(value)) {
     throw new Error(`invalid digest thread id: ${ref}`);
   }
-  return Number(match[1]);
+  return value;
 }

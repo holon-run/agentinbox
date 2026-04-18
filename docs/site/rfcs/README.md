@@ -4,6 +4,7 @@
 - [Source Kinds And Resolved Schemas](./source-kinds-and-resolved-schemas.md)
 - [Subscription Lifecycle And Terminal Auto-Retire](./subscription-lifecycle-and-terminal-retire.md)
 - [Inbox Digests And Threaded Notification Entries](./inbox-digests-and-threaded-notification-entries.md)
+- [Public And Internal Identifier Strategy](./public-and-internal-identifier-strategy.md)
 
 <!-- INDEX:START -->
 
@@ -17,6 +18,10 @@
 
 - [Inbox Digests And Threaded Notification Entries](./inbox-digests-and-threaded-notification-entries.md)
   2026-04-17 · Reduce bursty notification noise by keeping raw inbox items immutable, while materializing agent-facing digest threads and immutable digest snapshots for read, activation, and ack.
+  <!-- mdorigin:index kind=article -->
+
+- [Public And Internal Identifier Strategy](./public-and-internal-identifier-strategy.md)
+  2026-04-18 · Replace long prefix_uuid identifiers with canonical short IDs, move entry/thread to stored string IDs, and standardize how AgentInbox creates and persists durable identifiers before v1 release.
   <!-- mdorigin:index kind=article -->
 
 - [Source Hosts And Streams](./source-hosts-and-streams.md)

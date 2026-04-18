@@ -11,7 +11,7 @@ import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { ActivationGate } from "../src/runtime_gate";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
-import { TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
+import { assignedAgentIdFromContext, TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
 import { nowIso } from "../src/util";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
@@ -407,7 +407,13 @@ test("agent register creates a stable agent, inbox, and terminal activation targ
       tty: "/dev/ttys049",
     });
 
-    assert.equal(first.agent.agentId, "agent_codex_019d57fd65247e20a850a89e81957100");
+    assert.equal(first.agent.agentId, assignedAgentIdFromContext({
+      runtimeKind: "codex",
+      runtimeSessionId: "019d57fd-6524-7e20-a850-a89e81957100",
+      backend: "iterm2",
+      itermSessionId: "4B4CB6B2-A73B-4420-94A7-BD2CA216A285",
+      tty: "/dev/ttys049",
+    }));
     assert.equal(second.agent.agentId, first.agent.agentId);
     assert.equal(second.terminalTarget.targetId, first.terminalTarget.targetId);
     assert.equal(store.listAgents().length, 1);

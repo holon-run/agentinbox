@@ -60,7 +60,7 @@ class RecordingLogger implements Logger {
 function makeItermTarget(): TerminalActivationTarget {
   return {
     targetId: "tgt_gate",
-    agentId: "agent_codex_demo",
+    agentId: "agt_demo-agent",
     kind: "terminal",
     status: "active",
     offlineSince: null,
@@ -86,7 +86,7 @@ function makeItermTarget(): TerminalActivationTarget {
 function makeTmuxTarget(): TerminalActivationTarget {
   return {
     targetId: "tgt_tmux",
-    agentId: "agent_codex_tmux",
+    agentId: "agt_tmux-agent",
     kind: "terminal",
     status: "active",
     offlineSince: null,

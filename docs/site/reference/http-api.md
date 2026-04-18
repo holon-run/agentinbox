@@ -115,11 +115,11 @@ Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseco
 `POST /agents/{agentId}/inbox/ack` accepts exactly one of:
 
 ```json
-{ "throughItemId": "item_..." }
+{ "throughItemId": "itm_..." }
 ```
 
 ```json
-{ "itemIds": ["item_..."] }
+{ "itemIds": ["itm_..."] }
 ```
 
 ```json

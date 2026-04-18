@@ -230,14 +230,14 @@ create table if not exists source_hosts (
 );
 
 create table if not exists digest_threads (
-  thread_id integer primary key autoincrement,
+  thread_id text primary key,
   inbox_id text not null,
   source_id text not null,
   group_key text not null,
   resource_ref text,
   event_family text,
   latest_revision integer not null,
-  latest_entry_id integer,
+  latest_entry_id text,
   status text not null,
   summary text not null,
   first_item_at text not null,
@@ -248,11 +248,11 @@ create table if not exists digest_threads (
 );
 
 create table if not exists inbox_entries (
-  entry_id integer primary key autoincrement,
+  entry_id text primary key,
   inbox_id text not null,
   kind text not null,
   sequence integer not null unique,
-  thread_id integer,
+  thread_id text,
   revision integer,
   group_key text,
   resource_ref text,
@@ -271,13 +271,13 @@ create table if not exists inbox_entries (
 );
 
 create table if not exists inbox_entry_items (
-  entry_id integer not null,
+  entry_id text not null,
   item_id text not null,
   primary key (entry_id, item_id)
 );
 
 create table if not exists digest_thread_items (
-  thread_id integer not null,
+  thread_id text not null,
   item_id text not null,
   primary key (thread_id, item_id)
 );
