@@ -444,10 +444,10 @@ test("control plane exposes delivery actions and invoke for remote modules", asy
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-delivery-ops-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "delivery-hook.mjs"),
+    path.join(moduleDir, "delivery-hook.mjs"),
     `export default {
   id: "demo.delivery-hook",
   validateConfig() {},
@@ -643,10 +643,10 @@ test("control plane pause and resume endpoints update source lifecycle", async (
   })));
   const server = createServer(service);
 
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "demo-pause.mjs"),
+    path.join(moduleDir, "demo-pause.mjs"),
     `export default {
   id: "demo.pause",
   validateConfig() {},
@@ -936,10 +936,10 @@ test("cli stream schema preview resolves remote module-backed schemas before reg
   };
 
   try {
-    const profileDir = path.join(homeDir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(homeDir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "preview.mjs"),
+      path.join(moduleDir, "preview.mjs"),
       `export default {
   id: "demo.preview",
   validateConfig(source) {
@@ -1392,10 +1392,10 @@ test("cli subscription add supports generic shortcut invocation", async () => {
 
   try {
     const store = await AgentInboxStore.open(dbPath);
-    const profileDir = path.join(homeDir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(homeDir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "cli-shortcut.mjs"),
+      path.join(moduleDir, "cli-shortcut.mjs"),
       `export default {
   id: "demo.cli.shortcut",
   validateConfig() {},
@@ -1486,10 +1486,10 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "http-shortcut.mjs"),
+    path.join(moduleDir, "http-shortcut.mjs"),
     `export default {
   id: "demo.http.shortcut",
   validateConfig() {},
@@ -1594,10 +1594,10 @@ test("control plane stream schema preview resolves remote modules without persis
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "preview.mjs"),
+    path.join(moduleDir, "preview.mjs"),
     `export default {
   id: "demo.http.preview",
   validateConfig(source) {
@@ -1673,10 +1673,10 @@ test("control plane stream schema preview returns 400 for invalid preview inputs
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-error-"));
   const socketPath = path.join(os.tmpdir(), `aix-preview-${process.pid}-${Date.now()}.sock`);
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "preview-error.mjs"),
+    path.join(moduleDir, "preview-error.mjs"),
     `export default {
   id: "demo.http.preview.error",
   validateConfig(source) {
@@ -1738,10 +1738,10 @@ test("control plane shortcut validation errors return 400 instead of 500", async
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-shortcut-error-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "http-shortcut-error.mjs"),
+    path.join(moduleDir, "http-shortcut-error.mjs"),
     `export default {
   id: "demo.http.shortcut.error",
   validateConfig() {},
@@ -2775,10 +2775,10 @@ test("control plane accepts remote_source registration", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-src-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
   fs.writeFileSync(
-    path.join(profileDir, "demo.mjs"),
+    path.join(moduleDir, "demo.mjs"),
     `export default {
   id: "demo.control",
   validateConfig() {},
@@ -2897,8 +2897,8 @@ test("control plane source details degrade when remote_source resolution fails b
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-remote-resolve-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
-  const profileDir = path.join(homeDir, "source-modules");
-  fs.mkdirSync(profileDir, { recursive: true });
+  const moduleDir = path.join(homeDir, "source-modules");
+  fs.mkdirSync(moduleDir, { recursive: true });
 
   const store = await AgentInboxStore.open(dbPath);
   let service: AgentInboxService;

@@ -142,10 +142,10 @@ test("remote_source with local module ingests stream events", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo.mjs"),
+      path.join(moduleDir, "demo.mjs"),
       `export default {
   id: "demo.remote",
   validateConfig(source) {
@@ -490,10 +490,10 @@ test("removeSource deletes managed source binding when no subscriptions remain",
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo-remove.mjs"),
+      path.join(moduleDir, "demo-remove.mjs"),
       `export default {
   id: "demo.remove",
   validateConfig() {},
@@ -539,10 +539,10 @@ test("remote_source remove --with-subscriptions stops remote binding and deletes
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo-remove-cascade.mjs"),
+      path.join(moduleDir, "demo-remove-cascade.mjs"),
       `export default {
   id: "demo.remove.cascade",
   validateConfig() {},
@@ -625,10 +625,10 @@ test("user-defined remote_source modules can expose delivery actions and invoke 
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "delivery-hook.mjs"),
+      path.join(moduleDir, "delivery-hook.mjs"),
       `globalThis.__deliveryCalls = globalThis.__deliveryCalls ?? [];
 export default {
   id: "demo.delivery-hook",
@@ -777,10 +777,10 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service, adapters } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo-pause.mjs"),
+      path.join(moduleDir, "demo-pause.mjs"),
       `export default {
   id: "demo.pause",
   validateConfig() {},
@@ -867,10 +867,10 @@ test("updateSource re-ensures active remote sources but does not resume paused o
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo-update.mjs"),
+      path.join(moduleDir, "demo-update.mjs"),
       `export default {
   id: "demo.update",
   validateConfig(source) {
@@ -951,10 +951,10 @@ test("idle remote sources auto-pause after the last subscription is removed and 
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo-idle.mjs"),
+      path.join(moduleDir, "demo-idle.mjs"),
       `export default {
   id: "demo.idle",
   validateConfig() {},

@@ -37,6 +37,15 @@ agentinbox agent show <agent_id>
 agentinbox agent remove <agent_id>
 ```
 
+## Hosts
+
+```bash
+agentinbox host add <host_type> <host_key> [--config-json ...]
+agentinbox host list
+agentinbox host show <host_id>
+agentinbox host schema <host_id>
+```
+
 ## Sources
 
 ```bash
@@ -107,8 +116,8 @@ agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
 agentinbox inbox send --agent-id <agent_id> --message "..." [--sender <sender>]
 agentinbox inbox watch [--agent-id <agent_id>]
-agentinbox inbox ack [--agent-id <agent_id>] --through <item_id>
-agentinbox inbox ack [--agent-id <agent_id>] --item <item_id>
+agentinbox inbox ack [--agent-id <agent_id>] --through <entry_id>
+agentinbox inbox ack [--agent-id <agent_id>] --item <entry_id>
 agentinbox inbox ack [--agent-id <agent_id>] --all
 agentinbox inbox compact <agent_id>
 ```

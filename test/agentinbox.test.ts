@@ -599,10 +599,10 @@ test("local_event source can act as a programmable event bus source", async () =
 test("remote_source registration succeeds", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "demo.mjs"),
+      path.join(moduleDir, "demo.mjs"),
       `export default {
   id: "demo.profile",
   validateConfig() {},
@@ -728,10 +728,10 @@ test("builtin remote-backed source details expose resolved remote identity", asy
 test("stream schema preview resolves a user-defined remote module without persisting a source", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "preview.mjs"),
+      path.join(moduleDir, "preview.mjs"),
       `export default {
   id: "demo.preview",
   validateConfig(source) {
@@ -815,10 +815,10 @@ test("stream schema preview supports builtin remote-backed aliases without persi
 test("remote_source capability hooks override resolved schema fields and advertise shortcut/lifecycle support", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "capabilities.mjs"),
+      path.join(moduleDir, "capabilities.mjs"),
       `export default {
   id: "demo.capabilities",
   validateConfig() {},
@@ -929,10 +929,10 @@ test("local_event resolved schema does not expose remote-only subscription capab
 test("source details keep a wrapped fallback schema when non-identity capability hooks throw", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "broken-shortcuts.mjs"),
+      path.join(moduleDir, "broken-shortcuts.mjs"),
       `export default {
   id: "demo.broken-shortcuts",
   validateConfig() {},
@@ -1001,10 +1001,10 @@ test("source details keep a wrapped fallback schema when non-identity capability
 test("subscription add can expand a remote module shortcut into standard subscription fields", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "shortcut-expand.mjs"),
+      path.join(moduleDir, "shortcut-expand.mjs"),
       `export default {
   id: "demo.shortcut.expand",
   validateConfig() {},
@@ -1079,10 +1079,10 @@ test("subscription add can expand a remote module shortcut into standard subscri
 test("remote_source module contract rejects non-function optional hooks", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "invalid-hook.mjs"),
+      path.join(moduleDir, "invalid-hook.mjs"),
       `export default {
   id: "demo.invalid-hook",
   validateConfig() {},
@@ -1244,10 +1244,10 @@ test("source details expose idle auto-pause state for operators", async () => {
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "idle-details.mjs"),
+      path.join(moduleDir, "idle-details.mjs"),
       `export default {
   id: "demo.idle.details",
   validateConfig() {},
@@ -1352,10 +1352,10 @@ test("invalid subscription input does not resume an auto-paused source", async (
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "idle-invalid-filter.mjs"),
+      path.join(moduleDir, "idle-invalid-filter.mjs"),
       `export default {
   id: "demo.idle.invalid.filter",
   validateConfig() {},
@@ -1424,10 +1424,10 @@ test("lifecycle gc refreshes idle state when it removes the last subscription", 
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "idle-lifecycle.mjs"),
+      path.join(moduleDir, "idle-lifecycle.mjs"),
       `export default {
   id: "demo.idle.lifecycle",
   validateConfig() {},
@@ -1486,10 +1486,10 @@ test("manual pause does not create idle auto-pause state after the last subscrip
     terminalDispatcher: undefined,
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "idle-manual-pause.mjs"),
+      path.join(moduleDir, "idle-manual-pause.mjs"),
       `export default {
   id: "demo.idle.manual.pause",
   validateConfig() {},
@@ -1820,10 +1820,10 @@ test("gc removes subscriptions whose cleanupPolicy deadline has passed", async (
 test("terminal lifecycle signals schedule retirements and gc removes matching subscriptions after delivery", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "lifecycle-demo.mjs"),
+      path.join(moduleDir, "lifecycle-demo.mjs"),
       `export default {
   id: "demo.lifecycle",
   validateConfig() {},
@@ -1917,10 +1917,10 @@ test("terminal lifecycle signals schedule retirements and gc removes matching su
 test("terminal lifecycle retirements honor gracePeriodSecs until gc reaches retireAt", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "lifecycle-grace.mjs"),
+      path.join(moduleDir, "lifecycle-grace.mjs"),
       `export default {
   id: "demo.lifecycle.grace",
   validateConfig() {},
@@ -3189,10 +3189,10 @@ test("user-defined remote_source profiles can opt into source-specific inline pr
     activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "preview-hook.mjs"),
+      path.join(moduleDir, "preview-hook.mjs"),
       `export default {
   id: "demo.preview-hook",
   validateConfig() {},
@@ -3276,10 +3276,10 @@ test("source-specific preview hook failures fall back to the generic preview", a
     activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "preview-hook-error.mjs"),
+      path.join(moduleDir, "preview-hook-error.mjs"),
       `export default {
   id: "demo.preview-hook-error",
   validateConfig() {},
@@ -3362,10 +3362,10 @@ test("source-specific previews are normalized at the core call boundary", async 
     activationGate: new FixedActivationGate("inject", "test"),
   });
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "preview-hook-unbounded.mjs"),
+      path.join(moduleDir, "preview-hook-unbounded.mjs"),
       `export default {
   id: "demo.preview-hook-unbounded",
   validateConfig() {},
@@ -4296,10 +4296,10 @@ test("resumeAgent partially recovers mixed offline targets and reconciles agent 
 test("gc does not retire subscriptions before they consume a terminal event", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "lifecycle-race.mjs"),
+      path.join(moduleDir, "lifecycle-race.mjs"),
       `export default {
   id: "demo.lifecycle.race",
   validateConfig() {},
@@ -4371,10 +4371,10 @@ test("gc does not retire subscriptions before they consume a terminal event", as
 test("gc does not retire sibling subscriptions sharing a trackedResourceRef before they consume the terminal event", async () => {
   const { store, service, dir } = await makeService();
   try {
-    const profileDir = path.join(dir, "source-modules");
-    fs.mkdirSync(profileDir, { recursive: true });
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
     fs.writeFileSync(
-      path.join(profileDir, "lifecycle-shared-ref.mjs"),
+      path.join(moduleDir, "lifecycle-shared-ref.mjs"),
       `export default {
   id: "demo.lifecycle.shared-ref",
   validateConfig() {},

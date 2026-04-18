@@ -3890,10 +3890,7 @@ function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: st
     case "local_event":
       return [];
     case "remote_source":
-      return [
-        { name: "modulePath", type: "string", description: "Local module path under $AGENTINBOX_HOME/source-modules.", required: true },
-        { name: "moduleConfig", type: "object", description: "Module-specific host configuration.", required: false },
-      ];
+      return [];
   }
 }
 

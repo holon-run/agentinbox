@@ -393,8 +393,6 @@ The module code should live under:
 - `$AGENTINBOX_HOME/source-modules/`
 
 Today `AgentInbox` loads them from local disk through `config.modulePath`.
-That field name is a compatibility detail, not the target architectural term.
-Future API cleanup may rename it to something like `modulePath`.
 
 This RFC does not propose an HTTP API that uploads executable remote module code into
 `AgentInbox`.
