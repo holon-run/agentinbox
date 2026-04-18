@@ -1611,8 +1611,8 @@ function buildFastifyServer(service: AgentInboxService) {
       all?: boolean;
     };
     return service.ackInbox(decodeURIComponent(params.agentId), {
-      itemIds: body.entryIds ?? [],
-      throughItemId: body.throughEntryId ?? null,
+      entryIds: body.entryIds ?? [],
+      throughEntryId: body.throughEntryId ?? null,
       all: body.all ?? false,
     });
   });

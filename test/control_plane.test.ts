@@ -2399,7 +2399,7 @@ test("control plane exposes inbox compact and global gc endpoints", async () => 
       });
       assert.equal(agentResponse.statusCode, 200);
       const agentId = agentResponse.data.agent.agentId;
-      const inboxId = `inbox_${agentId}`;
+      const inboxId = (service.getInboxDetailsByAgent(agentId) as { inbox: { inboxId: string } }).inbox.inboxId;
       const oldAckedAt = new Date(Date.now() - (25 * 60 * 60 * 1000)).toISOString();
 
       store.insertInboxItem({
