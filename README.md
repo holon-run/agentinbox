@@ -264,10 +264,11 @@ Generate new SQLite migrations after schema changes:
 npm run db:migrations:generate
 ```
 
-`AgentInbox` now upgrades SQLite state with versioned SQL migrations in
-`drizzle/migrations`. On upgrade with pending migrations, the daemon creates a
-local backup next to the DB file (for example,
-`~/.agentinbox/agentinbox.sqlite.backup-<timestamp>`).
+`AgentInbox` now initializes SQLite state from a single v1 baseline migration in
+`drizzle/migrations`. If startup detects a pre-v1 local database, it archives
+that database next to the DB path (for example,
+`~/.agentinbox/agentinbox.sqlite.pre-v1.<timestamp>.bak`) and starts with a
+fresh v1 database; pre-v1 local data is not imported.
 
 ## License
 
