@@ -43,10 +43,10 @@ test("assignedAgentIdFromContext prefers runtime session ids", () => {
   assert.match(agentId, /^agt_[a-z]+-[a-z]+$/);
 });
 
-test("renderAgentPrompt accepts legacy newItemCount input", () => {
+test("renderAgentPrompt renders a single-item prompt without preview text", () => {
   const prompt = renderAgentPrompt({
     inboxId: "inbox_123",
-    newItemCount: 1,
+    totalUnackedCount: 1,
   });
 
   assert.equal(

@@ -90,7 +90,7 @@ registration.
 
 ```json
 {
-  "agentId": "agent_...",
+  "agentId": "agt_...",
   "at": "2026-04-15T08:00:00+08:00",
   "message": "Analyze the agentinbox project and prepare today's task plan.",
   "sender": "timer"
@@ -113,7 +113,7 @@ Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseco
 
 ```json
 {
-  "agentId": "agent_...",
+  "agentId": "agt_...",
   "sourceId": "src_...",
   "filter": {},
   "trackedResourceRef": "pr:373",

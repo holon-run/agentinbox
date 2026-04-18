@@ -63,7 +63,7 @@ This requires `uxc` 0.15.0 or newer:
 Once `uxc` can access GitHub and the current terminal session is registered, the
 agent can move directly into real usage:
 
-- add `github_repo` or `github_repo_ci` sources
+- add a shared GitHub host plus `repo_events` or `ci_runs` streams
 - add standing subscriptions for review comments or CI failures
 - add task-specific subscriptions for a PR or branch
 - remove those subscriptions when the task is done

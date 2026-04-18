@@ -64,6 +64,22 @@ manually or relying on the agent runtime to expose its own notification API.
 - filtering and source model are still evolving
 - first-run onboarding is currently skill-first rather than wizard-first
 
+## v1.0.0 Beta Upgrade Notes
+
+`v1.0.0-beta.0` is the first release on the final v1 storage and API boundary.
+
+- pre-v1 local databases are archived and replaced with a fresh v1 database
+- old local state is not imported into the new v1 database
+- canonical public surfaces are now host + stream registration, entry/thread
+  inbox reads, and handle-scoped delivery operations
+- pre-v1 compatibility shims such as legacy source-kind registration aliases,
+  raw inbox-item read paths, and deprecated remote-module aliases are no longer
+  part of the supported surface
+
+If you are upgrading from any pre-v1 build, expect `AgentInbox` to archive the
+existing local database under `~/.agentinbox/` and start with a fresh v1
+database.
+
 ## Install
 
 Requires:
@@ -140,7 +156,8 @@ policy, not per-agent knobs.
 Create a local source and publish an event:
 
 ```bash
-agentinbox source add local_event local-demo
+agentinbox host add local_event local-demo
+agentinbox source add <host_id> events local-demo
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox source schema <source_id>
@@ -151,10 +168,10 @@ cat filter.json | agentinbox subscription add <source_id> --filter-stdin
 agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
-agentinbox inbox ack --agent-id <agent_id> --through <last_item_id>
+agentinbox inbox ack --agent-id <agent_id> --through <last_entry_id>
 ```
 
-When acking a reviewed batch, prefer `--through <last_item_id>` over `--all`.
+When acking a reviewed batch, prefer `--through <last_entry_id>` over `--all`.
 That preserves the boundary of the items you actually inspected. Use
 `ack --all` only when you have intentionally verified that every current
 unacked item should be cleared.

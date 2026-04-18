@@ -93,12 +93,7 @@ jobs:
         run: |
           PACK_FILE=$(node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('pack.json','utf8')); process.stdout.write(data[0].filename)")
           echo "PACK_FILE=$PACK_FILE" >> "$GITHUB_ENV"
-          mkdir -p /tmp/agentinbox-release-smoke
-          cd /tmp/agentinbox-release-smoke
-          npm init -y
-          npm install "$GITHUB_WORKSPACE/$PACK_FILE"
-          npx agentinbox --version
-          npx agentinbox --help
+          bash "$GITHUB_WORKSPACE/scripts/release_smoke.sh" "$GITHUB_WORKSPACE/$PACK_FILE"
 
       - name: Check whether npm version already exists
         id: npm_version

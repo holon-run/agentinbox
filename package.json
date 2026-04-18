@@ -1,6 +1,6 @@
 {
   "name": "@holon-run/agentinbox",
-  "version": "0.7.0",
+  "version": "1.0.0-beta.0",
   "description": "Local event subscription and delivery service for agents.",
   "license": "Apache-2.0",
   "repository": {
@@ -38,6 +38,7 @@
     "docs:deploy": "npm run docs:index && npm run docs:build && npx wrangler@4 deploy --config wrangler.jsonc",
     "db:migrations:generate": "drizzle-kit generate --config drizzle.config.ts",
     "prepack": "npm run build",
+    "smoke:release": "bash scripts/release_smoke.sh",
     "test": "node --require ts-node/register --test --test-force-exit test/*.test.ts"
   },
   "dependencies": {

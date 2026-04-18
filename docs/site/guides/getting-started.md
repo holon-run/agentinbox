@@ -82,7 +82,8 @@ uxc auth credential import github --from gh
 The shortest end-to-end flow is a local source:
 
 ```bash
-agentinbox source add local_event local-demo
+agentinbox host add local_event local-demo
+agentinbox source add <host_id> events local-demo
 agentinbox subscription add <source_id>
 agentinbox subscription add <source_id> --agent-id <agent_id>
 agentinbox source event <source_id> \
@@ -105,15 +106,17 @@ agentinbox source update <source_id> --clear-config-ref
 ## GitHub Repo CI Example
 
 ```bash
-agentinbox source add github_repo_ci holon-run/agentinbox \
-  --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
+agentinbox host add github uxcAuth:github-default \
+  --config-json '{"uxcAuth":"github-default"}'
+agentinbox source add <host_id> ci_runs holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","pollIntervalSecs":30}'
 agentinbox subscription add <source_id> --agent-id <agent_id> \
   --filter-json '{"metadata":{"status":"completed","conclusion":"failure","headBranch":"main"}}'
 agentinbox source poll <source_id>
 ```
 
-For implementation-backed sources such as `github_repo`, inspect the resolved
-schema first if you want source-defined subscription shortcuts:
+For builtin GitHub streams such as `repo_events`, inspect the resolved schema
+first if you want source-defined subscription shortcuts:
 
 ```bash
 agentinbox source schema <source_id>

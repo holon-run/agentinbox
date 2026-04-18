@@ -1,18 +1,78 @@
 # Source Types
 
-`AgentInbox` currently supports a mix of local and provider-specific source
-adapters.
+`AgentInbox` v1 uses a host + stream model.
+
+- a host owns shared provider/runtime configuration
+- a source/stream binds one concrete feed under that host
+- subscriptions stay agent-specific
+
+## Host Types
 
 ## `local_event`
 
-`local_event` is the local event ingress source.
+`local_event` is the local ingress host. Its canonical stream kind is:
+
+- `events`
 
 Use it when a local producer wants to append events directly into `AgentInbox`
 without building a provider-specific adapter first.
 
+## `github`
+
+`github` is the shared GitHub host. Common stream kinds are:
+
+- `repo_events`
+- `ci_runs`
+
+Use `repo_events` for issues, issue comments, pull requests, review comments,
+and general collaboration activity. Use `ci_runs` for GitHub Actions workflow
+state transitions.
+
+Typical canonical registration flow:
+
+```bash
+agentinbox host add github uxcAuth:github-default \
+  --config-json '{"uxcAuth":"github-default"}'
+agentinbox source add <host_id> repo_events holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox"}'
+agentinbox source add <host_id> ci_runs holon-run/agentinbox \
+  --config-json '{"owner":"holon-run","repo":"agentinbox","pollIntervalSecs":30}'
+```
+
+Useful normalized `ci_runs` metadata includes:
+
+- `status`
+- `conclusion`
+- `name`
+- `headBranch`
+- `headSha`
+- `actor`
+
+Typical `ci_runs` subscription filters:
+
+```json
+{"status":"completed"}
+```
+
+```json
+{"status":"completed","conclusion":"failure"}
+```
+
+## `feishu`
+
+`feishu` is the shared Feishu host. Its canonical stream kind is:
+
+- `message_events`
+
+It uses `uxc` long-connection subscriptions for inbound messages and `uxc`
+OpenAPI delivery for replies.
+
 ## `remote_source`
 
-`remote_source` is the generic external-source runtime surface.
+`remote_source` is the generic host type for custom local modules. Its default
+stream kind is:
+
+- `default`
 
 It uses a local module to define:
 
@@ -34,50 +94,16 @@ Configuration fields:
 - `modulePath` (required): path under `$AGENTINBOX_HOME/source-modules`
 - `moduleConfig` (optional): module-specific config object
 
-## `github_repo`
+## Resolved Stream Schema
 
-`github_repo` watches GitHub repository activity and is best suited for:
+After creating a source/stream, inspect its resolved schema before adding
+subscriptions:
 
-- issues
-- issue comments
-- pull requests
-- review comments
-- collaboration activity
-
-Builtin `github_repo` also exposes pull-request lifecycle hooks for the generic
-cleanup-policy pipeline:
-
-- `deriveTrackedResource` can derive `pr:<number>` from pull-request filters
-- `projectLifecycleSignal` treats `PullRequestEvent.closed` as the terminal PR
-  lifecycle signal
-- `terminalResult` is derived from the pull request `merged` flag:
-  merged PRs project `"merged"`; plain closes project `"closed"`
-
-## `github_repo_ci`
-
-`github_repo_ci` polls GitHub Actions workflow runs and is best suited for CI
-state transitions.
-
-Useful normalized metadata includes:
-
-- `status`
-- `conclusion`
-- `name`
-- `headBranch`
-- `headSha`
-- `actor`
-
-Typical subscription filters:
-
-```json
-{"status":"completed"}
+```bash
+agentinbox source schema <source_id>
 ```
 
-```json
-{"status":"completed","conclusion":"failure"}
-```
-
-## `feishu_bot`
-
-`feishu_bot` uses `uxc` long-connection subscriptions for inbound messages and
-`uxc` OpenAPI delivery for replies.
+Builtin GitHub and Feishu streams still expose source-specific metadata fields,
+payload examples, shortcuts, and lifecycle hooks through the resolved source
+schema. The canonical registration path is the host + stream flow above, not
+the old pre-v1 source-kind aliases.

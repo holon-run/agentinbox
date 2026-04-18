@@ -105,11 +105,15 @@ subscriptions carry agent-specific filtering and delivery intent.
 Create or inspect sources:
 
 ```bash
+agentinbox host list
+agentinbox host show <hostId>
+agentinbox host add local_event local-demo
+agentinbox host add github uxcAuth:github-default --config-json '{"uxcAuth":"github-default"}'
 agentinbox source list
 agentinbox source show <sourceId>
-agentinbox source add local_event <sourceKey>
-agentinbox source add github_repo <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","pollIntervalSecs":30}'
-agentinbox source add github_repo_ci <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox","uxcAuth":"github-default","perPage":10}'
+agentinbox source add <hostId> events local-demo
+agentinbox source add <hostId> repo_events <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox"}'
+agentinbox source add <hostId> ci_runs <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox","pollIntervalSecs":30}'
 ```
 
 Append a local event:
@@ -142,7 +146,7 @@ Read and ack the inbox:
 ```bash
 agentinbox inbox read
 agentinbox inbox read --agent-id <agentId>
-agentinbox inbox ack --agent-id <agentId> --through <lastItemId>
+agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 agentinbox inbox send --agent-id <agentId> --message "Please review PR #87"
 agentinbox inbox send --agent-id <agentId> --message "CI failed on main" --sender operator
 agentinbox inbox watch
@@ -155,7 +159,7 @@ Default to a batch-bounded ack flow:
 
 1. read the inbox items you intend to process
 2. identify the last item you actually reviewed in that batch
-3. ack with `--through <lastItemId>`
+3. ack with `--through <lastEntryId>`
 
 Use `ack --all` only when you have explicitly verified that every current
 unacked item should be cleared and there is no need to preserve the reviewed

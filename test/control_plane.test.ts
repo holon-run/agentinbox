@@ -2968,7 +2968,7 @@ test("control plane source details degrade when remote_source resolution fails b
   }
 });
 
-test("control plane groups compatible GitHub streams under one host", async () => {
+test("control plane groups GitHub streams under one host", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-host-stream-grouping-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");

@@ -607,9 +607,9 @@ test("remote module helpers expose builtin module ids and config projection", as
   assert.equal(builtInModuleIdForSourceType("github_repo"), "builtin.github_repo");
   assert.deepEqual(
     moduleConfigForSource({
-      sourceId: "src_compat",
+      sourceId: "src_demo",
       sourceType: "remote_source",
-      sourceKey: "compat",
+      sourceKey: "demo-module-config",
       configRef: null,
       config: { moduleConfig: { answer: 42 } },
       status: "active",

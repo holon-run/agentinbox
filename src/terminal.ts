@@ -89,12 +89,11 @@ export function detectTerminalContext(env: NodeJS.ProcessEnv = process.env): Det
 
 export function renderAgentPrompt(input: {
   inboxId: string;
-  totalUnackedCount?: number;
-  newItemCount?: number;
+  totalUnackedCount: number;
   summary?: string | null;
   preview?: string | null;
 }): string {
-  const totalUnackedCount = input.totalUnackedCount ?? input.newItemCount ?? 0;
+  const totalUnackedCount = input.totalUnackedCount;
   const itemWord = totalUnackedCount === 1 ? "item" : "items";
   const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} in inbox ${input.inboxId}.`;
   if (totalUnackedCount === 1 && input.preview) {

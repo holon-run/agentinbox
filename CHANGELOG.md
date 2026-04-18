@@ -12,6 +12,38 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0-beta.0] - 2026-04-18
+
+### Added
+
+- Added a release smoke script that validates fresh installs, pre-v1 database
+  archiving, and canonical v1 CLI/HTTP surfaces against the packaged npm
+  tarball before publish.
+
+### Changed
+
+- Reset local storage to a single v1 baseline schema and archive any pre-v1
+  database before starting fresh.
+- Switched public agent-facing identifiers to canonical short durable IDs,
+  including inbox entry/thread references stored in their canonical string
+  form.
+- Finalized the canonical host + stream source model and removed the remaining
+  v1 compatibility shims for legacy source registration, inbox paging/raw-item
+  reads, and deprecated remote module aliases.
+- Tightened `renderAgentPrompt` to accept only canonical total-unacked input on
+  the public terminal prompt boundary.
+
+### Fixed
+
+- Suppressed repeated terminal reinjection when the effective unacked reminder
+  state has not changed after a successful dispatch.
+
+### Upgrade Notes
+
+- `v1.0.0-beta.0` is a fresh local-storage boundary.
+- Pre-v1 databases are archived locally and replaced with a fresh v1 database.
+- Archived databases are not imported into the new v1 state.
+
 ## [0.7.0] - 2026-04-17
 
 ### Added
