@@ -2,6 +2,9 @@ import crypto from "node:crypto";
 
 const CANONICAL_ID_ALPHABET = "23456789abcdefghjkmnpqrstvwxyz";
 const CANONICAL_ID_TOKEN_LENGTH = 12;
+const ENTRY_THREAD_ID_PATTERN = new RegExp(
+  `^(ent|thr)_[${CANONICAL_ID_ALPHABET}]{${CANONICAL_ID_TOKEN_LENGTH}}$`,
+);
 
 export function nowIso(): string {
   return new Date().toISOString();
@@ -78,7 +81,7 @@ export function formatEntryRef(entryId: string): string {
 
 export function parseEntryRef(ref: string): string {
   const value = ref.trim();
-  if (!/^ent_[23456789abcdefghjkmnpqrstvwxyz]+$/.test(value)) {
+  if (!ENTRY_THREAD_ID_PATTERN.test(value) || !value.startsWith("ent_")) {
     throw new Error(`invalid inbox entry id: ${ref}`);
   }
   return value;
@@ -90,7 +93,7 @@ export function formatThreadRef(threadId: string): string {
 
 export function parseThreadRef(ref: string): string {
   const value = ref.trim();
-  if (!/^thr_[23456789abcdefghjkmnpqrstvwxyz]+$/.test(value)) {
+  if (!ENTRY_THREAD_ID_PATTERN.test(value) || !value.startsWith("thr_")) {
     throw new Error(`invalid digest thread id: ${ref}`);
   }
   return value;

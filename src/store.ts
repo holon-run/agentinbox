@@ -1484,7 +1484,7 @@ export class AgentInboxStore {
       `
       select * from digest_threads
       where inbox_id = ? and group_key = ? and status = 'open'
-      order by created_at desc, thread_id desc
+      order by created_at desc, rowid desc
       limit 1
       `,
       [inboxId, groupKey],
@@ -1503,6 +1503,7 @@ export class AgentInboxStore {
     flushAfterAt?: string | null;
     createdAt: string;
   }): DigestThreadRecord {
+    const threadId = generateCanonicalId("thr");
     this.db.run(
       `
       insert into digest_threads (
@@ -1511,10 +1512,8 @@ export class AgentInboxStore {
         created_at, updated_at
       ) values (?, ?, ?, ?, ?, ?, 0, null, 'open', ?, ?, ?, ?, ?, ?)
       `,
-      (() => {
-        const threadId = generateCanonicalId("thr");
-        return [
-          threadId,
+      [
+        threadId,
         input.inboxId,
         input.sourceId,
         input.groupKey,
@@ -1526,10 +1525,8 @@ export class AgentInboxStore {
         input.flushAfterAt ?? null,
         input.createdAt,
         input.createdAt,
-        ];
-      })(),
+      ],
     );
-    const threadId = String(this.getOne("select thread_id from digest_threads order by rowid desc limit 1")?.thread_id);
     this.persist();
     return this.getDigestThread(threadId)!;
   }
@@ -1901,37 +1898,58 @@ export class AgentInboxStore {
   }
 
   insertStreamEvent(streamId: string, event: AppendSourceEventInput): AppendSourceEventResult {
-    const before = this.changes();
-    this.db.run(
-      `
-      insert or ignore into stream_events (
-        stream_event_id, stream_id, source_id, source_native_id, event_variant,
-        occurred_at, metadata_json, raw_payload_json, delivery_handle_json, created_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
-        generateCanonicalId("evt"),
-        streamId,
-        event.sourceId,
-        event.sourceNativeId,
-        event.eventVariant,
-        event.occurredAt ?? nowIso(),
-        JSON.stringify(event.metadata ?? {}),
-        JSON.stringify(event.rawPayload ?? {}),
-        event.deliveryHandle ? JSON.stringify(event.deliveryHandle) : null,
-        nowIso(),
-      ],
-    );
-    const inserted = this.changes() > before;
-    if (inserted) {
-      this.persist();
-      return {
-        appended: 1,
-        deduped: 0,
-        lastOffset: this.lastInsertRowId(),
-      };
+    const occurredAt = event.occurredAt ?? nowIso();
+    const metadataJson = JSON.stringify(event.metadata ?? {});
+    const rawPayloadJson = JSON.stringify(event.rawPayload ?? {});
+    const deliveryHandleJson = event.deliveryHandle ? JSON.stringify(event.deliveryHandle) : null;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const before = this.changes();
+      this.db.run(
+        `
+        insert or ignore into stream_events (
+          stream_event_id, stream_id, source_id, source_native_id, event_variant,
+          occurred_at, metadata_json, raw_payload_json, delivery_handle_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          generateCanonicalId("evt"),
+          streamId,
+          event.sourceId,
+          event.sourceNativeId,
+          event.eventVariant,
+          occurredAt,
+          metadataJson,
+          rawPayloadJson,
+          deliveryHandleJson,
+          nowIso(),
+        ],
+      );
+      if (this.changes() > before) {
+        this.persist();
+        return {
+          appended: 1,
+          deduped: 0,
+          lastOffset: this.lastInsertRowId(),
+        };
+      }
+
+      const existing = this.getOne(
+        `
+        select offset
+        from stream_events
+        where stream_id = ?
+          and source_native_id = ?
+          and event_variant = ?
+        limit 1
+        `,
+        [streamId, event.sourceNativeId, event.eventVariant],
+      );
+      if (existing) {
+        return { appended: 0, deduped: 1, lastOffset: null };
+      }
     }
-    return { appended: 0, deduped: 1, lastOffset: null };
+    throw new Error(`unable to allocate a unique stream_event_id for ${event.sourceNativeId}`);
   }
 
   readStreamEvents(streamId: string, nextOffset: number, limit: number): StreamEventRecord[] {
