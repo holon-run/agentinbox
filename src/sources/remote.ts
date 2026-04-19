@@ -204,7 +204,7 @@ export class RemoteSourceRuntime {
     this.nextRetryAt.delete(sourceId);
     const checkpoint = parseRemoteCheckpoint(source.checkpoint);
     const pausedAt = nowIso();
-    const baseRuntime = checkpoint.managedRuntime ?? checkpointRuntimeFromSource(source) ?? {};
+    const baseRuntime = checkpoint.managedRuntime ?? checkpointRuntimeFromSource(source, checkpoint) ?? {};
     this.store.updateSourceRuntime(sourceId, {
       status: "paused",
       checkpoint: JSON.stringify({
@@ -511,7 +511,7 @@ export class RemoteSourceRuntime {
           checkpoint: JSON.stringify({
             ...checkpoint,
             managedRuntime: checkpointRuntimeWithError(
-              checkpoint.managedRuntime ?? checkpointRuntimeFromSource(source),
+              checkpoint.managedRuntime ?? checkpointRuntimeFromSource(source, checkpoint),
               error instanceof Error ? error.message : String(error),
               nowIso(),
             ),
@@ -693,8 +693,10 @@ function checkpointRuntimeWithError(
   };
 }
 
-function checkpointRuntimeFromSource(source: SourceStream): NonNullable<RemoteSourceCheckpoint["managedRuntime"]> | null {
-  const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+function checkpointRuntimeFromSource(
+  source: SourceStream,
+  checkpoint: RemoteSourceCheckpoint = parseRemoteCheckpoint(source.checkpoint),
+): NonNullable<RemoteSourceCheckpoint["managedRuntime"]> | null {
   if (checkpoint.managedRuntime) {
     return checkpoint.managedRuntime;
   }
