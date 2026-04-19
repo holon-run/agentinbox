@@ -527,7 +527,13 @@ export function expandGithubFollowTemplate(input: ExpandFollowTemplateInput): Ex
           config: githubFollowSourceConfig(input.source),
         },
       ],
-      subscriptions: [],
+      subscriptions: [
+        {
+          sourceLogicalName: "repo_events",
+          filter: {},
+          cleanupPolicy: { mode: "manual" },
+        },
+      ],
     };
   }
 

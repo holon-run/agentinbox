@@ -177,6 +177,7 @@ export interface RemoteSourceModule {
 
 const REMOTE_USER_MODULE_ROOT_DIR = "source-modules";
 const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot"]);
+const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bot"] as const;
 
 export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
@@ -242,6 +243,10 @@ export function builtInModuleIdForSourceType(sourceType: SourceStream["sourceTyp
     return "builtin.feishu_bot";
   }
   return null;
+}
+
+export function builtinRemoteSourceTypes(): SourceStream["sourceType"][] {
+  return [...BUILTIN_REMOTE_SOURCE_TYPES];
 }
 
 function validateModuleContract(module: RemoteSourceModule, sourcePath: string): void {

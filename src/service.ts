@@ -523,11 +523,11 @@ export class AgentInboxService {
     input: FollowInput,
     templateArgs: Record<string, unknown>,
   ): Promise<{ source: SourceStream; templateSpec: NonNullable<ResolvedSourceSchema["followSchema"]>["templates"][number] }> {
-    const candidates = followPreviewRefsForProviderOrKind(input.providerOrKind);
     const previewInput = {
       configRef: input.configRef ?? null,
       config: mergeFollowPreviewConfig(input.config, templateArgs),
     };
+    const candidates = this.adapters.followPreviewRefsForProviderOrKind(input.providerOrKind, previewInput.config);
     let previewFailure: Error | null = null;
     for (const sourceRef of candidates) {
       try {
@@ -3363,24 +3363,6 @@ function mergeFollowPreviewConfig(
     ...(config ?? {}),
     ...templateArgs,
   };
-}
-
-function followPreviewRefsForProviderOrKind(providerOrKind: string): string[] {
-  const trimmed = providerOrKind.trim();
-  if (trimmed.length === 0) {
-    throw new Error("follow requires a providerOrKind");
-  }
-  if (
-    trimmed === "local_event" ||
-    trimmed === "remote_source" ||
-    trimmed === "github_repo" ||
-    trimmed === "github_repo_ci" ||
-    trimmed === "feishu_bot" ||
-    trimmed.startsWith("remote:")
-  ) {
-    return [trimmed];
-  }
-  return ["github_repo", "github_repo_ci", "feishu_bot"];
 }
 
 function sourceTypeForPreviewRef(sourceRef: string): SourceStream["sourceType"] {

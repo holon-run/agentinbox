@@ -1426,6 +1426,142 @@ test("follow github pr ensures sources and dedupes subscriptions", async () => {
   }
 });
 
+test("follow github repo creates a repository subscription", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-follow-repo-thread",
+      tmuxPaneId: "%946-follow",
+    });
+
+    const first = await service.follow({
+      agentId: agent.agent.agentId,
+      providerOrKind: "github",
+      template: "repo",
+      templateArgs: {
+        owner: "holon-run",
+        repo: "agentinbox",
+      },
+    });
+
+    assert.equal(first.templateId, "github.repo");
+    assert.deepEqual(first.sources.map((source) => source.created), [true]);
+    assert.deepEqual(first.subscriptions.map((subscription) => subscription.created), [true]);
+    assert.equal(store.listSources().length, 1);
+    assert.equal(store.listSubscriptions().length, 1);
+
+    const second = await service.follow({
+      agentId: agent.agent.agentId,
+      providerOrKind: "github",
+      template: "repo",
+      templateArgs: {
+        owner: "holon-run",
+        repo: "agentinbox",
+      },
+    });
+
+    assert.deepEqual(second.sources.map((source) => source.created), [false]);
+    assert.deepEqual(second.subscriptions.map((subscription) => subscription.created), [false]);
+    assert.equal(store.listSources().length, 1);
+    assert.equal(store.listSubscriptions().length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("follow resolves providerOrKind through remote module templates without core provider mapping", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(moduleDir, "follow-provider.mjs"),
+      `export default {
+  id: "demo.follow-provider",
+  validateConfig(source) {
+    if (!source.config.tenant) throw new Error("tenant required");
+  },
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() { return null; },
+  listFollowTemplates() {
+    return [{
+      templateId: "demo.ticket",
+      providerOrKind: "demo",
+      label: "Demo Ticket",
+      description: "Follow one ticket",
+      argsSchema: [{ name: "id", type: "string", required: true, description: "Ticket id." }]
+    }];
+  },
+  expandFollowTemplate(input) {
+    if (input.template !== "ticket") return null;
+    return {
+      templateId: "demo.ticket",
+      sources: [{
+        logicalName: "events",
+        sourceType: "local_event",
+        sourceKey: "demo-follow-events",
+        config: {}
+      }],
+      subscriptions: [{
+        sourceLogicalName: "events",
+        filter: { metadata: { ticketId: input.args.id } },
+        trackedResourceRef: "ticket:" + input.args.id,
+        cleanupPolicy: { mode: "manual" }
+      }]
+    };
+  }
+};`,
+      "utf8",
+    );
+
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "demo-follow-provider-thread",
+      tmuxPaneId: "%947-follow",
+    });
+
+    const followed = await service.follow({
+      agentId: agent.agent.agentId,
+      providerOrKind: "demo",
+      template: "ticket",
+      templateArgs: {
+        id: "A-9",
+      },
+      config: {
+        modulePath: "follow-provider.mjs",
+        moduleConfig: {
+          tenant: "team-a",
+        },
+      },
+    });
+
+    assert.equal(followed.templateId, "demo.ticket");
+    assert.deepEqual(followed.sources.map((source) => source.created), [true]);
+    assert.deepEqual(followed.subscriptions.map((subscription) => subscription.created), [true]);
+    assert.equal(store.listSources().length, 1);
+    assert.equal(store.listSubscriptions().length, 1);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("registerSubscription rejects invalid start policy requirements", async () => {
   const { store, service, dir } = await makeService();
   try {
