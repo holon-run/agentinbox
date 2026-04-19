@@ -127,13 +127,13 @@ consistent lifecycle:
 5. clean up task-scoped subscriptions or timers after merge, closure,
    abandonment, or any other terminal state
 
-For PR and review workflows, prefer one shared repo source and one shared repo-
-CI source, then add PR-scoped subscriptions on top:
+For PR and review workflows, prefer one shared repo source and one shared
+repo-CI source, then add PR-scoped subscriptions on top:
 
 ```bash
 agentinbox agent register
-agentinbox source schema <repo_source_id>
-agentinbox subscription add <repo_source_id> --agent-id <agentId> --shortcut pr --shortcut-args-json '{"number":87,"withCi":true}'
+agentinbox source schema <sourceId>
+agentinbox subscription add <sourceId> --agent-id <agentId> --shortcut pr --shortcut-args-json '{"number":87,"withCi":true}'
 agentinbox inbox read --agent-id <agentId>
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 agentinbox subscription list --agent-id <agentId>
