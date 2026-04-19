@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { AdapterRegistry } from "../src/adapters";
 import { AgentInboxClient } from "../src/client";
 import { startControlServer } from "../src/control_server";
@@ -74,6 +74,50 @@ function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?
     encoding: "utf8",
     timeout,
     input,
+  });
+}
+
+async function runCliAsync(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?: string): Promise<{
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}> {
+  const repoDir = path.resolve(__dirname, "..");
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
+      cwd: repoDir,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, timeout);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal, stdout, stderr });
+    });
+
+    if (input != null) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
   });
 }
 
@@ -1050,8 +1094,10 @@ test("cli stream schema preview resolves remote module-backed schemas before reg
   }
 });
 
-test("cli follow supports repeated --arg values and returns ensured sources", () => {
+test("cli follow supports repeated --arg values and returns ensured sources", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-follow-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
   const env = {
     ...process.env,
     AGENTINBOX_HOME: homeDir,
@@ -1062,8 +1108,20 @@ test("cli follow supports repeated --arg values and returns ensured sources", ()
     CODEX_THREAD_ID: "thread-follow-cli",
   };
 
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
   try {
-    const followed = runCli([
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    const followed = await runCliAsync([
       "follow",
       "github",
       "pr",
@@ -1072,19 +1130,25 @@ test("cli follow supports repeated --arg values and returns ensured sources", ()
       "--arg", "number=93",
       "--arg", "withCi=true",
     ], env);
-    assert.equal(followed.status, 0, followed.stderr);
-    const payload = JSON.parse(followed.stdout) as {
-      templateId: string;
-      autoRegistered?: boolean;
-      sources: Array<{ created: boolean }>;
-      subscriptions: Array<{ created: boolean }>;
-    };
-    assert.equal(payload.templateId, "github.pr");
-    assert.equal(payload.autoRegistered, true);
-    assert.deepEqual(payload.sources.map((source) => source.created), [true, true]);
-    assert.deepEqual(payload.subscriptions.map((subscription) => subscription.created), [true, true]);
+    try {
+      assert.equal(followed.status, 0, followed.stderr);
+      const payload = JSON.parse(followed.stdout) as {
+        templateId: string;
+        autoRegistered?: boolean;
+        sources: Array<{ created: boolean }>;
+        subscriptions: Array<{ created: boolean }>;
+      };
+      assert.equal(payload.templateId, "github.pr");
+      assert.equal(payload.autoRegistered, true);
+      assert.deepEqual(payload.sources.map((source) => source.created), [true, true]);
+      assert.deepEqual(payload.subscriptions.map((subscription) => subscription.created), [true, true]);
+    } finally {
+      await started.close();
+    }
   } finally {
-    void runCli(["daemon", "stop"], env);
+    await adapters.stop();
+    await service.stop();
+    store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
@@ -1955,11 +2019,16 @@ test("control plane follow ensures sources and dedupes subscriptions", async () 
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
 
   const store = await AgentInboxStore.open(dbPath);
-  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
   const service = new AgentInboxService(store, adapters);
   const server = createServer(service);
 
   try {
+    await adapters.start();
+    await service.start();
     const started = await startControlServer(server, {
       kind: "socket",
       socketPath,
@@ -2017,6 +2086,7 @@ test("control plane follow ensures sources and dedupes subscriptions", async () 
       await started.close();
     }
   } finally {
+    await adapters.stop();
     await service.stop();
     store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
