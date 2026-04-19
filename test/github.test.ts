@@ -156,22 +156,36 @@ test("normalizeGithubRepoEvent preserves pull request merged state for lifecycle
 });
 
 test("github pull request helpers derive tracked resources and terminal lifecycle results", async () => {
+  const source: SourceStream = {
+    sourceId: "src_pr_helpers",
+    hostId: "hst_pr_helpers",
+    streamKind: "repo_events",
+    streamKey: "holon-run/agentinbox",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
   const filter: SubscriptionFilter = {
     metadata: {
       number: 72,
       isPullRequest: true,
     },
   };
-  assert.deepEqual(deriveGithubTrackedResource(filter), { ref: "pr:72" });
-  assert.equal(deriveGithubTrackedResource({ metadata: { number: 72 } }), null);
-  assert.equal(deriveGithubTrackedResource({ metadata: { number: 72, isPullRequest: false } }), null);
+  assert.deepEqual(deriveGithubTrackedResource(filter, source), { ref: "repo:holon-run/agentinbox:pr:72" });
+  assert.equal(deriveGithubTrackedResource({ metadata: { number: 72 } }, source), null);
+  assert.equal(deriveGithubTrackedResource({ metadata: { number: 72, isPullRequest: false } }, source), null);
 
   assert.deepEqual(projectGithubLifecycleSignal({
     type: "PullRequestEvent",
     action: "closed",
     pull_request: { number: 72, merged: true },
-  }), {
-    ref: "pr:72",
+  }, source), {
+    ref: "repo:holon-run/agentinbox:pr:72",
     terminal: true,
     state: "closed",
     result: "merged",
@@ -180,8 +194,8 @@ test("github pull request helpers derive tracked resources and terminal lifecycl
     type: "PullRequestEvent",
     action: "closed",
     pull_request: { number: 73, merged: false },
-  }), {
-    ref: "pr:73",
+  }, source), {
+    ref: "repo:holon-run/agentinbox:pr:73",
     terminal: true,
     state: "closed",
     result: "closed",
@@ -190,27 +204,72 @@ test("github pull request helpers derive tracked resources and terminal lifecycl
     type: "PullRequestEvent",
     action: "opened",
     pull_request: { number: 74 },
-  }), null);
+  }, source), null);
 });
 
 test("github subscription shortcut helpers expose and expand the builtin pr shortcut", async () => {
   assert.deepEqual(githubSubscriptionShortcutSpec(), [{
     name: "pr",
     description: "Follow one pull request and auto-retire when it closes.",
-    argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+    argsSchema: [
+      { name: "number", type: "number", required: true, description: "Pull request number." },
+      { name: "withCi", type: "boolean", required: false, description: "Also create a sibling ci_runs subscription under the same host and stream key." },
+    ],
   }]);
+  const source: SourceStream = {
+    sourceId: "src_pr_shortcut",
+    hostId: "hst_pr_shortcut",
+    streamKind: "repo_events",
+    streamKey: "holon-run/agentinbox",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
   assert.deepEqual(expandGithubSubscriptionShortcut({
     name: "pr",
     args: { number: 74 },
+    source,
   }), {
-    filter: {
-      metadata: {
-        number: 74,
-        isPullRequest: true,
+    members: [{
+      streamKind: "repo_events",
+      filter: {
+        metadata: {
+          number: 74,
+          isPullRequest: true,
+        },
       },
-    },
-    trackedResourceRef: "pr:74",
-    cleanupPolicy: { mode: "on_terminal" },
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
+      cleanupPolicy: { mode: "on_terminal" },
+    }],
+  });
+  assert.deepEqual(expandGithubSubscriptionShortcut({
+    name: "pr",
+    args: { number: 74, withCi: true },
+    source,
+  }), {
+    members: [
+      {
+        streamKind: "repo_events",
+        filter: {
+          metadata: {
+            number: 74,
+            isPullRequest: true,
+          },
+        },
+        trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
+        cleanupPolicy: { mode: "on_terminal" },
+      },
+      {
+        streamKind: "ci_runs",
+        trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
+        cleanupPolicy: { mode: "on_terminal" },
+      },
+    ],
   });
 });
 

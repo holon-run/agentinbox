@@ -101,7 +101,7 @@ export const subscriptions = sqliteTable("subscriptions", {
 
 export const subscriptionLifecycleRetirements = sqliteTable("subscription_lifecycle_retirements", {
   subscriptionId: text("subscription_id").primaryKey(),
-  sourceId: text("source_id").notNull(),
+  hostId: text("host_id").notNull(),
   trackedResourceRef: text("tracked_resource_ref").notNull(),
   retireAt: text("retire_at").notNull(),
   terminalState: text("terminal_state"),

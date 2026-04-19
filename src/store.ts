@@ -844,10 +844,10 @@ export class AgentInboxStore {
     this.db.run(
       `
       insert into subscription_lifecycle_retirements (
-        subscription_id, source_id, tracked_resource_ref, retire_at, terminal_state, terminal_result, terminal_occurred_at, created_at, updated_at
+        subscription_id, host_id, tracked_resource_ref, retire_at, terminal_state, terminal_result, terminal_occurred_at, created_at, updated_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(subscription_id) do update set
-        source_id = excluded.source_id,
+        host_id = excluded.host_id,
         tracked_resource_ref = excluded.tracked_resource_ref,
         retire_at = excluded.retire_at,
         terminal_state = excluded.terminal_state,
@@ -858,7 +858,7 @@ export class AgentInboxStore {
     `,
       [
         next.subscriptionId,
-        next.sourceId,
+        next.hostId,
         next.trackedResourceRef,
         next.retireAt,
         next.terminalState ?? null,
@@ -2221,7 +2221,7 @@ export class AgentInboxStore {
   private mapSubscriptionLifecycleRetirement(row: Record<string, unknown>): SubscriptionLifecycleRetirement {
     return {
       subscriptionId: String(row.subscription_id),
-      sourceId: String(row.source_id),
+      hostId: String(row.host_id),
       trackedResourceRef: String(row.tracked_resource_ref),
       retireAt: String(row.retire_at),
       terminalState: row.terminal_state ? String(row.terminal_state) : null,
