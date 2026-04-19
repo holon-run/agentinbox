@@ -12,6 +12,24 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0-beta.2] - 2026-04-19
+
+### Changed
+
+- Clarified the bundled AgentInbox skill guidance so it explicitly distinguishes
+  durable inbox and subscription state from session-bound terminal delivery, and
+  documents `--force-rebind` for later-session recovery.
+
+### Fixed
+
+- Restored PR-scoped review notifications for `github_repo` sources when GitHub
+  repo-event payload previews truncate review metadata, including pull request
+  number recovery for `PullRequestReviewEvent` and
+  `PullRequestReviewCommentEvent`.
+- Bounded GitHub review-event hydration fallback so metadata recovery remains
+  best-effort, degrades safely on fetch failure, and avoids excessive polling
+  amplification on the repo-events sync path.
+
 ## [1.0.0-beta.1] - 2026-04-19
 
 ### Added
