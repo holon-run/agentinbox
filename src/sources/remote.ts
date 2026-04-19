@@ -5,13 +5,23 @@ import {
   ManagedStreamReadResponse,
   UxcDaemonClient,
 } from "@holon-run/uxc-daemon-client";
-import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePollResult, SourceRuntimeState, SourceStream } from "../model";
+import {
+  ActivationItem,
+  AppendSourceEventInput,
+  FollowTemplateSpec,
+  NotificationGrouping,
+  SourcePollResult,
+  SourceRuntimeState,
+  SourceStream,
+} from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
 import {
+  ExpandedFollowPlan,
   ExpandedSubscriptionInput,
   ExpandedSubscriptionPlan,
+  ExpandFollowTemplateInput,
   LifecycleSignal,
   ManagedSourceSpec,
   RemoteSourceModuleRegistry,
@@ -327,6 +337,35 @@ export class RemoteSourceRuntime {
       source: moduleInputSource(source),
     });
     return normalizeExpandedSubscriptionPlan(expanded);
+  }
+
+  async listFollowTemplates(source: SourceStream): Promise<FollowTemplateSpec[]> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return [];
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.listFollowTemplates !== "function") {
+      return [];
+    }
+    return module.listFollowTemplates(moduleInputSource(source));
+  }
+
+  async expandFollowTemplate(
+    source: SourceStream,
+    input: ExpandFollowTemplateInput,
+  ): Promise<ExpandedFollowPlan | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.expandFollowTemplate !== "function") {
+      return null;
+    }
+    return module.expandFollowTemplate({
+      template: input.template,
+      args: input.args,
+      source: moduleInputSource(source),
+    });
   }
 
   async deriveInlinePreview(source: SourceStream, item: ActivationItem): Promise<string | null> {

@@ -2,9 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   deriveGithubTrackedResource,
+  expandGithubFollowTemplate,
   GithubDeliveryAdapter,
   GithubUxcClient,
   githubSubscriptionShortcutSpec,
+  githubFollowTemplateSpec,
   githubDeliveryOperationsForHandle,
   expandGithubSubscriptionShortcut,
   invokeGithubDeliveryOperation,
@@ -429,6 +431,74 @@ test("github subscription shortcut helpers expose and expand the builtin pr shor
       },
       {
         streamKind: "ci_runs",
+        filter: {
+          metadata: {
+            pullRequestNumbers: [74],
+          },
+        },
+        trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
+        cleanupPolicy: { mode: "on_terminal" },
+      },
+    ],
+  });
+});
+
+test("github follow helpers expose templates and expand the builtin pr template", async () => {
+  assert.deepEqual(githubFollowTemplateSpec().map((template) => template.templateId), [
+    "github.repo",
+    "github.pr",
+    "github.issue",
+  ]);
+  const source: SourceStream = {
+    sourceId: "src_follow_template",
+    hostId: "hst_follow_template",
+    streamKind: "repo_events",
+    streamKey: "holon-run/agentinbox",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  assert.deepEqual(expandGithubFollowTemplate({
+    template: "pr",
+    args: { number: 74, withCi: true },
+    source,
+  }), {
+    templateId: "github.pr",
+    sources: [
+      {
+        logicalName: "repo_events",
+        sourceType: "github_repo",
+        sourceKey: "holon-run/agentinbox",
+        configRef: null,
+        config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      },
+      {
+        logicalName: "ci_runs",
+        sourceType: "github_repo_ci",
+        sourceKey: "holon-run/agentinbox",
+        configRef: null,
+        config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      },
+    ],
+    subscriptions: [
+      {
+        sourceLogicalName: "repo_events",
+        filter: {
+          metadata: {
+            number: 74,
+            isPullRequest: true,
+          },
+        },
+        trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
+        cleanupPolicy: { mode: "on_terminal" },
+      },
+      {
+        sourceLogicalName: "ci_runs",
         filter: {
           metadata: {
             pullRequestNumbers: [74],

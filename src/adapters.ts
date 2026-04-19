@@ -5,6 +5,7 @@ import {
   DeliveryRequest,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  FollowTemplateSpec,
   NotificationGrouping,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
@@ -18,7 +19,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
-import { ExpandedSubscriptionPlan, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry } from "./sources/remote_modules";
+import { ExpandedFollowPlan, ExpandedSubscriptionPlan, ExpandFollowTemplateInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry, builtinRemoteSourceTypes } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -198,6 +199,40 @@ export class AdapterRegistry {
     return this.remoteSource.expandSubscriptionShortcut(source, input);
   }
 
+  async listFollowTemplates(source: SourceStream): Promise<FollowTemplateSpec[]> {
+    if (source.sourceType === "local_event") {
+      return [];
+    }
+    return this.remoteSource.listFollowTemplates(source);
+  }
+
+  async expandFollowTemplate(
+    source: SourceStream,
+    input: ExpandFollowTemplateInput,
+  ): Promise<ExpandedFollowPlan | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.expandFollowTemplate(source, input);
+  }
+
+  followPreviewRefsForProviderOrKind(
+    providerOrKind: string,
+    config?: Record<string, unknown>,
+  ): string[] {
+    const trimmed = providerOrKind.trim();
+    if (trimmed.length === 0) {
+      throw new Error("follow requires a providerOrKind");
+    }
+    if (isExplicitFollowPreviewRef(trimmed)) {
+      return [trimmed];
+    }
+    const candidates = hasRemoteSourceModulePath(config)
+      ? ["remote_source", ...builtinRemoteSourceTypes()]
+      : builtinRemoteSourceTypes();
+    return Array.from(new Set(candidates));
+  }
+
   async deriveInlinePreview(source: SourceStream, item: ActivationItem): Promise<string | null> {
     if (source.sourceType === "local_event") {
       return null;
@@ -280,6 +315,22 @@ export class AdapterRegistry {
     }
     return null;
   }
+}
+
+function isExplicitFollowPreviewRef(value: string): boolean {
+  return (
+    value === "local_event" ||
+    value === "remote_source" ||
+    value === "github_repo" ||
+    value === "github_repo_ci" ||
+    value === "feishu_bot" ||
+    value.startsWith("remote:")
+  );
+}
+
+function hasRemoteSourceModulePath(config: Record<string, unknown> | undefined): boolean {
+  const modulePath = config?.modulePath;
+  return typeof modulePath === "string" && modulePath.trim().length > 0;
 }
 
 function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot"): SourceStream {

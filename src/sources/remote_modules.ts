@@ -9,17 +9,22 @@ import {
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  FollowTemplateSpec,
   NotificationGrouping,
+  RegisterSourceInput,
   SourceSchemaField,
   SourceStream,
   SubscriptionFilter,
+  SubscriptionStartPolicy,
 } from "../model";
 import {
   deriveGithubTrackedResource,
+  expandGithubFollowTemplate,
   expandGithubSubscriptionShortcut,
   GITHUB_ENDPOINT,
   GithubCallClient,
   githubDeliveryOperationsForHandle,
+  githubFollowTemplateSpec,
   githubSubscriptionShortcutSpec,
   hydrateGithubRepoEventIfNeeded,
   invokeGithubDeliveryOperation,
@@ -100,6 +105,32 @@ export interface ExpandSubscriptionShortcutInput {
   source: SourceStream;
 }
 
+export interface ExpandedFollowSourceEnsure extends RegisterSourceInput {
+  logicalName: string;
+}
+
+export interface ExpandedFollowSubscriptionEnsure {
+  sourceLogicalName: string;
+  filter?: SubscriptionFilter;
+  trackedResourceRef?: string | null;
+  cleanupPolicy?: CleanupPolicy | null;
+  startPolicy?: SubscriptionStartPolicy;
+  startOffset?: number | null;
+  startTime?: string | null;
+}
+
+export interface ExpandedFollowPlan {
+  templateId: string;
+  sources: ExpandedFollowSourceEnsure[];
+  subscriptions: ExpandedFollowSubscriptionEnsure[];
+}
+
+export interface ExpandFollowTemplateInput {
+  template: string;
+  args?: Record<string, unknown>;
+  source: SourceStream;
+}
+
 export interface LifecycleSignal {
   ref: string;
   terminal: boolean;
@@ -133,6 +164,8 @@ export interface RemoteSourceModule {
   describeCapabilities?(source: SourceStream): RemoteSourceCapabilityDescription;
   listSubscriptionShortcuts?(source: SourceStream): SubscriptionShortcutSpec[];
   expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null;
+  listFollowTemplates?(source: SourceStream): FollowTemplateSpec[];
+  expandFollowTemplate?(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null;
   deriveTrackedResource?(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null;
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SourceStream): LifecycleSignal | null;
   deriveInlinePreview?(item: ActivationItem, source: SourceStream): string | null;
@@ -144,6 +177,7 @@ export interface RemoteSourceModule {
 
 const REMOTE_USER_MODULE_ROOT_DIR = "source-modules";
 const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot"]);
+const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bot"] as const;
 
 export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
@@ -211,6 +245,10 @@ export function builtInModuleIdForSourceType(sourceType: SourceStream["sourceTyp
   return null;
 }
 
+export function builtinRemoteSourceTypes(): SourceStream["sourceType"][] {
+  return [...BUILTIN_REMOTE_SOURCE_TYPES];
+}
+
 function validateModuleContract(module: RemoteSourceModule, sourcePath: string): void {
   if (!module.id || typeof module.id !== "string") {
     throw new Error(`remote_source module id must be a non-empty string: ${sourcePath}`);
@@ -230,6 +268,8 @@ function validateModuleContract(module: RemoteSourceModule, sourcePath: string):
   validateOptionalHook(module.describeCapabilities, "describeCapabilities", sourcePath);
   validateOptionalHook(module.listSubscriptionShortcuts, "listSubscriptionShortcuts", sourcePath);
   validateOptionalHook(module.expandSubscriptionShortcut, "expandSubscriptionShortcut", sourcePath);
+  validateOptionalHook(module.listFollowTemplates, "listFollowTemplates", sourcePath);
+  validateOptionalHook(module.expandFollowTemplate, "expandFollowTemplate", sourcePath);
   validateOptionalHook(module.deriveTrackedResource, "deriveTrackedResource", sourcePath);
   validateOptionalHook(module.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
   validateOptionalHook(module.deriveInlinePreview, "deriveInlinePreview", sourcePath);
@@ -343,6 +383,12 @@ export function createGithubRepoRemoteModule(options?: { callClient?: GithubCall
     },
     expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null {
       return expandGithubSubscriptionShortcut(input);
+    },
+    listFollowTemplates(): FollowTemplateSpec[] {
+      return githubFollowTemplateSpec();
+    },
+    expandFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
+      return expandGithubFollowTemplate(input);
     },
     deriveTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
       return deriveGithubTrackedResource(filter, source);

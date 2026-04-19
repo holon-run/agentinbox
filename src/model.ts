@@ -429,6 +429,18 @@ export interface RegisterSubscriptionInput {
   startTime?: string | null;
 }
 
+export interface FollowInput {
+  agentId: string;
+  providerOrKind: string;
+  template: string;
+  templateArgs?: Record<string, unknown>;
+  configRef?: string | null;
+  config?: Record<string, unknown>;
+  startPolicy?: SubscriptionStartPolicy;
+  startOffset?: number | null;
+  startTime?: string | null;
+}
+
 export interface PreviewSourceSchemaInput {
   sourceRef: string;
   configRef?: string | null;
@@ -440,6 +452,18 @@ export interface SourceSchemaField {
   type: string;
   description: string;
   required?: boolean;
+}
+
+export interface FollowTemplateSpec {
+  templateId: string;
+  providerOrKind: string;
+  label: string;
+  description: string;
+  argsSchema?: SourceSchemaField[];
+}
+
+export interface FollowSchema {
+  templates: FollowTemplateSpec[];
 }
 
 export interface SourceSchema {
@@ -468,9 +492,25 @@ export interface ResolvedSourceSchema extends SourceSchema, ResolvedSourceIdenti
       argsSchema?: SourceSchemaField[];
     }>;
   };
+  followSchema?: FollowSchema;
 }
 
 export interface SourceSchemaPreview extends Omit<ResolvedSourceSchema, "sourceId"> {}
+
+export interface FollowResult {
+  templateId: string;
+  agentId: string;
+  sources: Array<{
+    sourceId: string;
+    streamKind?: string;
+    created: boolean;
+  }>;
+  subscriptions: Array<{
+    subscriptionId: string;
+    sourceId: string;
+    created: boolean;
+  }>;
+}
 
 export interface AppendSourceEventInput {
   sourceId: string;

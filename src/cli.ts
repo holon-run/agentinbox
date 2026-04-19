@@ -209,6 +209,48 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "follow") {
+    const args = normalized.slice(1);
+    const positionals = positionalArgs(args, [
+      "--agent-id",
+      "--args-json",
+      "--arg",
+      "--config-json",
+      "--config-ref",
+      "--start-policy",
+      "--start-offset",
+      "--start-time",
+    ]);
+    const [providerOrKind, template] = positionals;
+    if (!providerOrKind || !template || positionals[2]) {
+      throw new Error("usage: agentinbox follow <providerOrKind> <template> [--agent-id ID] [--args-json JSON | --arg KEY=VALUE ...] [--config-json JSON] [--config-ref REF] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]");
+    }
+    const argsJson = takeFlagValue(normalized, "--args-json");
+    const hasArgFlags = hasFlag(normalized, "--arg");
+    if (argsJson != null && hasArgFlags) {
+      throw new Error("follow accepts either --args-json or repeated --arg flags, but not both");
+    }
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: true,
+    });
+    const response = await requestRemote<Record<string, unknown>>(client, "/follow", {
+      agentId: selection.agentId,
+      providerOrKind,
+      template,
+      templateArgs: argsJson != null
+        ? parseJsonArg(argsJson, "--args-json")
+        : readFollowTemplateArgs(normalized),
+      configRef: takeFlagValue(normalized, "--config-ref") ?? undefined,
+      config: parseJsonArg(takeFlagValue(normalized, "--config-json")),
+      startPolicy: takeFlagValue(normalized, "--start-policy") ?? undefined,
+      startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
+      startTime: takeFlagValue(normalized, "--start-time") ?? undefined,
+    });
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
   if (command === "stream" && normalized[1] === "poll") {
     const streamId = normalized[2];
     if (!streamId) {
@@ -1211,6 +1253,51 @@ function readSubscriptionFilter(args: string[]): Record<string, unknown> {
   return {};
 }
 
+function readFollowTemplateArgs(args: string[]): Record<string, unknown> {
+  const parsed: Record<string, unknown> = {};
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--arg") {
+      continue;
+    }
+    const raw = args[index + 1];
+    if (!raw || raw.startsWith("--")) {
+      throw new Error("flag --arg requires KEY=VALUE");
+    }
+    const separator = raw.indexOf("=");
+    if (separator <= 0) {
+      throw new Error("flag --arg requires KEY=VALUE");
+    }
+    const key = raw.slice(0, separator).trim();
+    const rawValue = raw.slice(separator + 1);
+    if (key.length === 0) {
+      throw new Error("flag --arg requires a non-empty key");
+    }
+    parsed[key] = parseFollowTemplateArgValue(rawValue);
+    index += 1;
+  }
+  return parsed;
+}
+
+function parseFollowTemplateArgValue(raw: string): unknown {
+  if (raw === "true") {
+    return true;
+  }
+  if (raw === "false") {
+    return false;
+  }
+  if (/^-?\d+(?:\.\d+)?$/.test(raw)) {
+    return Number(raw);
+  }
+  if ((raw.startsWith("[") && raw.endsWith("]")) || (raw.startsWith("{") && raw.endsWith("}")) || raw === "null") {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
 function withCommandMetadata<T extends Record<string, unknown>>(data: T, selection: AgentSelection): T & {
   agentId: string;
   autoRegistered?: true;
@@ -1299,6 +1386,7 @@ Usage:
 Commands:
   serve
   daemon
+  follow
   source
   agent
   timer
@@ -1344,6 +1432,11 @@ Usage:
   agentinbox stream schema preview <sourceKind|sourceType> [--config-json JSON] [--config-ref REF]
   agentinbox stream poll <streamId>
   agentinbox stream event <streamId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
+`,
+    follow: `agentinbox follow
+
+Usage:
+  agentinbox follow <providerOrKind> <template> [--agent-id ID] [--args-json JSON | --arg KEY=VALUE ...] [--config-json JSON] [--config-ref REF] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
 `,
     source: `agentinbox source
 
