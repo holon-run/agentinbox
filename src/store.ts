@@ -797,6 +797,20 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapSubscription(row));
   }
 
+  listSubscriptionsForHostTrackedResourceRef(hostId: string, trackedResourceRef: string): Subscription[] {
+    const rows = this.getAll(
+      `
+      select subscriptions.*
+      from subscriptions
+      inner join sources on sources.source_id = subscriptions.source_id
+      where sources.host_id = ? and subscriptions.tracked_resource_ref = ?
+      order by subscriptions.created_at asc
+    `,
+      [hostId, trackedResourceRef],
+    );
+    return rows.map((row) => this.mapSubscription(row));
+  }
+
   deleteSubscription(subscriptionId: string): Subscription | null {
     const subscription = this.getSubscription(subscriptionId);
     if (!subscription) {

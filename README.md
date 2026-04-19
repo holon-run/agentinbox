@@ -171,6 +171,10 @@ agentinbox inbox read --agent-id <agent_id>
 agentinbox inbox ack --agent-id <agent_id> --through <last_entry_id>
 ```
 
+The HTTP `POST /subscriptions` endpoint always returns
+`{ "subscriptions": [...] }`, even when only one subscription is created. That
+keeps shortcut expansion consistent for external callers.
+
 When acking a reviewed batch, prefer `--through <last_entry_id>` over `--all`.
 That preserves the boundary of the items you actually inspected. Use
 `ack --all` only when you have intentionally verified that every current

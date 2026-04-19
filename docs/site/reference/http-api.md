@@ -127,6 +127,23 @@ Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseco
 
 `cleanupPolicy` defaults to `{"mode":"manual"}` when omitted.
 
+`POST /subscriptions` always returns an envelope:
+
+```json
+{
+  "subscriptions": [
+    {
+      "subscriptionId": "sub_...",
+      "agentId": "agt_...",
+      "sourceId": "src_..."
+    }
+  ]
+}
+```
+
+Non-shortcut creation returns one element. A shortcut may expand into multiple
+subscriptions, so callers should always read `subscriptions[]`.
+
 ## Inbox
 
 - `GET /agents/{agentId}/inbox`

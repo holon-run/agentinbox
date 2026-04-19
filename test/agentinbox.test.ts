@@ -336,7 +336,12 @@ async function createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath: str
   db.close();
 }
 
-async function readMigrationState(dbPath: string): Promise<{ appliedTags: string[]; hasNewIndex: boolean; retirementColumns: string[] }> {
+async function readMigrationState(dbPath: string): Promise<{
+  appliedTags: string[];
+  hasNewIndex: boolean;
+  retirementColumns: string[];
+  hasTrackedResourceIndex: boolean;
+}> {
   const SQL = await initSqlJs({
     locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
   });
@@ -347,10 +352,14 @@ async function readMigrationState(dbPath: string): Promise<{ appliedTags: string
   const hasNewIndex = indexResult.some((set) =>
     set.values.some((row) => String(row[1]) === "idx_inbox_items_source_occurred_at"),
   );
+  const subscriptionIndexResult = db.exec("pragma index_list('subscriptions');") as Array<{ values: unknown[][] }>;
+  const hasTrackedResourceIndex = subscriptionIndexResult.some((set) =>
+    set.values.some((row) => String(row[1]) === "idx_subscriptions_tracked_resource_source"),
+  );
   const retirementColumnsResult = db.exec("pragma table_info('subscription_lifecycle_retirements');") as Array<{ values: unknown[][] }>;
   const retirementColumns = (retirementColumnsResult[0]?.values ?? []).map((row) => String(row[1]));
   db.close();
-  return { appliedTags, hasNewIndex, retirementColumns };
+  return { appliedTags, hasNewIndex, retirementColumns, hasTrackedResourceIndex };
 }
 
 test("store migrates a new database using drizzle SQL migrations", async () => {
@@ -359,9 +368,14 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
+    assert.deepEqual(state.appliedTags, [
+      "0000_v1_initial",
+      "0002_host_scoped_lifecycle_retirements",
+      "0003_subscription_tracked_resource_indexes",
+    ]);
     assert.equal(state.hasNewIndex, true);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
+    assert.equal(state.hasTrackedResourceIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 0);
   } finally {
@@ -384,8 +398,13 @@ test("store reopens an existing v1 database without archiving it", async () => {
   const reopened = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
+    assert.deepEqual(state.appliedTags, [
+      "0000_v1_initial",
+      "0002_host_scoped_lifecycle_retirements",
+      "0003_subscription_tracked_resource_indexes",
+    ]);
     assert.equal(warnings.length, 0);
+    assert.equal(state.hasTrackedResourceIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 0);
   } finally {
@@ -407,8 +426,13 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
+    assert.deepEqual(state.appliedTags, [
+      "0000_v1_initial",
+      "0002_host_scoped_lifecycle_retirements",
+      "0003_subscription_tracked_resource_indexes",
+    ]);
     assert.equal(state.hasNewIndex, true);
+    assert.equal(state.hasTrackedResourceIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 1);
     assert.match(backups[0]!, /^agentinbox\.sqlite\.pre-v1\..+\.bak(?:\.\d+)?$/);
@@ -428,9 +452,14 @@ test("store upgrades source-scoped lifecycle retirements to host-scoped retireme
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
+    assert.deepEqual(state.appliedTags, [
+      "0000_v1_initial",
+      "0002_host_scoped_lifecycle_retirements",
+      "0003_subscription_tracked_resource_indexes",
+    ]);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
     assert.deepEqual(state.retirementColumns.includes("source_id"), false);
+    assert.equal(state.hasTrackedResourceIndex, true);
     const retirement = store.getSubscriptionLifecycleRetirement("sub_legacy_retirement");
     assert.equal(retirement?.hostId, "hst_legacy_github");
     assert.equal(retirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:72");
@@ -4685,6 +4714,106 @@ test("github repo terminal lifecycle fanout retires sibling repo and ci subscrip
     assert.equal(ciRetirement?.hostId, repoSource.hostId);
     assert.equal(repoRetirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:93");
     assert.equal(ciRetirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:93");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store can list subscriptions by host-scoped tracked resource ref", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const createdAt = "2026-04-19T00:00:00.000Z";
+    store.insertSource({
+      sourceId: "src_host_ref_repo",
+      hostId: "hst_github_a",
+      streamKind: "repo_events",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      status: "active",
+      checkpoint: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    store.insertSource({
+      sourceId: "src_host_ref_ci",
+      hostId: "hst_github_a",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      status: "active",
+      checkpoint: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    store.insertSource({
+      sourceId: "src_host_ref_other",
+      hostId: "hst_github_b",
+      streamKind: "repo_events",
+      streamKey: "holon-run/other",
+      sourceType: "github_repo",
+      sourceKey: "holon-run/other",
+      configRef: null,
+      config: { owner: "holon-run", repo: "other", uxcAuth: "github-other" },
+      status: "active",
+      checkpoint: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    store.insertSubscription({
+      subscriptionId: "sub_host_ref_repo",
+      agentId: "agt_host_ref",
+      sourceId: "src_host_ref_repo",
+      filter: {},
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      startPolicy: "earliest",
+      startOffset: null,
+      startTime: null,
+      createdAt,
+    });
+    store.insertSubscription({
+      subscriptionId: "sub_host_ref_ci",
+      agentId: "agt_host_ref",
+      sourceId: "src_host_ref_ci",
+      filter: {},
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      startPolicy: "earliest",
+      startOffset: null,
+      startTime: null,
+      createdAt: "2026-04-19T00:00:01.000Z",
+    });
+    store.insertSubscription({
+      subscriptionId: "sub_host_ref_other",
+      agentId: "agt_host_ref",
+      sourceId: "src_host_ref_other",
+      filter: {},
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      startPolicy: "earliest",
+      startOffset: null,
+      startTime: null,
+      createdAt: "2026-04-19T00:00:02.000Z",
+    });
+
+    const matches = store.listSubscriptionsForHostTrackedResourceRef(
+      "hst_github_a",
+      "repo:holon-run/agentinbox:pr:93",
+    );
+
+    assert.deepEqual(
+      matches.map((subscription) => subscription.subscriptionId),
+      ["sub_host_ref_repo", "sub_host_ref_ci"],
+    );
   } finally {
     await service.stop();
     store.close();
