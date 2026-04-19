@@ -894,6 +894,29 @@ test("cli resolves current agent, auto-registers session workflows, and warns on
   }
 });
 
+test("cli agent current explains how to inspect and rebind when no current agent exists", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-current-missing-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%9010",
+    CODEX_THREAD_ID: "thread-current-missing",
+  };
+
+  try {
+    const current = runCli(["agent", "current"], env);
+    assert.notEqual(current.status, 0);
+    assert.match(current.stderr, /run `agentinbox agent list` to inspect offline agents/);
+    assert.match(current.stderr, /agentinbox agent register --force-rebind --agent-id <agentId>/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli agent register accepts min-unacked-items", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-pol-"));
   const env = {

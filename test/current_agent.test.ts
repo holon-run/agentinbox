@@ -70,6 +70,9 @@ test("resolveCurrentAgent prefers terminal identity over runtime identity", () =
     matchesCurrentTerminal: true,
     matchesCurrentRuntime: false,
     terminalIdentity: "tmux:%202",
+    notifyCapable: true,
+    activeTargetCount: 1,
+    offlineTargetCount: 0,
   });
 });
 
@@ -108,9 +111,75 @@ test("annotateAgents marks current and detached agents correctly", () => {
   assert.equal(annotated.agents[0]?.isCurrent, true);
   assert.equal(annotated.agents[0]?.terminalIdentity, "iterm2:SESSION-1");
   assert.equal(annotated.agents[0]?.bindingKind, "session_bound");
+  assert.equal(annotated.agents[0]?.notifyCapable, true);
+  assert.equal(annotated.agents[0]?.activeTargetCount, 1);
+  assert.equal(annotated.agents[0]?.offlineTargetCount, 0);
   assert.equal(annotated.agents[1]?.isCurrent, false);
   assert.equal(annotated.agents[1]?.bindingKind, "detached");
   assert.equal(annotated.agents[1]?.terminalIdentity, null);
+  assert.equal(annotated.agents[1]?.notifyCapable, false);
+  assert.equal(annotated.agents[1]?.activeTargetCount, 0);
+  assert.equal(annotated.agents[1]?.offlineTargetCount, 0);
+});
+
+test("annotateAgents surfaces notify capability and offline target counts", () => {
+  const agents: AgentWithTargets[] = [
+    makeAgentRecord({
+      agentId: "agent-offline",
+      status: "offline",
+      activationTargets: [{
+        targetId: "tgt-offline",
+        kind: "terminal",
+        status: "offline",
+        backend: "tmux",
+        tmuxPaneId: "%301",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-offline",
+      }],
+    }),
+    makeAgentRecord({
+      agentId: "agent-webhook",
+      activationTargets: [{
+        targetId: "wh-1",
+        kind: "webhook",
+        status: "active",
+      }],
+    }),
+  ];
+
+  const annotated = annotateAgents(agents, null);
+
+  assert.equal(annotated.agents[0]?.notifyCapable, false);
+  assert.equal(annotated.agents[0]?.activeTargetCount, 0);
+  assert.equal(annotated.agents[0]?.offlineTargetCount, 1);
+  assert.equal(annotated.agents[1]?.notifyCapable, true);
+  assert.equal(annotated.agents[1]?.activeTargetCount, 1);
+  assert.equal(annotated.agents[1]?.offlineTargetCount, 0);
+});
+
+test("annotateAgents keeps offline agents detached during in-flight target status transitions", () => {
+  const agents: AgentWithTargets[] = [
+    makeAgentRecord({
+      agentId: "agent-transitioning",
+      status: "offline",
+      activationTargets: [{
+        targetId: "tgt-active",
+        kind: "terminal",
+        status: "active",
+        backend: "tmux",
+        tmuxPaneId: "%401",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-transitioning",
+      }],
+    }),
+  ];
+
+  const annotated = annotateAgents(agents, null);
+
+  assert.equal(annotated.agents[0]?.bindingKind, "detached");
+  assert.equal(annotated.agents[0]?.terminalIdentity, null);
+  assert.equal(annotated.agents[0]?.notifyCapable, false);
+  assert.equal(annotated.agents[0]?.activeTargetCount, 1);
 });
 
 test("resolveCurrentAgent ignores offline agents and offline terminal targets", () => {
