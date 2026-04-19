@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import swagger from "@fastify/swagger";
 import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
-import { ActivationMode, DeliveryHandle, PreviewSourceSchemaInput, WatchInboxOptions } from "./model";
+import { ActivationMode, DeliveryHandle, FollowInput, PreviewSourceSchemaInput, WatchInboxOptions } from "./model";
 import { jsonResponse } from "./util";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
@@ -490,6 +490,49 @@ function buildFastifyServer(service: AgentInboxService) {
       },
     },
   }, async (request) => service.previewSourceSchema(request.body as PreviewSourceSchemaInput));
+
+  app.post("/follow", {
+    schema: {
+      tags: ["subscriptions"],
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["agentId", "providerOrKind", "template"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          providerOrKind: { type: "string", minLength: 1 },
+          template: { type: "string", minLength: 1 },
+          templateArgs: jsonObjectSchema,
+          configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
+          config: jsonObjectSchema,
+          startPolicy: { type: "string" },
+          startOffset: { type: "integer" },
+          startTime: { type: "string" },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const body = request.body as Record<string, unknown>;
+    return service.follow({
+      agentId: String(body.agentId),
+      providerOrKind: String(body.providerOrKind),
+      template: String(body.template),
+      templateArgs: body.templateArgs && typeof body.templateArgs === "object"
+        ? body.templateArgs as Record<string, unknown>
+        : undefined,
+      configRef: optionalString(body.configRef) ?? null,
+      config: body.config && typeof body.config === "object"
+        ? body.config as Record<string, unknown>
+        : undefined,
+      startPolicy: optionalString(body.startPolicy) as never,
+      startOffset: typeof body.startOffset === "number" ? body.startOffset : undefined,
+      startTime: optionalString(body.startTime) ?? undefined,
+    } satisfies FollowInput);
+  });
 
   app.post("/streams/:streamId/poll", {
     schema: {
@@ -1800,6 +1843,10 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("cleanupPolicy ") ||
     message.startsWith("trackedResourceRef ") ||
     message.startsWith("preview failed: ") ||
+    message.startsWith("follow preview failed: ") ||
+    message.startsWith("follow template ") ||
+    message.startsWith("unknown follow template ") ||
+    message.startsWith("follow requires a providerOrKind") ||
     message.startsWith("unknown source kind or type for preview") ||
     message.startsWith("preview source kind ") ||
     message.startsWith("subscription add shortcut") ||

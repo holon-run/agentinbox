@@ -5,6 +5,7 @@ import {
   DeliveryRequest,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  FollowTemplateSpec,
   NotificationGrouping,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
@@ -17,7 +18,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
-import { ExpandedSubscriptionPlan, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry } from "./sources/remote_modules";
+import { ExpandedFollowPlan, ExpandedSubscriptionPlan, ExpandFollowTemplateInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -195,6 +196,23 @@ export class AdapterRegistry {
       return null;
     }
     return this.remoteSource.expandSubscriptionShortcut(source, input);
+  }
+
+  async listFollowTemplates(source: SourceStream): Promise<FollowTemplateSpec[]> {
+    if (source.sourceType === "local_event") {
+      return [];
+    }
+    return this.remoteSource.listFollowTemplates(source);
+  }
+
+  async expandFollowTemplate(
+    source: SourceStream,
+    input: ExpandFollowTemplateInput,
+  ): Promise<ExpandedFollowPlan | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.expandFollowTemplate(source, input);
   }
 
   async deriveInlinePreview(source: SourceStream, item: ActivationItem): Promise<string | null> {

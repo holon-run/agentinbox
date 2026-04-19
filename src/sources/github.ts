@@ -5,10 +5,12 @@ import {
   DeliveryHandle,
   DeliveryOperationDescriptor,
   DeliveryRequest,
+  FollowTemplateSpec,
   SourceSchemaField,
   SourceStream,
   SubscriptionFilter,
 } from "../model";
+import type { ExpandedFollowPlan, ExpandFollowTemplateInput } from "./remote_modules";
 
 export const GITHUB_ENDPOINT = "https://api.github.com";
 const DEFAULT_GITHUB_CALL_CLIENT = new UxcDaemonClient({ env: process.env });
@@ -393,6 +395,11 @@ export function canonicalGithubPullRequestRef(source: SourceStream, number: numb
   return `repo:${config.owner}/${config.repo}:pr:${number}`;
 }
 
+export function canonicalGithubIssueRef(source: SourceStream, number: number): string {
+  const config = parseGithubSourceConfig(source);
+  return `repo:${config.owner}/${config.repo}:issue:${number}`;
+}
+
 export function deriveGithubTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
   const metadata = asRecord(filter.metadata);
   const payload = asRecord(filter.payload);
@@ -417,6 +424,43 @@ export function githubSubscriptionShortcutSpec(): Array<{
       { name: "withCi", type: "boolean", required: false, description: "Also create a sibling ci_runs subscription under the same host and stream key." },
     ],
   }];
+}
+
+export function githubFollowTemplateSpec(): FollowTemplateSpec[] {
+  const repoArgs: SourceSchemaField[] = [
+    { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+    { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+  ];
+  return [
+    {
+      templateId: "github.repo",
+      providerOrKind: "github",
+      label: "GitHub Repository",
+      description: "Follow a repository event stream.",
+      argsSchema: repoArgs,
+    },
+    {
+      templateId: "github.pr",
+      providerOrKind: "github",
+      label: "GitHub Pull Request",
+      description: "Follow one pull request and optionally its CI.",
+      argsSchema: [
+        ...repoArgs,
+        { name: "number", type: "number", required: true, description: "Pull request number." },
+        { name: "withCi", type: "boolean", required: false, description: "Also follow the repository CI stream for that pull request." },
+      ],
+    },
+    {
+      templateId: "github.issue",
+      providerOrKind: "github",
+      label: "GitHub Issue",
+      description: "Follow one issue without automatic terminal cleanup.",
+      argsSchema: [
+        ...repoArgs,
+        { name: "number", type: "number", required: true, description: "Issue number." },
+      ],
+    },
+  ];
 }
 
 export function expandGithubSubscriptionShortcut(input: {
@@ -469,6 +513,110 @@ export function expandGithubSubscriptionShortcut(input: {
   };
 }
 
+export function expandGithubFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
+  const config = parseGithubSourceConfig(input.source);
+  if (input.template === "repo") {
+    return {
+      templateId: "github.repo",
+      sources: [
+        {
+          logicalName: "repo_events",
+          sourceType: "github_repo",
+          sourceKey: `${config.owner}/${config.repo}`,
+          configRef: input.source.configRef ?? null,
+          config: githubFollowSourceConfig(input.source),
+        },
+      ],
+      subscriptions: [],
+    };
+  }
+
+  const number = typeof input.args?.number === "number" ? input.args.number : null;
+  if (input.template !== "pr" && input.template !== "issue") {
+    return null;
+  }
+  if (!number || !Number.isInteger(number) || number <= 0) {
+    throw new Error(`follow template github.${input.template} requires a positive integer number`);
+  }
+
+  if (input.template === "pr") {
+    const trackedResourceRef = canonicalGithubPullRequestRef(input.source, number);
+    const withCi = input.args?.withCi === true;
+    return {
+      templateId: "github.pr",
+      sources: [
+        {
+          logicalName: "repo_events",
+          sourceType: "github_repo",
+          sourceKey: `${config.owner}/${config.repo}`,
+          configRef: input.source.configRef ?? null,
+          config: githubFollowSourceConfig(input.source),
+        },
+        ...(withCi
+          ? [{
+              logicalName: "ci_runs",
+              sourceType: "github_repo_ci" as const,
+              sourceKey: `${config.owner}/${config.repo}`,
+              configRef: input.source.configRef ?? null,
+              config: githubFollowSourceConfig(input.source),
+            }]
+          : []),
+      ],
+      subscriptions: [
+        {
+          sourceLogicalName: "repo_events",
+          filter: {
+            metadata: {
+              number,
+              isPullRequest: true,
+            },
+          },
+          trackedResourceRef,
+          cleanupPolicy: { mode: "on_terminal" },
+        },
+        ...(withCi
+          ? [{
+              sourceLogicalName: "ci_runs",
+              filter: {
+                metadata: {
+                  pullRequestNumbers: [number],
+                },
+              },
+              trackedResourceRef,
+              cleanupPolicy: { mode: "on_terminal" as const },
+            }]
+          : []),
+      ],
+    };
+  }
+
+  return {
+    templateId: "github.issue",
+    sources: [
+      {
+        logicalName: "repo_events",
+        sourceType: "github_repo",
+        sourceKey: `${config.owner}/${config.repo}`,
+        configRef: input.source.configRef ?? null,
+        config: githubFollowSourceConfig(input.source),
+      },
+    ],
+    subscriptions: [
+      {
+        sourceLogicalName: "repo_events",
+        filter: {
+          metadata: {
+            number,
+            isPullRequest: false,
+          },
+        },
+        trackedResourceRef: canonicalGithubIssueRef(input.source, number),
+        cleanupPolicy: { mode: "manual" },
+      },
+    ],
+  };
+}
+
 export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>, source: SourceStream): {
   ref: string;
   terminal: boolean;
@@ -495,6 +643,13 @@ export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>
     state: "closed",
     result: merged ? "merged" : "closed",
   };
+}
+
+function githubFollowSourceConfig(source: SourceStream): Record<string, unknown> {
+  const config = { ...(source.config ?? {}) };
+  delete config.number;
+  delete config.withCi;
+  return config;
 }
 
 function buildGithubDeliveryHandle(

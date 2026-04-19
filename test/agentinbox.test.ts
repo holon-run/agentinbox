@@ -823,6 +823,7 @@ test("builtin remote-backed source details expose resolved remote identity", asy
         sourceKind: string;
         implementationId: string;
         aliases?: string[];
+        followSchema?: unknown;
         subscriptionSchema: {
           supportsTrackedResourceRef: boolean;
           supportsLifecycleSignals: boolean;
@@ -853,6 +854,44 @@ test("builtin remote-backed source details expose resolved remote identity", asy
             required: false,
             description: "Also create a sibling ci_runs subscription under the same host and stream key.",
           },
+        ],
+      }],
+    });
+    assert.deepEqual(details.schema.followSchema, {
+      templates: [{
+        templateId: "github.repo",
+        providerOrKind: "github",
+        label: "GitHub Repository",
+        description: "Follow a repository event stream.",
+        argsSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+        ],
+      }, {
+        templateId: "github.pr",
+        providerOrKind: "github",
+        label: "GitHub Pull Request",
+        description: "Follow one pull request and optionally its CI.",
+        argsSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+          { name: "number", type: "number", required: true, description: "Pull request number." },
+          {
+            name: "withCi",
+            type: "boolean",
+            required: false,
+            description: "Also follow the repository CI stream for that pull request.",
+          },
+        ],
+      }, {
+        templateId: "github.issue",
+        providerOrKind: "github",
+        label: "GitHub Issue",
+        description: "Follow one issue without automatic terminal cleanup.",
+        argsSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+          { name: "number", type: "number", required: true, description: "Issue number." },
         ],
       }],
     });
@@ -950,6 +989,44 @@ test("stream schema preview supports builtin remote-backed aliases without persi
         },
       ],
     }]);
+    assert.deepEqual(preview.followSchema, {
+      templates: [{
+        templateId: "github.repo",
+        providerOrKind: "github",
+        label: "GitHub Repository",
+        description: "Follow a repository event stream.",
+        argsSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+        ],
+      }, {
+        templateId: "github.pr",
+        providerOrKind: "github",
+        label: "GitHub Pull Request",
+        description: "Follow one pull request and optionally its CI.",
+        argsSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+          { name: "number", type: "number", required: true, description: "Pull request number." },
+          {
+            name: "withCi",
+            type: "boolean",
+            required: false,
+            description: "Also follow the repository CI stream for that pull request.",
+          },
+        ],
+      }, {
+        templateId: "github.issue",
+        providerOrKind: "github",
+        label: "GitHub Issue",
+        description: "Follow one issue without automatic terminal cleanup.",
+        argsSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+          { name: "number", type: "number", required: true, description: "Issue number." },
+        ],
+      }],
+    });
     assert.equal(store.listSources().length, 0);
   } finally {
     await service.stop();
@@ -1000,6 +1077,15 @@ test("remote_source capability hooks override resolved schema fields and adverti
       argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }]
     }];
   },
+  listFollowTemplates() {
+    return [{
+      templateId: "demo.ticket",
+      providerOrKind: "demo",
+      label: "Demo Ticket",
+      description: "Follow one ticket",
+      argsSchema: [{ name: "id", type: "string", required: true, description: "Ticket id." }]
+    }];
+  },
   deriveTrackedResource() {
     return { ref: "resource:demo" };
   },
@@ -1037,6 +1123,15 @@ test("remote_source capability hooks override resolved schema fields and adverti
         name: "pr",
         description: "Follow one pull request",
         argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+      }],
+    });
+    assert.deepEqual(schema.followSchema, {
+      templates: [{
+        templateId: "demo.ticket",
+        providerOrKind: "demo",
+        label: "Demo Ticket",
+        description: "Follow one ticket",
+        argsSchema: [{ name: "id", type: "string", required: true, description: "Ticket id." }],
       }],
     });
   } finally {
@@ -1271,6 +1366,57 @@ test("github pr shortcut with withCi creates repo and sibling ci subscriptions",
       { mode: "on_terminal" },
       { mode: "on_terminal" },
     ]);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("follow github pr ensures sources and dedupes subscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-follow-pr-thread",
+      tmuxPaneId: "%945-follow",
+    });
+
+    const first = await service.follow({
+      agentId: agent.agent.agentId,
+      providerOrKind: "github",
+      template: "pr",
+      templateArgs: {
+        owner: "holon-run",
+        repo: "agentinbox",
+        number: 93,
+        withCi: true,
+      },
+    });
+
+    assert.equal(first.templateId, "github.pr");
+    assert.deepEqual(first.sources.map((source) => source.created), [true, true]);
+    assert.deepEqual(first.subscriptions.map((subscription) => subscription.created), [true, true]);
+    assert.equal(store.listSources().length, 2);
+    assert.equal(store.listSubscriptions().length, 2);
+
+    const second = await service.follow({
+      agentId: agent.agent.agentId,
+      providerOrKind: "github",
+      template: "pr",
+      templateArgs: {
+        owner: "holon-run",
+        repo: "agentinbox",
+        number: 93,
+        withCi: true,
+      },
+    });
+
+    assert.deepEqual(second.sources.map((source) => source.created), [false, false]);
+    assert.deepEqual(second.subscriptions.map((subscription) => subscription.created), [false, false]);
+    assert.equal(store.listSources().length, 2);
+    assert.equal(store.listSubscriptions().length, 2);
   } finally {
     await service.stop();
     store.close();
