@@ -97,7 +97,10 @@ export const subscriptions = sqliteTable("subscriptions", {
   startOffset: integer("start_offset"),
   startTime: text("start_time"),
   createdAt: text("created_at").notNull(),
-});
+}, (table) => ({
+  trackedResourceRefIdx: index("idx_subscriptions_tracked_resource_ref").on(table.trackedResourceRef),
+  trackedResourceRefSourceIdx: index("idx_subscriptions_tracked_resource_source").on(table.trackedResourceRef, table.sourceId),
+}));
 
 export const subscriptionLifecycleRetirements = sqliteTable("subscription_lifecycle_retirements", {
   subscriptionId: text("subscription_id").primaryKey(),
