@@ -84,6 +84,14 @@ export interface ExpandedSubscriptionInput {
   cleanupPolicy?: CleanupPolicy | null;
 }
 
+export interface ExpandedSubscriptionMember extends ExpandedSubscriptionInput {
+  streamKind?: string | null;
+}
+
+export interface ExpandedSubscriptionPlan {
+  members: ExpandedSubscriptionMember[];
+}
+
 export interface ExpandSubscriptionShortcutInput {
   name: string;
   args?: Record<string, unknown>;
@@ -119,7 +127,7 @@ export interface RemoteSourceModule {
   // Optional capability hooks used by resolved schema and future subscription ergonomics.
   describeCapabilities?(source: SourceStream): RemoteSourceCapabilityDescription;
   listSubscriptionShortcuts?(source: SourceStream): SubscriptionShortcutSpec[];
-  expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | null;
+  expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null;
   deriveTrackedResource?(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null;
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SourceStream): LifecycleSignal | null;
   deriveInlinePreview?(item: ActivationItem, source: SourceStream): string | null;
@@ -327,11 +335,11 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
   listSubscriptionShortcuts(): SubscriptionShortcutSpec[] {
     return githubSubscriptionShortcutSpec();
   },
-  expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | null {
+  expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null {
     return expandGithubSubscriptionShortcut(input);
   },
-  deriveTrackedResource(filter: SubscriptionFilter): { ref: string } | null {
-    return deriveGithubTrackedResource(filter);
+  deriveTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
+    return deriveGithubTrackedResource(filter, source);
   },
   deriveNotificationGrouping(item: ActivationItem): NotificationGrouping | null {
     const number = typeof item.metadata.number === "number" ? item.metadata.number : null;
@@ -381,8 +389,8 @@ const GITHUB_REPO_MODULE: RemoteSourceModule = {
     const count = items.length;
     return `${count} ${grouping.summaryHint}`;
   },
-  projectLifecycleSignal(rawPayload: Record<string, unknown>) {
-    return projectGithubLifecycleSignal(rawPayload);
+  projectLifecycleSignal(rawPayload: Record<string, unknown>, source: SourceStream) {
+    return projectGithubLifecycleSignal(rawPayload, source);
   },
   validateConfig(source: SourceStream): void {
     parseGithubSourceConfig(source);

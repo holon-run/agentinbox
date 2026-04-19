@@ -334,7 +334,12 @@ export function normalizeGithubRepoEvent(
   };
 }
 
-export function deriveGithubTrackedResource(filter: SubscriptionFilter): { ref: string } | null {
+export function canonicalGithubPullRequestRef(source: SourceStream, number: number): string {
+  const config = parseGithubSourceConfig(source);
+  return `repo:${config.owner}/${config.repo}:pr:${number}`;
+}
+
+export function deriveGithubTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
   const metadata = asRecord(filter.metadata);
   const payload = asRecord(filter.payload);
   const number = asNumber(metadata.number) ?? asNumber(payload.number) ?? asNumber(payload.ref);
@@ -342,7 +347,7 @@ export function deriveGithubTrackedResource(filter: SubscriptionFilter): { ref: 
   if (!number || isPullRequest !== true) {
     return null;
   }
-  return { ref: `pr:${number}` };
+  return { ref: canonicalGithubPullRequestRef(source, number) };
 }
 
 export function githubSubscriptionShortcutSpec(): Array<{
@@ -353,17 +358,24 @@ export function githubSubscriptionShortcutSpec(): Array<{
   return [{
     name: "pr",
     description: "Follow one pull request and auto-retire when it closes.",
-    argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+    argsSchema: [
+      { name: "number", type: "number", required: true, description: "Pull request number." },
+      { name: "withCi", type: "boolean", required: false, description: "Also create a sibling ci_runs subscription under the same host and stream key." },
+    ],
   }];
 }
 
 export function expandGithubSubscriptionShortcut(input: {
   name: string;
   args?: Record<string, unknown>;
+  source: SourceStream;
 }): {
-  filter: SubscriptionFilter;
-  trackedResourceRef: string;
-  cleanupPolicy: { mode: "on_terminal" };
+  members: Array<{
+    streamKind?: string | null;
+    filter?: SubscriptionFilter;
+    trackedResourceRef: string;
+    cleanupPolicy: { mode: "on_terminal" };
+  }>;
 } | null {
   if (input.name !== "pr") {
     return null;
@@ -372,19 +384,33 @@ export function expandGithubSubscriptionShortcut(input: {
   if (!number || !Number.isInteger(number) || number <= 0) {
     throw new Error("subscription shortcut pr requires a positive integer number");
   }
+  const trackedResourceRef = canonicalGithubPullRequestRef(input.source, number);
+  const withCi = input.args?.withCi === true;
   return {
-    filter: {
-      metadata: {
-        number,
-        isPullRequest: true,
+    members: [
+      {
+        streamKind: "repo_events",
+        filter: {
+          metadata: {
+            number,
+            isPullRequest: true,
+          },
+        },
+        trackedResourceRef,
+        cleanupPolicy: { mode: "on_terminal" },
       },
-    },
-    trackedResourceRef: `pr:${number}`,
-    cleanupPolicy: { mode: "on_terminal" },
+      ...(withCi
+        ? [{
+            streamKind: "ci_runs",
+            trackedResourceRef,
+            cleanupPolicy: { mode: "on_terminal" as const },
+          }]
+        : []),
+    ],
   };
 }
 
-export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>): {
+export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>, source: SourceStream): {
   ref: string;
   terminal: boolean;
   state: string;
@@ -405,7 +431,7 @@ export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>
   }
   const merged = action === "merged" || asBoolean(rawPayload.merged) === true || asBoolean(pullRequest.merged) === true;
   return {
-    ref: `pr:${number}`,
+    ref: canonicalGithubPullRequestRef(source, number),
     terminal: true,
     state: "closed",
     result: merged ? "merged" : "closed",

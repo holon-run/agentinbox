@@ -1455,13 +1455,16 @@ test("cli subscription add supports generic shortcut invocation", async () => {
     ], env);
     assert.equal(added.status, 0, added.stderr);
     const payload = JSON.parse(added.stdout) as {
-      filter: Record<string, unknown>;
-      trackedResourceRef: string | null;
-      cleanupPolicy: Record<string, unknown>;
+      subscriptions: Array<{
+        filter: Record<string, unknown>;
+        trackedResourceRef: string | null;
+        cleanupPolicy: Record<string, unknown>;
+      }>;
     };
-    assert.deepEqual(payload.filter, { metadata: { ticketId: "A-7" } });
-    assert.equal(payload.trackedResourceRef, "ticket:A-7");
-    assert.deepEqual(payload.cleanupPolicy, { mode: "manual" });
+    assert.equal(payload.subscriptions.length, 1);
+    assert.deepEqual(payload.subscriptions[0]?.filter, { metadata: { ticketId: "A-7" } });
+    assert.equal(payload.subscriptions[0]?.trackedResourceRef, "ticket:A-7");
+    assert.deepEqual(payload.subscriptions[0]?.cleanupPolicy, { mode: "manual" });
 
     const conflicting = runCli([
       "subscription",
@@ -1476,6 +1479,87 @@ test("cli subscription add supports generic shortcut invocation", async () => {
     ], env);
     assert.notEqual(conflicting.status, 0);
     assert.match(conflicting.stderr, /shortcut does not allow filter, trackedResourceRef, or cleanupPolicy flags/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli github pr shortcut with withCi returns created sibling subscriptions", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-github-shortcut-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%933",
+    CODEX_THREAD_ID: "thread-github-shortcut",
+  };
+
+  try {
+    const store = await AgentInboxStore.open(dbPath);
+    store.insertSource({
+      sourceId: "src_cli_github_repo",
+      hostId: "hst_cli_github",
+      streamKind: "repo_events",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      status: "active",
+      checkpoint: null,
+      createdAt: "2026-04-14T00:00:00.000Z",
+      updatedAt: "2026-04-14T00:00:00.000Z",
+    });
+    store.insertSource({
+      sourceId: "src_cli_github_ci",
+      hostId: "hst_cli_github",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      status: "active",
+      checkpoint: null,
+      createdAt: "2026-04-14T00:00:00.000Z",
+      updatedAt: "2026-04-14T00:00:00.000Z",
+    });
+    store.close();
+
+    const added = runCli([
+      "subscription",
+      "add",
+      "src_cli_github_repo",
+      "--shortcut",
+      "pr",
+      "--shortcut-args-json",
+      "{\"number\":93,\"withCi\":true}",
+    ], env);
+    assert.equal(added.status, 0, added.stderr);
+    const payload = JSON.parse(added.stdout) as {
+      subscriptions: Array<{
+        sourceId: string;
+        trackedResourceRef: string | null;
+        cleanupPolicy: Record<string, unknown>;
+      }>;
+    };
+    assert.equal(payload.subscriptions.length, 2);
+    assert.deepEqual(
+      payload.subscriptions.map((subscription) => subscription.sourceId).sort(),
+      ["src_cli_github_ci", "src_cli_github_repo"],
+    );
+    assert.deepEqual(
+      payload.subscriptions.map((subscription) => subscription.trackedResourceRef),
+      ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
+    );
+    assert.deepEqual(payload.subscriptions.map((subscription) => subscription.cleanupPolicy), [
+      { mode: "on_terminal" },
+      { mode: "on_terminal" },
+    ]);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -1565,9 +1649,11 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
         tmuxPaneId: "%950",
       });
       const subscription = await client.request<{
-        filter: Record<string, unknown>;
-        trackedResourceRef: string | null;
-        cleanupPolicy: Record<string, unknown>;
+        subscriptions: Array<{
+          filter: Record<string, unknown>;
+          trackedResourceRef: string | null;
+          cleanupPolicy: Record<string, unknown>;
+        }>;
       }>("/subscriptions", {
         agentId: registered.data.agent.agentId,
         sourceId: source.data.sourceId,
@@ -1577,9 +1663,92 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
         },
       });
       assert.equal(subscription.statusCode, 200);
-      assert.deepEqual(subscription.data.filter, { metadata: { ticketId: "A-9" } });
-      assert.equal(subscription.data.trackedResourceRef, "ticket:A-9");
-      assert.deepEqual(subscription.data.cleanupPolicy, { mode: "manual" });
+      assert.equal(subscription.data.subscriptions.length, 1);
+      assert.deepEqual(subscription.data.subscriptions[0]?.filter, { metadata: { ticketId: "A-9" } });
+      assert.equal(subscription.data.subscriptions[0]?.trackedResourceRef, "ticket:A-9");
+      assert.deepEqual(subscription.data.subscriptions[0]?.cleanupPolicy, { mode: "manual" });
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane github pr shortcut with withCi returns created sibling subscriptions", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-github-shortcut-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const ciSource = await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const registered = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "http-github-shortcut-thread",
+        tmuxPaneId: "%951",
+      });
+      const subscription = await client.request<{
+        subscriptions: Array<{
+          sourceId: string;
+          trackedResourceRef: string | null;
+          cleanupPolicy: Record<string, unknown>;
+        }>;
+      }>("/subscriptions", {
+        agentId: registered.data.agent.agentId,
+        sourceId: repoSource.sourceId,
+        shortcut: {
+          name: "pr",
+          args: { number: 93, withCi: true },
+        },
+      });
+      assert.equal(subscription.statusCode, 200);
+      assert.equal(subscription.data.subscriptions.length, 2);
+      assert.deepEqual(
+        subscription.data.subscriptions.map((created) => created.sourceId).sort(),
+        [ciSource.sourceId, repoSource.sourceId].sort(),
+      );
+      assert.deepEqual(
+        subscription.data.subscriptions.map((created) => created.trackedResourceRef),
+        ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
+      );
+      assert.deepEqual(subscription.data.subscriptions.map((created) => created.cleanupPolicy), [
+        { mode: "on_terminal" },
+        { mode: "on_terminal" },
+      ]);
     } finally {
       await started.close();
     }

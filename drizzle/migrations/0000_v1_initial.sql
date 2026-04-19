@@ -182,7 +182,7 @@ create table if not exists consumer_commits (
 
 create table if not exists subscription_lifecycle_retirements (
   subscription_id text primary key,
-  source_id text not null,
+  host_id text not null,
   tracked_resource_ref text not null,
   retire_at text not null,
   terminal_state text,

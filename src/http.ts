@@ -1159,7 +1159,7 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const body = request.body as Record<string, unknown>;
-    return service.registerSubscription({
+    const input = {
       agentId: String(body.agentId),
       sourceId: String(body.sourceId),
       shortcut: body.shortcut && typeof body.shortcut === "object"
@@ -1176,7 +1176,11 @@ function buildFastifyServer(service: AgentInboxService) {
       startPolicy: optionalString(body.startPolicy) as never,
       startOffset: typeof body.startOffset === "number" ? body.startOffset : undefined,
       startTime: optionalString(body.startTime) ?? undefined,
-    });
+    };
+    if (input.shortcut) {
+      return { subscriptions: await service.registerSubscriptions(input) };
+    }
+    return service.registerSubscription(input);
   });
 
   app.get("/subscriptions/:subscriptionId", {

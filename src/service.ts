@@ -69,7 +69,7 @@ import {
   renderAgentPrompt,
   TerminalDispatcher,
 } from "./terminal";
-import { LifecycleSignal } from "./sources/remote_modules";
+import { ExpandedSubscriptionMember, ExpandedSubscriptionPlan, LifecycleSignal } from "./sources/remote_modules";
 import { ActivationGate, DefaultActivationGate, GatingPolicy } from "./runtime_gate";
 import { Logger, NoopLogger } from "./logging";
 import { resolveSourceRegistration } from "./source_hosts";
@@ -889,6 +889,11 @@ export class AgentInboxService {
   }
 
   async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
+    const subscriptions = await this.registerSubscriptions(input);
+    return subscriptions[0]!;
+  }
+
+  async registerSubscriptions(input: RegisterSubscriptionInput): Promise<Subscription[]> {
     if (input.shortcut) {
       const source = this.store.getSource(input.sourceId);
       if (!source) {
@@ -901,14 +906,58 @@ export class AgentInboxService {
       if (!expanded) {
         throw new Error(`unknown subscription shortcut ${input.shortcut.name} for source ${input.sourceId}`);
       }
-      return this.registerSubscription({
-        ...input,
-        shortcut: undefined,
-        filter: expanded.filter,
-        trackedResourceRef: expanded.trackedResourceRef ?? null,
-        cleanupPolicy: expanded.cleanupPolicy,
-      });
+      return this.registerExpandedShortcutSubscriptions(input, source, expanded);
     }
+    return [await this.registerSingleSubscription(input)];
+  }
+
+  private async registerExpandedShortcutSubscriptions(
+    input: RegisterSubscriptionInput,
+    source: SourceStream,
+    plan: ExpandedSubscriptionPlan,
+  ): Promise<Subscription[]> {
+    if (plan.members.length === 0) {
+      throw new Error(`subscription shortcut ${input.shortcut?.name ?? "unknown"} did not produce any subscriptions`);
+    }
+    const resolvedMembers = plan.members.map((member) => ({
+      source: this.resolveShortcutMemberSource(source, member),
+      member,
+    }));
+    const created: Subscription[] = [];
+    for (const { source: memberSource, member } of resolvedMembers) {
+      created.push(await this.registerSingleSubscription({
+        ...input,
+        sourceId: memberSource.sourceId,
+        shortcut: undefined,
+        filter: member.filter,
+        trackedResourceRef: member.trackedResourceRef ?? null,
+        cleanupPolicy: member.cleanupPolicy ?? null,
+      }));
+    }
+    return created;
+  }
+
+  private resolveShortcutMemberSource(source: SourceStream, member: ExpandedSubscriptionMember): SourceStream {
+    if (!member.streamKind || member.streamKind === source.streamKind) {
+      return source;
+    }
+    if (!source.hostId || !source.streamKey) {
+      throw new Error(`subscription shortcut ${source.sourceId} requires a host-scoped source to resolve ${member.streamKind}`);
+    }
+    const sibling = this.store.listSources().find((candidate) =>
+      candidate.hostId === source.hostId &&
+      candidate.streamKind === member.streamKind &&
+      candidate.streamKey === source.streamKey,
+    );
+    if (!sibling) {
+      throw new Error(
+        `subscription shortcut ${source.sourceId} requires an existing sibling ${member.streamKind} stream under host ${source.hostId} with streamKey ${source.streamKey}`,
+      );
+    }
+    return sibling;
+  }
+
+  private async registerSingleSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
     this.getAgent(input.agentId);
     const source = this.store.getSource(input.sourceId);
     if (!source) {
@@ -1600,7 +1649,7 @@ export class AgentInboxService {
         });
       }
       for (const signal of lifecycleSignals.values()) {
-        this.scheduleLifecycleRetirements(source, subscription, signal);
+        this.scheduleLifecycleRetirements(source, signal);
       }
 
       return {
@@ -1786,35 +1835,40 @@ export class AgentInboxService {
     }
   }
 
-  private scheduleLifecycleRetirements(
-    source: SourceStream,
-    subscription: Subscription,
-    signal: LifecycleSignal,
-  ): void {
+  private scheduleLifecycleRetirements(source: SourceStream, signal: LifecycleSignal): void {
     if (!signal.terminal) {
       return;
     }
-    if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
+    if (!source.hostId) {
       return;
     }
     const signalOccurredAt = signal.occurredAt ?? nowIso();
     const signalOccurredAtMs = Date.parse(signalOccurredAt);
-    const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
-    if (!retireAt) {
-      return;
+    for (const subscription of this.store.listSubscriptions()) {
+      if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
+        continue;
+      }
+      const subscriptionSource = this.store.getSource(subscription.sourceId);
+      if (!subscriptionSource || subscriptionSource.hostId !== source.hostId) {
+        continue;
+      }
+      const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
+      if (!retireAt) {
+        continue;
+      }
+      const now = nowIso();
+      this.store.upsertSubscriptionLifecycleRetirement({
+        subscriptionId: subscription.subscriptionId,
+        hostId: source.hostId,
+        trackedResourceRef: signal.ref,
+        retireAt,
+        terminalState: signal.state ?? null,
+        terminalResult: signal.result ?? null,
+        terminalOccurredAt: signalOccurredAt,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
-    const now = nowIso();
-    this.store.upsertSubscriptionLifecycleRetirement({
-      subscriptionId: subscription.subscriptionId,
-      sourceId: source.sourceId,
-      trackedResourceRef: signal.ref,
-      retireAt,
-      terminalState: signal.state ?? null,
-      terminalResult: signal.result ?? null,
-      terminalOccurredAt: signalOccurredAt,
-      createdAt: now,
-      updatedAt: now,
-    });
   }
 
   private notifyInboxWatchers(agentId: string, items: InboxEntry[]): void {

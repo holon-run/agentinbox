@@ -3,7 +3,13 @@ import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePol
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
-import { ExpandedSubscriptionInput, LifecycleSignal, ManagedSourceSpec, RemoteSourceModuleRegistry } from "./remote_modules";
+import {
+  ExpandedSubscriptionInput,
+  ExpandedSubscriptionPlan,
+  LifecycleSignal,
+  ManagedSourceSpec,
+  RemoteSourceModuleRegistry,
+} from "./remote_modules";
 
 const REMOTE_SOURCE_TYPES = new Set<SourceStream["sourceType"]>([
   "remote_source",
@@ -226,7 +232,7 @@ export class RemoteSourceRuntime {
   async expandSubscriptionShortcut(
     source: SourceStream,
     input: { name: string; args?: Record<string, unknown> },
-  ): Promise<ExpandedSubscriptionInput | null> {
+  ): Promise<ExpandedSubscriptionPlan | null> {
     if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
       return null;
     }
@@ -234,11 +240,12 @@ export class RemoteSourceRuntime {
     if (typeof module.expandSubscriptionShortcut !== "function") {
       return null;
     }
-    return module.expandSubscriptionShortcut({
+    const expanded = module.expandSubscriptionShortcut({
       name: input.name,
       args: input.args,
       source: moduleInputSource(source),
     });
+    return normalizeExpandedSubscriptionPlan(expanded);
   }
 
   async deriveInlinePreview(source: SourceStream, item: ActivationItem): Promise<string | null> {
@@ -426,6 +433,38 @@ export class RemoteSourceRuntime {
       this.inFlight.delete(sourceId);
     }
   }
+}
+
+function normalizeExpandedSubscriptionPlan(
+  value: ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null,
+): ExpandedSubscriptionPlan | null {
+  if (!value) {
+    return null;
+  }
+  if (isExpandedSubscriptionPlan(value)) {
+    return {
+      members: value.members.map((member) => ({
+        streamKind: typeof member.streamKind === "string" ? member.streamKind : null,
+        filter: member.filter,
+        trackedResourceRef: member.trackedResourceRef ?? null,
+        cleanupPolicy: member.cleanupPolicy ?? null,
+      })),
+    };
+  }
+  return {
+    members: [{
+      streamKind: null,
+      filter: value.filter,
+      trackedResourceRef: value.trackedResourceRef ?? null,
+      cleanupPolicy: value.cleanupPolicy ?? null,
+    }],
+  };
+}
+
+function isExpandedSubscriptionPlan(
+  value: ExpandedSubscriptionInput | ExpandedSubscriptionPlan,
+): value is ExpandedSubscriptionPlan {
+  return "members" in value && Array.isArray(value.members);
 }
 
 function moduleInputSource(source: SourceStream): SourceStream {

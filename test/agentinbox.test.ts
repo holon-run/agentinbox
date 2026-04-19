@@ -715,7 +715,15 @@ test("builtin remote-backed source details expose resolved remote identity", asy
       shortcuts: [{
         name: "pr",
         description: "Follow one pull request and auto-retire when it closes.",
-        argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+        argsSchema: [
+          { name: "number", type: "number", required: true, description: "Pull request number." },
+          {
+            name: "withCi",
+            type: "boolean",
+            required: false,
+            description: "Also create a sibling ci_runs subscription under the same host and stream key.",
+          },
+        ],
       }],
     });
   } finally {
@@ -802,7 +810,15 @@ test("stream schema preview supports builtin remote-backed aliases without persi
     assert.deepEqual(preview.subscriptionSchema?.shortcuts, [{
       name: "pr",
       description: "Follow one pull request and auto-retire when it closes.",
-      argsSchema: [{ name: "number", type: "number", required: true, description: "Pull request number." }],
+      argsSchema: [
+        { name: "number", type: "number", required: true, description: "Pull request number." },
+        {
+          name: "withCi",
+          type: "boolean",
+          required: false,
+          description: "Also create a sibling ci_runs subscription under the same host and stream key.",
+        },
+      ],
     }]);
     assert.equal(store.listSources().length, 0);
   } finally {
@@ -1069,6 +1085,88 @@ test("subscription add can expand a remote module shortcut into standard subscri
     assert.equal(subscription.trackedResourceRef, "ticket:A-42");
     assert.deepEqual(subscription.cleanupPolicy, { mode: "manual" });
     assert.equal(subscription.startPolicy, "earliest");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("github pr shortcut with withCi creates repo and sibling ci subscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const ciSource = await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-pr-with-ci-thread",
+      tmuxPaneId: "%945",
+    });
+
+    const subscriptions = await service.registerSubscriptions({
+      agentId: agent.agent.agentId,
+      sourceId: repoSource.sourceId,
+      shortcut: {
+        name: "pr",
+        args: { number: 93, withCi: true },
+      },
+    });
+
+    assert.equal(subscriptions.length, 2);
+    assert.deepEqual(
+      subscriptions.map((subscription) => subscription.sourceId).sort(),
+      [ciSource.sourceId, repoSource.sourceId].sort(),
+    );
+    assert.deepEqual(
+      subscriptions.map((subscription) => subscription.trackedResourceRef),
+      ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
+    );
+    assert.deepEqual(subscriptions.map((subscription) => subscription.cleanupPolicy), [
+      { mode: "on_terminal" },
+      { mode: "on_terminal" },
+    ]);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("github pr shortcut with withCi fails clearly when sibling ci stream is missing", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-pr-with-ci-missing-thread",
+      tmuxPaneId: "%946",
+    });
+
+    await assert.rejects(
+      service.registerSubscriptions({
+        agentId: agent.agent.agentId,
+        sourceId: repoSource.sourceId,
+        shortcut: {
+          name: "pr",
+          args: { number: 93, withCi: true },
+        },
+      }),
+      /requires an existing sibling ci_runs stream/,
+    );
   } finally {
     await service.stop();
     store.close();
@@ -4371,6 +4469,68 @@ test("resumeAgent partially recovers mixed offline targets and reconciles agent 
   }
 });
 
+test("github repo terminal lifecycle fanout retires sibling repo and ci subscriptions by host-scoped trackedResourceRef", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const ciSource = await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const agentA = await registerTmuxAgent(service, "github-fanout-a");
+    const agentB = await registerTmuxAgent(service, "github-fanout-b");
+    const repoSubscription = await service.registerSubscription({
+      agentId: agentA.agentId,
+      sourceId: repoSource.sourceId,
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { metadata: { number: 93, isPullRequest: true } },
+      startPolicy: "earliest",
+    });
+    const ciSubscription = await service.registerSubscription({
+      agentId: agentB.agentId,
+      sourceId: ciSource.sourceId,
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: {},
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: repoSource.sourceId,
+      sourceNativeId: "evt-github-terminal-1",
+      eventVariant: "PullRequestEvent.closed",
+      metadata: { number: 93, isPullRequest: true },
+      rawPayload: {
+        type: "PullRequestEvent",
+        action: "closed",
+        pull_request: { number: 93, merged: true },
+      },
+      occurredAt: "2026-04-19T00:00:00.000Z",
+    });
+
+    await service.pollSubscription(repoSubscription.subscriptionId);
+
+    const repoRetirement = store.getSubscriptionLifecycleRetirement(repoSubscription.subscriptionId);
+    const ciRetirement = store.getSubscriptionLifecycleRetirement(ciSubscription.subscriptionId);
+    assert.ok(repoRetirement);
+    assert.ok(ciRetirement);
+    assert.equal(repoRetirement?.hostId, repoSource.hostId);
+    assert.equal(ciRetirement?.hostId, repoSource.hostId);
+    assert.equal(repoRetirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:93");
+    assert.equal(ciRetirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:93");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("gc does not retire subscriptions before they consume a terminal event", async () => {
   const { store, service, dir } = await makeService();
   try {
@@ -4446,7 +4606,7 @@ test("gc does not retire subscriptions before they consume a terminal event", as
   }
 });
 
-test("gc does not retire sibling subscriptions sharing a trackedResourceRef before they consume the terminal event", async () => {
+test("gc retires sibling subscriptions sharing a host-scoped trackedResourceRef from one terminal signal", async () => {
   const { store, service, dir } = await makeService();
   try {
     const moduleDir = path.join(dir, "source-modules");
@@ -4514,19 +4674,55 @@ test("gc does not retire sibling subscriptions sharing a trackedResourceRef befo
 
     await service.pollSubscription(subscriptionA.subscriptionId);
     assert.ok(store.getSubscriptionLifecycleRetirement(subscriptionA.subscriptionId));
-    assert.equal(store.getSubscriptionLifecycleRetirement(subscriptionB.subscriptionId), null);
-
-    const firstGc = service.gc();
-    assert.equal(firstGc.removedSubscriptions, 1);
-    assert.equal(store.getSubscription(subscriptionA.subscriptionId), null);
-    assert.ok(store.getSubscription(subscriptionB.subscriptionId));
-
-    await service.pollSubscription(subscriptionB.subscriptionId);
     assert.ok(store.getSubscriptionLifecycleRetirement(subscriptionB.subscriptionId));
 
-    const secondGc = service.gc();
-    assert.equal(secondGc.removedSubscriptions, 1);
+    const firstGc = service.gc();
+    assert.equal(firstGc.removedSubscriptions, 2);
+    assert.equal(store.getSubscription(subscriptionA.subscriptionId), null);
     assert.equal(store.getSubscription(subscriptionB.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription remove does not cascade across sibling subscriptions sharing a host-scoped trackedResourceRef", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const ciSource = await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const agent = await registerTmuxAgent(service, "github-remove-local");
+    const repoSubscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: repoSource.sourceId,
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: { metadata: { number: 93, isPullRequest: true } },
+      startPolicy: "earliest",
+    });
+    const ciSubscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: ciSource.sourceId,
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      filter: {},
+      startPolicy: "earliest",
+    });
+
+    const removed = await service.removeSubscription(repoSubscription.subscriptionId);
+
+    assert.equal(removed.removed, true);
+    assert.equal(store.getSubscription(repoSubscription.subscriptionId), null);
+    assert.ok(store.getSubscription(ciSubscription.subscriptionId));
   } finally {
     await service.stop();
     store.close();

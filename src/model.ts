@@ -102,7 +102,7 @@ export interface Subscription {
 
 export interface SubscriptionLifecycleRetirement {
   subscriptionId: string;
-  sourceId: string;
+  hostId: string;
   trackedResourceRef: string;
   retireAt: string;
   terminalState?: string | null;
