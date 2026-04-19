@@ -675,7 +675,7 @@ export class AgentInboxService {
   }
 
   registerTimer(input: RegisterTimerInput): AgentTimer {
-    this.getAgent(input.agentId);
+    this.assertAgentNotifyCapable(input.agentId, "timer add");
     const normalized = normalizeTimerInput(input);
     const timezone = normalized.timezone ?? detectHostTimezone();
     assertValidTimeZone(timezone);
@@ -992,7 +992,7 @@ export class AgentInboxService {
   }
 
   private async registerSingleSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
-    this.getAgent(input.agentId);
+    this.assertAgentNotifyCapable(input.agentId, "subscription add");
     const source = this.store.getSource(input.sourceId);
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
@@ -1912,6 +1912,22 @@ export class AgentInboxService {
     for (const watcher of watchers) {
       watcher.onItems(items);
     }
+  }
+
+  private assertAgentNotifyCapable(agentId: string, operation: "subscription add" | "timer add"): void {
+    this.getAgent(agentId);
+    const targets = this.store.listActivationTargetsForAgent(agentId);
+    const activeTargetCount = targets.filter((target) => target.status === "active").length;
+    if (activeTargetCount > 0) {
+      return;
+    }
+    const offlineTargetCount = targets.filter((target) => target.status === "offline").length;
+    const targetSummary = targets.length === 0
+      ? "it has no activation targets"
+      : `all ${offlineTargetCount} activation target(s) are offline`;
+    throw new Error(
+      `agent ${agentId} is not notify-capable: ${targetSummary}; refusing ${operation} to avoid a silent notification black hole. Rebind with \`agentinbox agent register --force-rebind --agent-id ${agentId}\` or resume/add a target first.`,
+    );
   }
 
   private resolveAutoAgentId(input: {

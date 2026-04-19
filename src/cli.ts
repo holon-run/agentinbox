@@ -981,7 +981,7 @@ async function printCurrentAgent(client: AgentInboxClient): Promise<void> {
   const records = await listAgentsWithTargets(client);
   const current = resolveCurrentAgent(records, context);
   if (!current) {
-    throw new Error("no current agent is registered for this terminal/runtime context; run `agentinbox agent register`");
+    throw new Error(noCurrentAgentMessage());
   }
   console.log(jsonResponse(current));
 }
@@ -1027,7 +1027,7 @@ async function selectAgentForCommand(
   }
 
   if (!options.autoRegister) {
-    throw new Error("no current agent is registered for this terminal/runtime context; run `agentinbox agent register`");
+    throw new Error(noCurrentAgentMessage());
   }
 
   await requestRemote(client, "/agents", {
@@ -1079,6 +1079,10 @@ async function requestRemote<T = unknown>(
     throw new Error(jsonResponse(response.data));
   }
   return { data: response.data };
+}
+
+function noCurrentAgentMessage(): string {
+  return "no current agent is registered for this terminal/runtime context; run `agentinbox agent list` to inspect offline agents, then `agentinbox agent register` or `agentinbox agent register --force-rebind --agent-id <agentId>` to rebind one";
 }
 
 function takeFlagValue(args: string[], flag: string): string | undefined {

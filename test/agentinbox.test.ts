@@ -2791,6 +2791,130 @@ test("direct inbox text messages fail cleanly if the inbox item cannot be persis
   }
 });
 
+test("registerSubscription rejects offline agents with no active activation targets", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "notify-sub-offline");
+    const agent = service.getAgent(alpha.agentId);
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(alpha.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "runtime gate: runtime_gone",
+      updatedAt: offlineAt,
+    });
+    store.updateAgent(alpha.agentId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      runtimeKind: agent.runtimeKind,
+      runtimeSessionId: agent.runtimeSessionId,
+      updatedAt: offlineAt,
+      lastSeenAt: offlineAt,
+    });
+
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "notify-sub-offline",
+      config: {},
+    });
+
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: alpha.agentId,
+        sourceId: source.sourceId,
+        startPolicy: "earliest",
+      }),
+      /not notify-capable: all 1 activation target\(s\) are offline; refusing subscription add to avoid a silent notification black hole/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registerTimer rejects offline agents with no active activation targets", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "notify-timer-offline");
+    const agent = service.getAgent(alpha.agentId);
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(alpha.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "runtime gate: runtime_gone",
+      updatedAt: offlineAt,
+    });
+    store.updateAgent(alpha.agentId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      runtimeKind: agent.runtimeKind,
+      runtimeSessionId: agent.runtimeSessionId,
+      updatedAt: offlineAt,
+      lastSeenAt: offlineAt,
+    });
+
+    assert.throws(
+      () => service.registerTimer({
+        agentId: alpha.agentId,
+        every: 60_000,
+        message: "Check the queue",
+      }),
+      /not notify-capable: all 1 activation target\(s\) are offline; refusing timer add to avoid a silent notification black hole/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registerSubscription and registerTimer allow agents with another active target", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "notify-fallback");
+    service.addWebhookActivationTarget(alpha.agentId, {
+      url: "http://127.0.0.1:9999/notify-fallback",
+      activationMode: "activation_with_items",
+    });
+    const offlineAt = "2026-04-01T00:00:00.000Z";
+    store.updateActivationTargetRuntime(alpha.targetId, {
+      status: "offline",
+      offlineSince: offlineAt,
+      consecutiveFailures: 1,
+      lastError: "runtime gate: runtime_gone",
+      updatedAt: offlineAt,
+    });
+
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "notify-fallback",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: alpha.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      every: 60_000,
+      message: "Check the queue",
+    });
+
+    assert.ok(subscription.subscriptionId);
+    assert.equal(subscription.agentId, alpha.agentId);
+    assert.ok(timer.scheduleId);
+    assert.equal(timer.agentId, alpha.agentId);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("at timers fire once into the inbox and then pause", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const { store, service, dir } = await makeService({

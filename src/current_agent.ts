@@ -36,6 +36,9 @@ export interface CurrentAgentMatch {
   matchesCurrentTerminal: boolean;
   matchesCurrentRuntime: boolean;
   terminalIdentity: string | null;
+  notifyCapable: boolean;
+  activeTargetCount: number;
+  offlineTargetCount: number;
 }
 
 export interface AnnotatedAgent extends Agent {
@@ -44,6 +47,9 @@ export interface AnnotatedAgent extends Agent {
   matchesCurrentRuntime: boolean;
   terminalIdentity: string | null;
   isCurrent: boolean;
+  notifyCapable: boolean;
+  activeTargetCount: number;
+  offlineTargetCount: number;
 }
 
 export function summarizeActivationTarget(target: ActivationTarget): ActivationTargetSummary {
@@ -88,6 +94,9 @@ export function resolveCurrentAgent(
     matchesCurrentTerminal: matchesCurrentTerminal(agent, context),
     matchesCurrentRuntime: matchesCurrentRuntime(agent, context),
     terminalIdentity: terminalIdentityForAgent(agent),
+    notifyCapable: notifyCapableForAgent(agent),
+    activeTargetCount: activeActivationTargetCount(agent),
+    offlineTargetCount: offlineActivationTargetCount(agent),
   };
 }
 
@@ -105,6 +114,9 @@ export function annotateAgents(
       matchesCurrentRuntime: context ? matchesCurrentRuntime(entry, context) : false,
       terminalIdentity: terminalIdentityForAgent(entry),
       isCurrent: current?.agentId === entry.agent.agentId,
+      notifyCapable: notifyCapableForAgent(entry),
+      activeTargetCount: activeActivationTargetCount(entry),
+      offlineTargetCount: offlineActivationTargetCount(entry),
     })),
   };
 }
@@ -115,7 +127,7 @@ function resolveAgentRecord(
 ): AgentWithTargets | null {
   if (context.tmuxPaneId) {
     const match = agents.find((agent) =>
-      activeTerminalTargets(agent).some((target) => target.backend === "tmux" && target.tmuxPaneId === context.tmuxPaneId),
+      terminalTargetsForCurrentMatch(agent).some((target) => target.backend === "tmux" && target.tmuxPaneId === context.tmuxPaneId),
     );
     if (match) {
       return match;
@@ -124,7 +136,7 @@ function resolveAgentRecord(
 
   if (context.itermSessionId) {
     const match = agents.find((agent) =>
-      activeTerminalTargets(agent).some((target) => target.backend === "iterm2" && target.itermSessionId === context.itermSessionId),
+      terminalTargetsForCurrentMatch(agent).some((target) => target.backend === "iterm2" && target.itermSessionId === context.itermSessionId),
     );
     if (match) {
       return match;
@@ -133,7 +145,7 @@ function resolveAgentRecord(
 
   if (context.tty) {
     const match = agents.find((agent) =>
-      activeTerminalTargets(agent).some((target) => target.tty === context.tty),
+      terminalTargetsForCurrentMatch(agent).some((target) => target.tty === context.tty),
     );
     if (match) {
       return match;
@@ -159,10 +171,26 @@ function terminalTargets(agent: AgentWithTargets): TerminalTargetSummary[] {
 }
 
 function activeTerminalTargets(agent: AgentWithTargets): TerminalTargetSummary[] {
+  return terminalTargets(agent).filter((target) => target.status === "active");
+}
+
+function terminalTargetsForCurrentMatch(agent: AgentWithTargets): TerminalTargetSummary[] {
   if (agent.agent.status !== "active") {
     return [];
   }
-  return terminalTargets(agent).filter((target) => target.status === "active");
+  return activeTerminalTargets(agent);
+}
+
+function activeActivationTargetCount(agent: AgentWithTargets): number {
+  return agent.activationTargets.filter((target) => target.status === "active").length;
+}
+
+function offlineActivationTargetCount(agent: AgentWithTargets): number {
+  return agent.activationTargets.filter((target) => target.status === "offline").length;
+}
+
+function notifyCapableForAgent(agent: AgentWithTargets): boolean {
+  return agent.agent.status === "active" && activeActivationTargetCount(agent) > 0;
 }
 
 function terminalIdentityForAgent(agent: AgentWithTargets): string | null {
@@ -183,7 +211,7 @@ function terminalIdentityForAgent(agent: AgentWithTargets): string | null {
 }
 
 function matchesCurrentTerminal(agent: AgentWithTargets, context: DetectedTerminalContext): boolean {
-  return activeTerminalTargets(agent).some((target) =>
+  return terminalTargetsForCurrentMatch(agent).some((target) =>
     (context.tmuxPaneId != null && target.tmuxPaneId === context.tmuxPaneId)
     || (context.itermSessionId != null && target.itermSessionId === context.itermSessionId)
     || (context.tty != null && target.tty === context.tty),
