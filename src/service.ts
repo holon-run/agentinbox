@@ -2139,6 +2139,11 @@ export class AgentInboxService {
     buffer.inFlight = true;
     const entries = buffer.pending.splice(0, buffer.pending.length);
     try {
+      if (!this.activationTargetExists(buffer.agentId, buffer.targetId)) {
+        this.notificationBuffers.delete(key);
+        buffer.inFlight = false;
+        return;
+      }
       const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
       const shouldAttemptDispatch = !state || (state.status === "dirty" && state.leaseExpiresAt == null);
       if (shouldAttemptDispatch) {
@@ -2282,7 +2287,11 @@ export class AgentInboxService {
       return;
     }
 
-    const target = this.getActivationTarget(targetId);
+    const target = this.getActivationTargetIfExists(agentId, targetId);
+    if (!target) {
+      this.store.deleteActivationDispatchState(agentId, targetId);
+      return;
+    }
     const inbox = this.ensureInboxForAgent(agentId);
     const unacked = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }).length;
     if (unacked === 0) {
@@ -2362,7 +2371,10 @@ export class AgentInboxService {
     sourceIds: string[];
     entries: InboxEntry[];
   }): Promise<ActivationDispatchOutcome> {
-    const target = this.getActivationTarget(input.targetId);
+    const target = this.getActivationTargetIfExists(input.agentId, input.targetId);
+    if (!target) {
+      return "offline";
+    }
     if (target.status === "offline") {
       return "offline";
     }
@@ -2403,6 +2415,9 @@ export class AgentInboxService {
     try {
       if (target.kind === "terminal") {
         const gate = await this.activationGate.evaluate(target);
+        if (!this.activationTargetExists(input.agentId, input.targetId)) {
+          return "offline";
+        }
         this.logger.debug("activation.gate_decision", {
           agentId: input.agentId,
           targetId: target.targetId,
@@ -2429,6 +2444,9 @@ export class AgentInboxService {
           input.summary,
           input.entries,
         );
+        if (!this.activationTargetExists(input.agentId, input.targetId)) {
+          return "offline";
+        }
         const prompt = reminder.prompt;
         const promptFingerprint = reminder.fingerprint;
         terminalPrompt = prompt;
@@ -2514,6 +2532,9 @@ export class AgentInboxService {
           subscriptionIds: input.subscriptionIds,
         });
         await this.terminalDispatcher.dispatch(target, prompt);
+        if (!this.activationTargetExists(input.agentId, input.targetId)) {
+          return "offline";
+        }
         this.logger.debug("activation.terminal_dispatch_succeeded", {
           agentId: input.agentId,
           targetId: target.targetId,
@@ -2541,6 +2562,9 @@ export class AgentInboxService {
           deliveredAt: null,
         };
         await this.activationDispatcher.dispatch(target.url, activation);
+        if (!this.activationTargetExists(input.agentId, input.targetId)) {
+          return "offline";
+        }
         this.store.insertActivation(activation);
       }
 
@@ -2576,8 +2600,14 @@ export class AgentInboxService {
         error,
         message,
       });
+      if (!this.activationTargetExists(input.agentId, input.targetId)) {
+        return "offline";
+      }
       if (target.kind === "terminal") {
         const exists = await this.terminalDispatcher.probe(target);
+        if (!this.activationTargetExists(input.agentId, input.targetId)) {
+          return "offline";
+        }
         this.logger.debug("activation.terminal_probe_after_failure", {
           agentId: input.agentId,
           targetId: target.targetId,
@@ -2598,6 +2628,21 @@ export class AgentInboxService {
       this.markActivationTargetDispatchFailure(target.targetId, message);
       return "retryable_failure";
     }
+  }
+
+  private getActivationTargetIfExists(agentId: string, targetId: string): ActivationTarget | null {
+    if (!this.store.getAgent(agentId)) {
+      return null;
+    }
+    const target = this.store.getActivationTarget(targetId);
+    if (!target || target.agentId !== agentId) {
+      return null;
+    }
+    return target;
+  }
+
+  private activationTargetExists(agentId: string, targetId: string): boolean {
+    return this.getActivationTargetIfExists(agentId, targetId) != null;
   }
 
   private upsertDirtyDispatchState(

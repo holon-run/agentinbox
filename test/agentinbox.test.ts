@@ -79,6 +79,32 @@ class MutableActivationGate implements ActivationGate {
   }
 }
 
+class BlockingActivationGate implements ActivationGate {
+  private startedResolver: (() => void) | null = null;
+  private releaseResolver: ((result: { outcome: "inject" | "defer" | "offline"; reason: string }) => void) | null = null;
+  private readonly started = new Promise<void>((resolve) => {
+    this.startedResolver = resolve;
+  });
+  private readonly release = new Promise<{ outcome: "inject" | "defer" | "offline"; reason: string }>((resolve) => {
+    this.releaseResolver = resolve;
+  });
+
+  async waitUntilStarted(): Promise<void> {
+    await this.started;
+  }
+
+  unblock(outcome: "inject" | "defer" | "offline", reason = "test"): void {
+    this.releaseResolver?.({ outcome, reason });
+    this.releaseResolver = null;
+  }
+
+  async evaluate(_target: TerminalActivationTarget): Promise<{ outcome: "inject" | "defer" | "offline"; reason: string }> {
+    this.startedResolver?.();
+    this.startedResolver = null;
+    return this.release;
+  }
+}
+
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
     namespace: string;
@@ -2864,6 +2890,42 @@ test("agent removal and offline GC delete agent timers", async () => {
     });
     service.gc();
     assert.equal(store.getTimer(secondTimer.scheduleId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent removal does not let an in-flight activation recreate dispatch state", async () => {
+  const activationGate = new BlockingActivationGate();
+  const { store, service, dir } = await makeService({
+    activationGate,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const agent = await registerTmuxAgent(service, "remove-race");
+
+    await service.addDirectInboxTextMessage(agent.agentId, {
+      message: "Clean up after this activation starts",
+    }, {
+      ...process.env,
+      TMUX_PANE: "%remove-race",
+      CODEX_THREAD_ID: "thread-remove-race",
+      ITERM_SESSION_ID: "",
+      TERM_SESSION_ID: "",
+      TERM_PROGRAM: "",
+    });
+    await activationGate.waitUntilStarted();
+
+    service.removeAgent(agent.agentId);
+    activationGate.unblock("defer", "terminal_busy");
+    await sleep(30);
+
+    assert.equal(store.getAgent(agent.agentId), null);
+    assert.equal(store.getActivationTarget(agent.targetId), null);
+    assert.deepEqual(store.listActivationDispatchStates(), []);
   } finally {
     await service.stop();
     store.close();
