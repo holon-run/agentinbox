@@ -371,7 +371,7 @@ test("github_repo pull request subscriptions retire through the generic lifecycl
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
-      trackedResourceRef: "pr:72",
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:72",
       cleanupPolicy: { mode: "on_terminal" },
       filter: { metadata: { number: 72, isPullRequest: true } },
       startPolicy: "earliest",
@@ -404,7 +404,7 @@ test("github_repo pull request subscriptions retire through the generic lifecycl
     assert.equal(items[0]?.eventVariant, "PullRequestEvent.closed");
     assert.equal(items[0]?.metadata?.number, 72);
     assert.ok(retirement);
-    assert.equal(retirement?.trackedResourceRef, "pr:72");
+    assert.equal(retirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:72");
     assert.equal(retirement?.terminalState, "closed");
     assert.equal(retirement?.terminalResult, "merged");
 
