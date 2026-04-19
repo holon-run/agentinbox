@@ -28,7 +28,7 @@ interface AgentSelection {
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  const args = stripNoopJsonFlag(process.argv.slice(2));
   const normalized = normalizeHelpArgs(args);
   const command = normalized[0];
 
@@ -1138,6 +1138,10 @@ function normalizeHelpArgs(args: string[]): string[] {
     return ["help"];
   }
   return [args[1], "--help"];
+}
+
+function stripNoopJsonFlag(args: string[]): string[] {
+  return args.filter((arg) => arg !== "--json");
 }
 
 function hasHelpFlag(args: string[]): boolean {

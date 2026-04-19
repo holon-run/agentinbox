@@ -129,6 +129,47 @@ test("cli version and help subcommands print text output", () => {
   assert.match(helpSource.stdout, /agentinbox source schema <sourceId>/);
 });
 
+test("cli accepts --json as a no-op compatibility flag on default JSON commands", () => {
+  const repoDir = path.resolve(__dirname, "..");
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-json-compat-home-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+  };
+
+  try {
+    const status = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "status", "--json"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 25_000,
+    });
+    assert.equal(status.status, 0, status.stderr);
+    const parsedStatus = JSON.parse(status.stdout) as { counts?: { agents?: number } };
+    assert.equal(typeof parsedStatus.counts?.agents, "number");
+
+    const sources = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "source", "list", "--json"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 25_000,
+    });
+    assert.equal(sources.status, 0, sources.stderr);
+    const parsedSources = JSON.parse(sources.stdout) as { sources?: unknown[] };
+    assert.ok(Array.isArray(parsedSources.sources));
+
+    const stopped = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "stop"], {
+      cwd: repoDir,
+      env,
+      encoding: "utf8",
+      timeout: 25_000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
   const config = resolveServeConfig({
