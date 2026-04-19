@@ -11,6 +11,12 @@ import {
 } from "../model";
 
 export const GITHUB_ENDPOINT = "https://api.github.com";
+const GITHUB_EVENT_HYDRATION_PER_PAGE = 1;
+const GITHUB_EVENT_HYDRATION_MAX_PAGES = 25;
+const HYDRATABLE_GITHUB_REPO_EVENT_TYPES = new Set([
+  "PullRequestReviewEvent",
+  "PullRequestReviewCommentEvent",
+]);
 export const DEFAULT_GITHUB_EVENT_TYPES = [
   "IssuesEvent",
   "IssueCommentEvent",
@@ -268,7 +274,7 @@ export function normalizeGithubRepoEvent(
   if (!eventType || !(config.eventTypes ?? DEFAULT_GITHUB_EVENT_TYPES).includes(eventType)) {
     return null;
   }
-  const eventId = asString(event.id);
+  const eventId = asIdString(event.id);
   if (!eventId) {
     return null;
   }
@@ -281,20 +287,18 @@ export function normalizeGithubRepoEvent(
   const review = asRecord(payload.review);
   const comment = asRecord(payload.comment);
   const action = asString(payload.action) ?? "observed";
-
-  const number = asNumber(issue.number) ?? asNumber(pullRequest.number);
+  const url = extractGithubRepoEventUrl(event, issue, pullRequest, review, comment);
+  const number =
+    asNumber(issue.number)
+    ?? asNumber(pullRequest.number)
+    ?? asNumber(payload.number)
+    ?? extractGithubNumberFromUrl(url);
   const isPullRequest = eventType.startsWith("PullRequest");
   const title = asString(issue.title) ?? asString(pullRequest.title) ?? null;
   const reviewState = asString(review.state) ?? null;
   const body = asString(comment.body) ?? asString(review.body) ?? asString(issue.body) ?? asString(pullRequest.body) ?? null;
   const labels = extractLabels(issue.labels);
   const mentions = extractMentions(title, body);
-  const url =
-    asString(comment.html_url) ??
-    asString(review.html_url) ??
-    asString(issue.html_url) ??
-    asString(pullRequest.html_url) ??
-    asString(event.url);
   const deliveryHandle = buildGithubDeliveryHandle(config, eventType, number, comment);
 
   return {
@@ -332,6 +336,48 @@ export function normalizeGithubRepoEvent(
     },
     deliveryHandle,
   };
+}
+
+export async function hydrateGithubRepoEventIfNeeded(
+  config: GithubSourceConfig,
+  raw: Record<string, unknown>,
+  client: GithubCallClient = new UxcDaemonClient({ env: process.env }),
+): Promise<Record<string, unknown>> {
+  if (!shouldHydrateGithubRepoEvent(raw)) {
+    return raw;
+  }
+
+  const eventId = asIdString(raw.id);
+  if (!eventId) {
+    return raw;
+  }
+
+  for (let page = 1; page <= GITHUB_EVENT_HYDRATION_MAX_PAGES; page += 1) {
+    const response = await client.call({
+      endpoint: GITHUB_ENDPOINT,
+      operation: "get:/repos/{owner}/{repo}/events",
+      payload: {
+        owner: config.owner,
+        repo: config.repo,
+        per_page: GITHUB_EVENT_HYDRATION_PER_PAGE,
+        page,
+      },
+      options: { auth: config.uxcAuth },
+    });
+    const candidates = Array.isArray(response.data) ? response.data : [];
+    if (candidates.length === 0) {
+      break;
+    }
+    for (const candidateValue of candidates) {
+      const candidate = asRecord(candidateValue);
+      if (asIdString(candidate.id) !== eventId) {
+        continue;
+      }
+      return hasGithubRepoEventMetadata(candidate) ? candidate : raw;
+    }
+  }
+
+  return raw;
 }
 
 export function canonicalGithubPullRequestRef(source: SourceStream, number: number): string {
@@ -518,6 +564,74 @@ function extractMentions(...values: Array<string | null>): string[] {
   return Array.from(seen.values()).sort();
 }
 
+function extractGithubRepoEventUrl(
+  event: Record<string, unknown>,
+  issue: Record<string, unknown>,
+  pullRequest: Record<string, unknown>,
+  review: Record<string, unknown>,
+  comment: Record<string, unknown>,
+): string | null {
+  return (
+    asString(comment.html_url)
+    ?? asString(review.html_url)
+    ?? asString(issue.html_url)
+    ?? asString(pullRequest.html_url)
+    ?? asString(comment.pull_request_url)
+    ?? asString(review.pull_request_url)
+    ?? asString(event.url)
+  );
+}
+
+function extractGithubNumberFromUrl(url: string | null): number | null {
+  if (!url) {
+    return null;
+  }
+  const match = url.match(/\/(?:pull|pulls|issues)\/(\d+)(?:$|[/?#])/);
+  return match ? Number(match[1]) : null;
+}
+
+function shouldHydrateGithubRepoEvent(raw: Record<string, unknown>): boolean {
+  const eventType = asString(raw.type);
+  if (!eventType || !HYDRATABLE_GITHUB_REPO_EVENT_TYPES.has(eventType)) {
+    return false;
+  }
+  const payload = asRecord(raw.payload);
+  const issue = asRecord(payload.issue);
+  const pullRequest = asRecord(payload.pull_request);
+  const review = asRecord(payload.review);
+  const comment = asRecord(payload.comment);
+  const url = extractGithubRepoEventUrl(raw, issue, pullRequest, review, comment);
+  const number =
+    asNumber(issue.number)
+    ?? asNumber(pullRequest.number)
+    ?? asNumber(payload.number)
+    ?? extractGithubNumberFromUrl(url);
+  if (number) {
+    return false;
+  }
+  return [pullRequest, review, comment].some(isUxcPreviewTruncatedObject);
+}
+
+function hasGithubRepoEventMetadata(raw: Record<string, unknown>): boolean {
+  const payload = asRecord(raw.payload);
+  const issue = asRecord(payload.issue);
+  const pullRequest = asRecord(payload.pull_request);
+  const review = asRecord(payload.review);
+  const comment = asRecord(payload.comment);
+  return Boolean(
+    asNumber(issue.number)
+    ?? asNumber(pullRequest.number)
+    ?? asNumber(payload.number)
+    ?? extractGithubNumberFromUrl(extractGithubRepoEventUrl(raw, issue, pullRequest, review, comment))
+    ?? asString(review.state)
+    ?? extractGithubRepoEventUrl(raw, issue, pullRequest, review, comment),
+  );
+}
+
+function isUxcPreviewTruncatedObject(value: Record<string, unknown>): boolean {
+  return value._uxc_preview_truncated === true;
+}
+
 function parseTargetRef(targetRef: string): { owner: string; repo: string; number: number } {
   const match = targetRef.match(/^([^/]+)\/([^#]+)#(\d+)$/);
   if (!match) {
@@ -587,6 +701,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function asIdString(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
 }
 
 function asNumber(value: unknown): number | null {
