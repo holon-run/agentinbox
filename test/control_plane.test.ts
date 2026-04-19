@@ -130,7 +130,6 @@ test("cli version and help subcommands print text output", () => {
 });
 
 test("cli accepts --json as a no-op compatibility flag on default JSON commands", () => {
-  const repoDir = path.resolve(__dirname, "..");
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-json-compat-home-"));
   const env = {
     ...process.env,
@@ -138,34 +137,22 @@ test("cli accepts --json as a no-op compatibility flag on default JSON commands"
   };
 
   try {
-    const status = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "status", "--json"], {
-      cwd: repoDir,
-      env,
-      encoding: "utf8",
-      timeout: 25_000,
-    });
+    const status = runCli(["status", "--json"], env);
     assert.equal(status.status, 0, status.stderr);
     const parsedStatus = JSON.parse(status.stdout) as { counts?: { agents?: number } };
     assert.equal(typeof parsedStatus.counts?.agents, "number");
 
-    const sources = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "source", "list", "--json"], {
-      cwd: repoDir,
-      env,
-      encoding: "utf8",
-      timeout: 25_000,
-    });
-    assert.equal(sources.status, 0, sources.stderr);
-    const parsedSources = JSON.parse(sources.stdout) as { sources?: unknown[] };
-    assert.ok(Array.isArray(parsedSources.sources));
+    const registered = runCli(["agent", "register"], env);
+    assert.equal(registered.status, 0, registered.stderr);
+    const agent = JSON.parse(registered.stdout) as { agent: { agentId: string } };
 
-    const stopped = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "daemon", "stop"], {
-      cwd: repoDir,
-      env,
-      encoding: "utf8",
-      timeout: 25_000,
-    });
-    assert.equal(stopped.status, 0, stopped.stderr);
+    const read = runCli(["inbox", "read", "--agent-id", agent.agent.agentId, "--json"], env);
+    assert.equal(read.status, 0, read.stderr);
+    const parsedRead = JSON.parse(read.stdout) as { entries?: unknown[] };
+    assert.ok(Array.isArray(parsedRead.entries));
   } finally {
+    const stopped = runCli(["daemon", "stop"], env);
+    assert.equal(stopped.status, 0, stopped.stderr);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });

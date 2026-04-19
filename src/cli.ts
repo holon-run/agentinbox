@@ -28,8 +28,11 @@ interface AgentSelection {
 }
 
 async function main(): Promise<void> {
-  const args = stripNoopJsonFlag(process.argv.slice(2));
-  const normalized = normalizeHelpArgs(args);
+  const rawArgs = process.argv.slice(2);
+  const detectedArgs = normalizeHelpArgs(rawArgs);
+  const normalized = shouldTreatJsonFlagAsNoop(detectedArgs)
+    ? stripNoopJsonFlag(detectedArgs)
+    : detectedArgs;
   const command = normalized[0];
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
@@ -868,7 +871,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error(`unknown command: ${args.join(" ")}`);
+  throw new Error(`unknown command: ${normalized.join(" ")}`);
 }
 
 async function runServe(args: string[]): Promise<void> {
@@ -1142,6 +1145,24 @@ function normalizeHelpArgs(args: string[]): string[] {
 
 function stripNoopJsonFlag(args: string[]): string[] {
   return args.filter((arg) => arg !== "--json");
+}
+
+function shouldTreatJsonFlagAsNoop(args: string[]): boolean {
+  if (!args.includes("--json")) {
+    return false;
+  }
+  const command = args[0];
+  if (!command) {
+    return false;
+  }
+  if (args.includes("--help") || args.includes("-h")) {
+    return false;
+  }
+  return command !== "help" &&
+    command !== "version" &&
+    command !== "--version" &&
+    command !== "-v" &&
+    command !== "serve";
 }
 
 function hasHelpFlag(args: string[]): boolean {
