@@ -12,14 +12,21 @@ import {
   projectGithubLifecycleSignal,
   type GithubCallClient,
 } from "../src/sources/github";
+import { createGithubRepoRemoteModule } from "../src/sources/remote_modules";
 import { DeliveryAttempt, SourceStream, SubscriptionFilter } from "../src/model";
 
 class FakeUxcClient implements GithubCallClient {
   public calls: Array<Record<string, unknown>> = [];
+  public responses: Array<{ data: unknown }> = [];
+  public errors: Error[] = [];
 
   async call(args: Record<string, unknown>) {
     this.calls.push(args);
-    return { data: { ok: true } };
+    const error = this.errors.shift();
+    if (error) {
+      throw error;
+    }
+    return this.responses.shift() ?? { data: { ok: true } };
   }
 }
 
@@ -115,6 +122,162 @@ test("normalizeGithubRepoEvent includes PullRequestReviewEvent by default", asyn
   });
   assert.equal(normalized.deliveryHandle?.surface, "issue_comment");
   assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#67");
+});
+
+test("normalizeGithubRepoEvent derives pull request numbers from review URLs", async () => {
+  const source: SourceStream = {
+    sourceId: "src_review_url",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const normalized = normalizeGithubRepoEvent(source, { owner: "holon-run", repo: "agentinbox" }, {
+    id: "201",
+    type: "PullRequestReviewEvent",
+    created_at: "2026-04-19T10:41:34Z",
+    actor: { login: "Copilot" },
+    repo: { name: "holon-run/agentinbox" },
+    payload: {
+      action: "created",
+      review: {
+        state: "commented",
+        html_url: "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1",
+      },
+      pull_request: {},
+    },
+  });
+
+  assert.ok(normalized);
+  assert.equal(normalized.metadata?.number, 67);
+  assert.equal(normalized.metadata?.url, "https://github.com/holon-run/agentinbox/pull/67#pullrequestreview-1");
+  assert.equal(normalized.deliveryHandle?.targetRef, "holon-run/agentinbox#67");
+});
+
+test("github_repo remote module hydrates truncated review events before mapping", async () => {
+  const source: SourceStream = {
+    sourceId: "src_review_hydrate",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const fake = new FakeUxcClient();
+  fake.responses.push({
+    data: [{
+      id: "8568075837",
+      type: "PullRequestReviewEvent",
+      created_at: "2026-04-19T09:37:09Z",
+      actor: { login: "jolestar" },
+      repo: { name: "holon-run/agentinbox" },
+      payload: {
+        action: "created",
+        review: {
+          state: "approved",
+          body: "ship it",
+          html_url: "https://github.com/holon-run/agentinbox/pull/252#pullrequestreview-9",
+        },
+        pull_request: {
+          number: 252,
+          title: "feat: hydrate truncated review events",
+          html_url: "https://github.com/holon-run/agentinbox/pull/252",
+        },
+      },
+    }],
+  });
+  const module = createGithubRepoRemoteModule({ callClient: fake });
+
+  const mapped = await module.mapRawEvent({
+    id: "8568075837",
+    type: "PullRequestReviewEvent",
+    created_at: "2026-04-19T09:37:09Z",
+    actor: { login: "jolestar" },
+    repo: { name: "holon-run/agentinbox" },
+    payload: {
+      action: "created",
+      issue: {},
+      pull_request: {
+        _uxc_preview_truncated: true,
+        _uxc_type: "object",
+      },
+      review: {
+        _uxc_preview_truncated: true,
+        _uxc_type: "object",
+      },
+      comment: {},
+    },
+  }, source);
+
+  assert.ok(mapped);
+  assert.equal(mapped.metadata.number, 252);
+  assert.equal(mapped.metadata.reviewState, "approved");
+  assert.equal(mapped.metadata.url, "https://github.com/holon-run/agentinbox/pull/252#pullrequestreview-9");
+  assert.equal(mapped.deliveryHandle?.targetRef, "holon-run/agentinbox#252");
+  assert.equal(fake.calls.length, 1);
+  assert.deepEqual(fake.calls[0], {
+    endpoint: "https://api.github.com",
+    operation: "get:/repos/{owner}/{repo}/events",
+    payload: {
+      owner: "holon-run",
+      repo: "agentinbox",
+      per_page: 10,
+      page: 1,
+    },
+    options: { auth: "github-default" },
+  });
+});
+
+test("github_repo remote module falls back to raw truncated review events when hydration fails", async () => {
+  const source: SourceStream = {
+    sourceId: "src_review_hydrate_error",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const fake = new FakeUxcClient();
+  fake.errors.push(new Error("transient github failure"));
+  const module = createGithubRepoRemoteModule({ callClient: fake });
+
+  const mapped = await module.mapRawEvent({
+    id: "8568075838",
+    type: "PullRequestReviewEvent",
+    created_at: "2026-04-19T09:37:10Z",
+    actor: { login: "jolestar" },
+    repo: { name: "holon-run/agentinbox" },
+    payload: {
+      action: "created",
+      issue: {},
+      pull_request: {
+        _uxc_preview_truncated: true,
+        _uxc_type: "object",
+      },
+      review: {
+        _uxc_preview_truncated: true,
+        _uxc_type: "object",
+      },
+      comment: {},
+    },
+  }, source);
+
+  assert.ok(mapped);
+  assert.equal(mapped.metadata.number, null);
+  assert.equal(mapped.metadata.reviewState, null);
+  assert.equal(mapped.metadata.url, null);
+  assert.equal(mapped.deliveryHandle, null);
+  assert.equal(fake.calls.length, 1);
 });
 
 test("normalizeGithubRepoEvent preserves pull request merged state for lifecycle hooks", async () => {

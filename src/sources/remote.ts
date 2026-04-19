@@ -366,7 +366,7 @@ export class RemoteSourceRuntime {
         if (Object.keys(rawPayload).length === 0) {
           continue;
         }
-        const mapped = module.mapRawEvent(rawPayload, moduleSource);
+        const mapped = await module.mapRawEvent(rawPayload, moduleSource);
         if (!mapped) {
           continue;
         }

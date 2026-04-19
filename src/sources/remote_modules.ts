@@ -18,8 +18,10 @@ import {
   deriveGithubTrackedResource,
   expandGithubSubscriptionShortcut,
   GITHUB_ENDPOINT,
+  GithubCallClient,
   githubDeliveryOperationsForHandle,
   githubSubscriptionShortcutSpec,
+  hydrateGithubRepoEventIfNeeded,
   invokeGithubDeliveryOperation,
   normalizeGithubRepoEvent,
   parseGithubSourceConfig,
@@ -123,7 +125,10 @@ export interface RemoteSourceModule {
   id: string;
   validateConfig(source: SourceStream): void;
   buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec;
-  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null;
+  mapRawEvent(
+    rawPayload: Record<string, unknown>,
+    source: SourceStream,
+  ): MappedRemoteEvent | null | Promise<MappedRemoteEvent | null>;
   // Optional capability hooks used by resolved schema and future subscription ergonomics.
   describeCapabilities?(source: SourceStream): RemoteSourceCapabilityDescription;
   listSubscriptionShortcuts?(source: SourceStream): SubscriptionShortcutSpec[];
@@ -271,169 +276,174 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-const GITHUB_REPO_MODULE: RemoteSourceModule = {
-  id: "builtin.github_repo",
-  listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
-    return githubDeliveryOperationsForHandle(input.handle);
-  },
-  async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
-    return invokeGithubDeliveryOperation(input.handle, input.operation, input.input);
-  },
-  describeCapabilities(source: SourceStream): RemoteSourceCapabilityDescription {
-    const config = parseGithubSourceConfig(source);
-    return {
-      sourceKind: "github_repo",
-      aliases: ["github_repo"],
-      configSchema: [
-        { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
-        { name: "repo", type: "string", required: true, description: "GitHub repository name." },
-        { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
-        { name: "eventTypes", type: "string[]", required: false, description: "Optional GitHub event type allowlist." },
-        { name: "perPage", type: "number", required: false, description: `Repository events requested per poll. Default ${config.perPage ?? 10}.` },
-        { name: "pollIntervalSecs", type: "number", required: false, description: `Polling interval in seconds. Default ${config.pollIntervalSecs ?? 30}.` },
-      ],
-      metadataFields: [
-        { name: "eventType", type: "string", description: "GitHub event type such as IssueCommentEvent." },
-        { name: "action", type: "string", description: "GitHub event action suffix such as created." },
-        { name: "author", type: "string|null", description: "Actor login for the event." },
-        { name: "isPullRequest", type: "boolean", description: "Whether the event targets a pull request surface." },
-        { name: "reviewState", type: "string|null", description: "Review decision state for PullRequestReviewEvent such as approved or changes_requested." },
-        { name: "labels", type: "string[]", description: "Labels extracted from the issue or pull request." },
-        { name: "mentions", type: "string[]", description: "Mention handles extracted from title/body/comment text." },
-        { name: "number", type: "number|null", description: "Issue or pull request number when present." },
-        { name: "repoFullName", type: "string", description: "Repository full name in owner/repo form." },
-        { name: "title", type: "string|null", description: "Issue, pull request, or comment title." },
-        { name: "body", type: "string|null", description: "Issue, pull request, or comment body text." },
-        { name: "url", type: "string|null", description: "Primary GitHub HTML URL for the event target." },
-      ],
-      payloadExamples: [
-        {
-          id: "1234567891",
-          type: "PullRequestReviewEvent",
-          action: "created",
-          actor: "Copilot",
-          pull_request: { number: 67, title: "feat: add remote module capability hooks" },
-          review: { state: "commented", body: "review summary" },
-        },
-        {
-          id: "1234567892",
-          type: "PullRequestEvent",
-          action: "closed",
-          actor: "jolestar",
-          pull_request: { number: 72, title: "feat: add cleanup policy lifecycle engine", merged: true },
-        },
-      ],
-      eventVariantExamples: [
-        "IssueCommentEvent.created",
-        "PullRequestEvent.opened",
-        "PullRequestEvent.closed",
-        "PullRequestReviewEvent.created",
-        "PullRequestReviewCommentEvent.created",
-      ],
-    };
-  },
-  listSubscriptionShortcuts(): SubscriptionShortcutSpec[] {
-    return githubSubscriptionShortcutSpec();
-  },
-  expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null {
-    return expandGithubSubscriptionShortcut(input);
-  },
-  deriveTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
-    return deriveGithubTrackedResource(filter, source);
-  },
-  deriveNotificationGrouping(item: ActivationItem): NotificationGrouping | null {
-    const number = typeof item.metadata.number === "number" ? item.metadata.number : null;
-    if (!number) {
+export function createGithubRepoRemoteModule(options?: { callClient?: GithubCallClient }): RemoteSourceModule {
+  return {
+    id: "builtin.github_repo",
+    listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
+      return githubDeliveryOperationsForHandle(input.handle);
+    },
+    async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+      return invokeGithubDeliveryOperation(input.handle, input.operation, input.input);
+    },
+    describeCapabilities(source: SourceStream): RemoteSourceCapabilityDescription {
+      const config = parseGithubSourceConfig(source);
+      return {
+        sourceKind: "github_repo",
+        aliases: ["github_repo"],
+        configSchema: [
+          { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
+          { name: "repo", type: "string", required: true, description: "GitHub repository name." },
+          { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
+          { name: "eventTypes", type: "string[]", required: false, description: "Optional GitHub event type allowlist." },
+          { name: "perPage", type: "number", required: false, description: `Repository events requested per poll. Default ${config.perPage ?? 10}.` },
+          { name: "pollIntervalSecs", type: "number", required: false, description: `Polling interval in seconds. Default ${config.pollIntervalSecs ?? 30}.` },
+        ],
+        metadataFields: [
+          { name: "eventType", type: "string", description: "GitHub event type such as IssueCommentEvent." },
+          { name: "action", type: "string", description: "GitHub event action suffix such as created." },
+          { name: "author", type: "string|null", description: "Actor login for the event." },
+          { name: "isPullRequest", type: "boolean", description: "Whether the event targets a pull request surface." },
+          { name: "reviewState", type: "string|null", description: "Review decision state for PullRequestReviewEvent such as approved or changes_requested." },
+          { name: "labels", type: "string[]", description: "Labels extracted from the issue or pull request." },
+          { name: "mentions", type: "string[]", description: "Mention handles extracted from title/body/comment text." },
+          { name: "number", type: "number|null", description: "Issue or pull request number when present." },
+          { name: "repoFullName", type: "string", description: "Repository full name in owner/repo form." },
+          { name: "title", type: "string|null", description: "Issue, pull request, or comment title." },
+          { name: "body", type: "string|null", description: "Issue, pull request, or comment body text." },
+          { name: "url", type: "string|null", description: "Primary GitHub HTML URL for the event target." },
+        ],
+        payloadExamples: [
+          {
+            id: "1234567891",
+            type: "PullRequestReviewEvent",
+            action: "created",
+            actor: "Copilot",
+            pull_request: { number: 67, title: "feat: add remote module capability hooks" },
+            review: { state: "commented", body: "review summary" },
+          },
+          {
+            id: "1234567892",
+            type: "PullRequestEvent",
+            action: "closed",
+            actor: "jolestar",
+            pull_request: { number: 72, title: "feat: add cleanup policy lifecycle engine", merged: true },
+          },
+        ],
+        eventVariantExamples: [
+          "IssueCommentEvent.created",
+          "PullRequestEvent.opened",
+          "PullRequestEvent.closed",
+          "PullRequestReviewEvent.created",
+          "PullRequestReviewCommentEvent.created",
+        ],
+      };
+    },
+    listSubscriptionShortcuts(): SubscriptionShortcutSpec[] {
+      return githubSubscriptionShortcutSpec();
+    },
+    expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null {
+      return expandGithubSubscriptionShortcut(input);
+    },
+    deriveTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
+      return deriveGithubTrackedResource(filter, source);
+    },
+    deriveNotificationGrouping(item: ActivationItem): NotificationGrouping | null {
+      const number = typeof item.metadata.number === "number" ? item.metadata.number : null;
+      if (!number) {
+        return null;
+      }
+      const variant = item.eventVariant;
+      if (variant.startsWith("PullRequestReviewCommentEvent.")) {
+        return {
+          groupable: true,
+          resourceRef: `pr:${number}`,
+          eventFamily: "review_comments",
+          summaryHint: `review comments on PR #${number}`,
+        };
+      }
+      if (variant.startsWith("PullRequestReviewEvent.")) {
+        return {
+          groupable: true,
+          resourceRef: `pr:${number}`,
+          eventFamily: "reviews",
+          summaryHint: `reviews on PR #${number}`,
+        };
+      }
+      if (variant.startsWith("IssueCommentEvent.")) {
+        return {
+          groupable: true,
+          resourceRef: item.metadata.isPullRequest === true ? `pr:${number}` : `issue:${number}`,
+          eventFamily: "comments",
+          summaryHint: item.metadata.isPullRequest === true ? `comments on PR #${number}` : `comments on issue #${number}`,
+        };
+      }
+      if (variant.startsWith("PullRequestEvent.closed")) {
+        return {
+          groupable: true,
+          resourceRef: `pr:${number}`,
+          eventFamily: "lifecycle",
+          summaryHint: `PR #${number} lifecycle updates`,
+          flushClass: "immediate",
+        };
+      }
       return null;
-    }
-    const variant = item.eventVariant;
-    if (variant.startsWith("PullRequestReviewCommentEvent.")) {
+    },
+    summarizeDigestThread(items: ActivationItem[], _source: SourceStream, grouping: NotificationGrouping): string | null {
+      if (!grouping.summaryHint || items.length === 0) {
+        return null;
+      }
+      const count = items.length;
+      return `${count} ${grouping.summaryHint}`;
+    },
+    projectLifecycleSignal(rawPayload: Record<string, unknown>, source: SourceStream) {
+      return projectGithubLifecycleSignal(rawPayload, source);
+    },
+    validateConfig(source: SourceStream): void {
+      parseGithubSourceConfig(source);
+    },
+    buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
+      const config = parseGithubSourceConfig(source);
       return {
-        groupable: true,
-        resourceRef: `pr:${number}`,
-        eventFamily: "review_comments",
-        summaryHint: `review comments on PR #${number}`,
-      };
-    }
-    if (variant.startsWith("PullRequestReviewEvent.")) {
-      return {
-        groupable: true,
-        resourceRef: `pr:${number}`,
-        eventFamily: "reviews",
-        summaryHint: `reviews on PR #${number}`,
-      };
-    }
-    if (variant.startsWith("IssueCommentEvent.")) {
-      return {
-        groupable: true,
-        resourceRef: item.metadata.isPullRequest === true ? `pr:${number}` : `issue:${number}`,
-        eventFamily: "comments",
-        summaryHint: item.metadata.isPullRequest === true ? `comments on PR #${number}` : `comments on issue #${number}`,
-      };
-    }
-    if (variant.startsWith("PullRequestEvent.closed")) {
-      return {
-        groupable: true,
-        resourceRef: `pr:${number}`,
-        eventFamily: "lifecycle",
-        summaryHint: `PR #${number} lifecycle updates`,
-        flushClass: "immediate",
-      };
-    }
-    return null;
-  },
-  summarizeDigestThread(items: ActivationItem[], _source: SourceStream, grouping: NotificationGrouping): string | null {
-    if (!grouping.summaryHint || items.length === 0) {
-      return null;
-    }
-    const count = items.length;
-    return `${count} ${grouping.summaryHint}`;
-  },
-  projectLifecycleSignal(rawPayload: Record<string, unknown>, source: SourceStream) {
-    return projectGithubLifecycleSignal(rawPayload, source);
-  },
-  validateConfig(source: SourceStream): void {
-    parseGithubSourceConfig(source);
-  },
-  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
-    const config = parseGithubSourceConfig(source);
-    return {
-      endpoint: GITHUB_ENDPOINT,
-      operation_id: "get:/repos/{owner}/{repo}/events",
-      args: {
-        owner: config.owner,
-        repo: config.repo,
-        per_page: config.perPage ?? 10,
-      },
-      mode: "poll",
-      poll_config: {
-        interval_secs: config.pollIntervalSecs ?? 30,
-        extract_items_pointer: "",
-        checkpoint_strategy: {
-          type: "item_key",
-          item_key_pointer: "/id",
-          seen_window: 1024,
+        endpoint: GITHUB_ENDPOINT,
+        operation_id: "get:/repos/{owner}/{repo}/events",
+        args: {
+          owner: config.owner,
+          repo: config.repo,
+          per_page: config.perPage ?? 10,
         },
-      },
-      options: { auth: config.uxcAuth },
-    };
-  },
-  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
-    const config = parseGithubSourceConfig(source);
-    const normalized = normalizeGithubRepoEvent(source, config, rawPayload);
-    if (!normalized) {
-      return null;
-    }
-    return {
-      sourceNativeId: normalized.sourceNativeId,
-      eventVariant: normalized.eventVariant,
-      metadata: normalized.metadata ?? {},
-      rawPayload: normalized.rawPayload ?? rawPayload,
-      occurredAt: normalized.occurredAt,
-      deliveryHandle: normalized.deliveryHandle,
-    };
-  },
-};
+        mode: "poll",
+        poll_config: {
+          interval_secs: config.pollIntervalSecs ?? 30,
+          extract_items_pointer: "",
+          checkpoint_strategy: {
+            type: "item_key",
+            item_key_pointer: "/id",
+            seen_window: 1024,
+          },
+        },
+        options: { auth: config.uxcAuth },
+      };
+    },
+    async mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): Promise<MappedRemoteEvent | null> {
+      const config = parseGithubSourceConfig(source);
+      const hydratedPayload = await hydrateGithubRepoEventIfNeeded(config, rawPayload, options?.callClient);
+      const normalized = normalizeGithubRepoEvent(source, config, hydratedPayload);
+      if (!normalized) {
+        return null;
+      }
+      return {
+        sourceNativeId: normalized.sourceNativeId,
+        eventVariant: normalized.eventVariant,
+        metadata: normalized.metadata ?? {},
+        rawPayload: normalized.rawPayload ?? hydratedPayload,
+        occurredAt: normalized.occurredAt,
+        deliveryHandle: normalized.deliveryHandle,
+      };
+    },
+  };
+}
+
+const GITHUB_REPO_MODULE: RemoteSourceModule = createGithubRepoRemoteModule();
 
 const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
   id: "builtin.github_repo_ci",
