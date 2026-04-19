@@ -129,6 +129,34 @@ test("cli version and help subcommands print text output", () => {
   assert.match(helpSource.stdout, /agentinbox source schema <sourceId>/);
 });
 
+test("cli accepts --json as a no-op compatibility flag on default JSON commands", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-json-compat-home-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+  };
+
+  try {
+    const status = runCli(["status", "--json"], env);
+    assert.equal(status.status, 0, status.stderr);
+    const parsedStatus = JSON.parse(status.stdout) as { counts?: { agents?: number } };
+    assert.equal(typeof parsedStatus.counts?.agents, "number");
+
+    const registered = runCli(["agent", "register"], env);
+    assert.equal(registered.status, 0, registered.stderr);
+    const agent = JSON.parse(registered.stdout) as { agent: { agentId: string } };
+
+    const read = runCli(["inbox", "read", "--agent-id", agent.agent.agentId, "--json"], env);
+    assert.equal(read.status, 0, read.stderr);
+    const parsedRead = JSON.parse(read.stdout) as { entries?: unknown[] };
+    assert.ok(Array.isArray(parsedRead.entries));
+  } finally {
+    const stopped = runCli(["daemon", "stop"], env);
+    assert.equal(stopped.status, 0, stopped.stderr);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
   const config = resolveServeConfig({
