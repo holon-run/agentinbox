@@ -12,6 +12,29 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0-beta.1] - 2026-04-19
+
+### Added
+
+- Added GitHub PR shortcut expansion support for `--withCi`, so one shortcut can
+  create both the repo subscription and its sibling CI subscription with shared
+  tracked-resource lifecycle semantics.
+
+### Changed
+
+- Tightened `/subscriptions` list responses to return the explicit envelope shape
+  used by the v1 control plane, and moved tracked-resource retirement fanout
+  lookup behind store-side queries and indexes instead of full subscription
+  scans.
+
+### Fixed
+
+- Accepted `--json` as a no-op compatibility flag for default JSON-returning CLI
+  commands, reducing friction for existing agent/tool integrations.
+- Seeded deterministic terminal context in the CLI JSON compatibility test so
+  GitHub Actions no longer fails that case when no ambient terminal session can
+  be detected.
+
 ## [1.0.0-beta.0] - 2026-04-18
 
 ### Added

@@ -66,7 +66,7 @@ manually or relying on the agent runtime to expose its own notification API.
 
 ## v1.0.0 Beta Upgrade Notes
 
-`v1.0.0-beta.0` is the first release on the final v1 storage and API boundary.
+`v1.0.0-beta.0` was the first release on the final v1 storage and API boundary.
 
 - pre-v1 local databases are archived and replaced with a fresh v1 database
 - old local state is not imported into the new v1 database
