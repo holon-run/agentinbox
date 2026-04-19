@@ -775,6 +775,7 @@ test("remote_source registration succeeds", async () => {
         hostType: string;
         sourceKind: string;
         implementationId: string;
+        followSchema?: unknown;
         subscriptionSchema: {
           supportsTrackedResourceRef: boolean;
           supportsLifecycleSignals: boolean;
@@ -796,6 +797,7 @@ test("remote_source registration succeeds", async () => {
       supportsLifecycleSignals: false,
       shortcuts: [],
     });
+    assert.equal("followSchema" in details.schema, false);
   } finally {
     await service.stop();
     store.close();
@@ -1417,6 +1419,45 @@ test("follow github pr ensures sources and dedupes subscriptions", async () => {
     assert.deepEqual(second.subscriptions.map((subscription) => subscription.created), [false, false]);
     assert.equal(store.listSources().length, 2);
     assert.equal(store.listSubscriptions().length, 2);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registerSubscription rejects invalid start policy requirements", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "start-policy-validation",
+      config: {},
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "start-policy-validation-thread",
+      tmuxPaneId: "%945-start-policy",
+    });
+
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agent.agentId,
+        sourceId: source.sourceId,
+        startPolicy: "at_time",
+      } as never),
+      /subscriptions requires valid ISO8601 startTime when startPolicy=at_time/,
+    );
+
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agent.agentId,
+        sourceId: source.sourceId,
+        startPolicy: "at_offset",
+      } as never),
+      /subscriptions requires positive integer startOffset when startPolicy=at_offset/,
+    );
   } finally {
     await service.stop();
     store.close();

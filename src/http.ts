@@ -29,6 +29,11 @@ const errorResponseSchema = {
   },
 } as const;
 
+const subscriptionStartPolicySchema = {
+  type: "string",
+  enum: ["latest", "earliest", "at_offset", "at_time"],
+} as const;
+
 const subscriptionCollectionSchema = {
   type: "object",
   required: ["subscriptions"],
@@ -505,7 +510,7 @@ function buildFastifyServer(service: AgentInboxService) {
           templateArgs: jsonObjectSchema,
           configRef: { anyOf: [{ type: "string" }, { type: "null" }] },
           config: jsonObjectSchema,
-          startPolicy: { type: "string" },
+          startPolicy: subscriptionStartPolicySchema,
           startOffset: { type: "integer" },
           startTime: { type: "string" },
         },
@@ -1193,7 +1198,7 @@ function buildFastifyServer(service: AgentInboxService) {
           filter: jsonObjectSchema,
           trackedResourceRef: { type: "string" },
           cleanupPolicy: jsonObjectSchema,
-          startPolicy: { type: "string" },
+          startPolicy: subscriptionStartPolicySchema,
           startOffset: { type: "integer" },
           startTime: { type: "string" },
         },
@@ -1319,7 +1324,7 @@ function buildFastifyServer(service: AgentInboxService) {
         additionalProperties: false,
         required: ["startPolicy"],
         properties: {
-          startPolicy: { type: "string", minLength: 1 },
+          startPolicy: subscriptionStartPolicySchema,
           startOffset: { type: "integer" },
           startTime: { type: "string" },
         },

@@ -83,7 +83,7 @@ export async function resolveSourceSchema(
             : [],
           followTemplates: typeof module?.listFollowTemplates === "function"
             ? module.listFollowTemplates(moduleInputSource(source))
-            : [],
+            : undefined,
         }
       : undefined,
   );
@@ -129,7 +129,7 @@ export function withResolvedIdentity(
         shortcuts: capabilityMetadata.shortcuts ?? [],
       },
     } : {}),
-    ...(capabilityMetadata?.followTemplates
+    ...(capabilityMetadata?.followTemplates && capabilityMetadata.followTemplates.length > 0
       ? {
           followSchema: {
             templates: capabilityMetadata.followTemplates,

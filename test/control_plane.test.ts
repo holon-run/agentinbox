@@ -2023,6 +2023,55 @@ test("control plane follow ensures sources and dedupes subscriptions", async () 
   }
 });
 
+test("control plane follow rejects invalid startPolicy at schema validation time", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-follow-sp-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const registered = service.registerAgent({
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "http-follow-start-policy-thread",
+        tmuxPaneId: "%http-follow-start-policy",
+      });
+      const response = await client.request<{ error?: string }>("/follow", {
+        agentId: registered.agent.agentId,
+        providerOrKind: "github",
+        template: "pr",
+        startPolicy: "bogus",
+        templateArgs: {
+          owner: "holon-run",
+          repo: "agentinbox",
+          number: 93,
+        },
+      }, "POST");
+      assert.equal(response.statusCode, 400);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("control plane stream schema preview returns 400 for invalid preview inputs", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-schema-preview-error-"));
   const socketPath = path.join(os.tmpdir(), `aix-preview-${process.pid}-${Date.now()}.sock`);

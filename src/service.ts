@@ -1202,13 +1202,18 @@ export class AgentInboxService {
     startTime: string | null;
   }> {
     await validateSubscriptionFilter(input.filter ?? {});
+    const start = normalizeSubscriptionStartPosition({
+      startPolicy: input.startPolicy ?? "latest",
+      startOffset: input.startOffset ?? null,
+      startTime: input.startTime ?? null,
+    });
     return {
       filter: input.filter ?? {},
       trackedResourceRef: normalizeTrackedResourceRef(input.trackedResourceRef),
       cleanupPolicy: normalizeCleanupPolicy(input.cleanupPolicy ?? null),
-      startPolicy: input.startPolicy ?? "latest",
-      startOffset: input.startOffset ?? null,
-      startTime: input.startTime ?? null,
+      startPolicy: start.startPolicy,
+      startOffset: start.startOffset,
+      startTime: start.startTime,
     };
   }
 
@@ -1272,18 +1277,16 @@ export class AgentInboxService {
     startTime?: string | null;
   }): Promise<Record<string, unknown>> {
     this.getSubscription(input.subscriptionId);
-    if (!SUBSCRIPTION_START_POLICIES.has(input.startPolicy)) {
-      throw new Error(`unsupported start policy: ${input.startPolicy}`);
-    }
+    const normalizedStart = normalizeSubscriptionStartPosition(input);
     const consumer = await this.backend.getConsumer({ subscriptionId: input.subscriptionId });
     if (!consumer) {
       throw new Error(`unknown consumer for subscription: ${input.subscriptionId}`);
     }
     const reset = await this.backend.reset({
       consumerId: consumer.consumerId,
-      startPolicy: input.startPolicy,
-      startOffset: input.startOffset ?? null,
-      startTime: input.startTime ?? null,
+      startPolicy: normalizedStart.startPolicy,
+      startOffset: normalizedStart.startOffset,
+      startTime: normalizedStart.startTime,
     });
     return {
       subscription: this.getSubscription(input.subscriptionId),
@@ -3467,6 +3470,47 @@ function normalizeTrackedResourceRef(value: string | null | undefined): string |
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSubscriptionStartPosition(input: {
+  startPolicy: Subscription["startPolicy"];
+  startOffset?: number | null;
+  startTime?: string | null;
+}): {
+  startPolicy: Subscription["startPolicy"];
+  startOffset: number | null;
+  startTime: string | null;
+} {
+  if (!SUBSCRIPTION_START_POLICIES.has(input.startPolicy)) {
+    throw new Error(`unsupported start policy: ${input.startPolicy}`);
+  }
+  const startOffset = input.startOffset ?? null;
+  const startTime = input.startTime ?? null;
+  if (input.startPolicy === "at_offset") {
+    if (startOffset == null || !Number.isInteger(startOffset) || startOffset < 1) {
+      throw new Error("subscriptions requires positive integer startOffset when startPolicy=at_offset");
+    }
+    return {
+      startPolicy: input.startPolicy,
+      startOffset,
+      startTime: null,
+    };
+  }
+  if (input.startPolicy === "at_time") {
+    if (!startTime || !isValidIsoTimestamp(startTime)) {
+      throw new Error("subscriptions requires valid ISO8601 startTime when startPolicy=at_time");
+    }
+    return {
+      startPolicy: input.startPolicy,
+      startOffset: null,
+      startTime: canonicalIsoTimestamp(startTime),
+    };
+  }
+  return {
+    startPolicy: input.startPolicy,
+    startOffset: null,
+    startTime: null,
+  };
 }
 
 function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
