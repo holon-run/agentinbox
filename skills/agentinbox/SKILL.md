@@ -107,9 +107,12 @@ session.
 
 Typical cases:
 
-- delayed follow-up that should happen after you stop actively looking at the terminal
-- waiting for PR review, CI completion, issue replies, or other external events
-- anything that must survive session boundaries instead of living only in chat memory
+- delayed follow-up that should happen after you stop actively looking at the
+  terminal
+- waiting for PR review, CI completion, issue replies, or other external
+  events
+- anything that must survive session boundaries instead of living only in chat
+  memory
 - reminders that should fire at a specific time or on a recurring schedule
 
 For this kind of work, treat AgentInbox as the durable tracking layer and use a
@@ -117,9 +120,12 @@ consistent lifecycle:
 
 1. register the current terminal session and keep the returned `agentId`
 2. reuse broad shared sources when they already exist
-3. add narrow task-scoped subscriptions or timers for the specific PR, issue, branch, or workflow you care about
-4. read inbox items in bounded batches, process them, and ack only the batch you actually reviewed
-5. clean up task-scoped subscriptions or timers after merge, closure, abandonment, or any other terminal state
+3. add narrow task-scoped subscriptions or timers for the specific PR, issue,
+   branch, or workflow you care about
+4. read inbox items in bounded batches, process them, and ack only the batch
+   you actually reviewed
+5. clean up task-scoped subscriptions or timers after merge, closure,
+   abandonment, or any other terminal state
 
 For PR and review workflows, prefer one shared repo source and one shared repo-
 CI source, then add PR-scoped subscriptions on top:
@@ -138,26 +144,35 @@ That flow should be read as:
 
 - register once per live terminal/runtime session
 - prefer shortcut-driven PR subscriptions when the source exposes them
-- let review comments, review decisions, PR state changes, and CI updates arrive through the inbox
-- after the PR is merged, closed, or abandoned, verify that task-scoped subscriptions are gone and remove any leftovers
+- let review comments, review decisions, PR state changes, and CI updates
+  arrive through the inbox
+- after the PR is merged, closed, or abandoned, verify that task-scoped
+  subscriptions are gone and remove any leftovers
 
 Cleanup expectations:
 
 - subscriptions are task assets by default, not permanent infrastructure
-- if a task-specific subscription is no longer serving an active task, remove it
-- if polling-backed GitHub setup starts to accumulate, inspect old subscriptions before creating more
-- auto-retiring cleanup policies reduce cleanup debt, but they do not remove the need to verify the task is fully cleaned up
+- if a task-specific subscription is no longer serving an active task, remove
+  it
+- if polling-backed GitHub setup starts to accumulate, inspect old
+  subscriptions before creating more
+- auto-retiring cleanup policies reduce cleanup debt, but they do not remove
+  the need to verify the task is fully cleaned up
 
 Ack discipline:
 
-- prefer `agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>` after reading a reviewed batch
-- avoid `ack --all` unless you explicitly verified that every current item should be cleared
-- do not ack speculative future work just because the current terminal message was seen
+- prefer `agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>`
+  after reading a reviewed batch
+- avoid `ack --all` unless you explicitly verified that every current item
+  should be cleared
+- do not ack speculative future work just because the current terminal message
+  was seen
 
 Timer intent:
 
 - use `agentinbox timer add` when the trigger is time-based rather than source-based
-- prefer timers over inventing fake local events for reminders like "check CI in 30 minutes" or "revisit this PR tomorrow morning"
+- prefer timers over inventing fake local events for reminders like "check CI
+  in 30 minutes" or "revisit this PR tomorrow morning"
 
 ## Core Commands
 
