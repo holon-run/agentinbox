@@ -81,6 +81,9 @@ export async function resolveSourceSchema(
           shortcuts: typeof module?.listSubscriptionShortcuts === "function"
             ? module.listSubscriptionShortcuts(moduleInputSource(source))
             : [],
+          followTemplates: typeof module?.listFollowTemplates === "function"
+            ? module.listFollowTemplates(moduleInputSource(source))
+            : undefined,
         }
       : undefined,
   );
@@ -96,6 +99,13 @@ export function withResolvedIdentity(
     supportsLifecycleSignals?: boolean;
     shortcuts?: Array<{
       name: string;
+      description: string;
+      argsSchema?: SourceSchema["configFields"];
+    }>;
+    followTemplates?: Array<{
+      templateId: string;
+      providerOrKind: string;
+      label: string;
       description: string;
       argsSchema?: SourceSchema["configFields"];
     }>;
@@ -119,6 +129,13 @@ export function withResolvedIdentity(
         shortcuts: capabilityMetadata.shortcuts ?? [],
       },
     } : {}),
+    ...(capabilityMetadata?.followTemplates && capabilityMetadata.followTemplates.length > 0
+      ? {
+          followSchema: {
+            templates: capabilityMetadata.followTemplates,
+          },
+        }
+      : {}),
   };
 }
 

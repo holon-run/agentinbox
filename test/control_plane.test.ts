@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { AdapterRegistry } from "../src/adapters";
 import { AgentInboxClient } from "../src/client";
 import { startControlServer } from "../src/control_server";
@@ -74,6 +74,50 @@ function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?
     encoding: "utf8",
     timeout,
     input,
+  });
+}
+
+async function runCliAsync(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?: string): Promise<{
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}> {
+  const repoDir = path.resolve(__dirname, "..");
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
+      cwd: repoDir,
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, timeout);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      resolve({ status, signal, stdout, stderr });
+    });
+
+    if (input != null) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
   });
 }
 
@@ -1050,6 +1094,65 @@ test("cli stream schema preview resolves remote module-backed schemas before reg
   }
 });
 
+test("cli follow supports repeated --arg values and returns ensured sources", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-follow-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%937-follow",
+    CODEX_THREAD_ID: "thread-follow-cli",
+  };
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    const followed = await runCliAsync([
+      "follow",
+      "github",
+      "pr",
+      "--arg", "owner=holon-run",
+      "--arg", "repo=agentinbox",
+      "--arg", "number=93",
+      "--arg", "withCi=true",
+    ], env);
+    try {
+      assert.equal(followed.status, 0, followed.stderr);
+      const payload = JSON.parse(followed.stdout) as {
+        templateId: string;
+        autoRegistered?: boolean;
+        sources: Array<{ created: boolean }>;
+        subscriptions: Array<{ created: boolean }>;
+      };
+      assert.equal(payload.templateId, "github.pr");
+      assert.equal(payload.autoRegistered, true);
+      assert.deepEqual(payload.sources.map((source) => source.created), [true, true]);
+      assert.deepEqual(payload.subscriptions.map((subscription) => subscription.created), [true, true]);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli inbox read rejects unsupported flags like --ack", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-read-flags-"));
   const env = {
@@ -1900,6 +2003,135 @@ test("control plane stream schema preview resolves remote modules without persis
       assert.equal(preview.data.sourceKind, "remote:demo.http.preview");
       assert.equal(preview.data.implementationId, "demo.http.preview");
       assert.equal(store.listSources().length, 0);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane follow ensures sources and dedupes subscriptions", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-follow-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const registered = service.registerAgent({
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "http-follow-thread",
+        tmuxPaneId: "%http-follow",
+      });
+      const first = await client.request<{
+        templateId: string;
+        sources: Array<{ created: boolean }>;
+        subscriptions: Array<{ created: boolean }>;
+      }>("/follow", {
+        agentId: registered.agent.agentId,
+        providerOrKind: "github",
+        template: "pr",
+        templateArgs: {
+          owner: "holon-run",
+          repo: "agentinbox",
+          number: 93,
+          withCi: true,
+        },
+      }, "POST");
+      assert.equal(first.statusCode, 200);
+      assert.equal(first.data.templateId, "github.pr");
+      assert.deepEqual(first.data.sources.map((source) => source.created), [true, true]);
+      assert.deepEqual(first.data.subscriptions.map((subscription) => subscription.created), [true, true]);
+
+      const second = await client.request<{
+        sources: Array<{ created: boolean }>;
+        subscriptions: Array<{ created: boolean }>;
+      }>("/follow", {
+        agentId: registered.agent.agentId,
+        providerOrKind: "github",
+        template: "pr",
+        templateArgs: {
+          owner: "holon-run",
+          repo: "agentinbox",
+          number: 93,
+          withCi: true,
+        },
+      }, "POST");
+      assert.equal(second.statusCode, 200);
+      assert.deepEqual(second.data.sources.map((source) => source.created), [false, false]);
+      assert.deepEqual(second.data.subscriptions.map((subscription) => subscription.created), [false, false]);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane follow rejects invalid startPolicy at schema validation time", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-follow-sp-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), { homeDir });
+  const service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    const started = await startControlServer(server, {
+      kind: "socket",
+      socketPath,
+    });
+    try {
+      const client = new AgentInboxClient({
+        kind: "socket",
+        socketPath,
+        source: "flag",
+      });
+      const registered = service.registerAgent({
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "http-follow-start-policy-thread",
+        tmuxPaneId: "%http-follow-start-policy",
+      });
+      const response = await client.request<{ error?: string }>("/follow", {
+        agentId: registered.agent.agentId,
+        providerOrKind: "github",
+        template: "pr",
+        startPolicy: "bogus",
+        templateArgs: {
+          owner: "holon-run",
+          repo: "agentinbox",
+          number: 93,
+        },
+      }, "POST");
+      assert.equal(response.statusCode, 400);
     } finally {
       await started.close();
     }

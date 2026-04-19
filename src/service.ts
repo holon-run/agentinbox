@@ -16,6 +16,8 @@ import {
   DeliveryInvokeRequest,
   DeliveryOperationDescriptor,
   DeliveryRequest,
+  FollowInput,
+  FollowResult,
   Inbox,
   InboxAggregationPolicy,
   InboxEntry,
@@ -34,6 +36,7 @@ import {
   ResolvedSourceSchema,
   SourceHost,
   SourceSchema,
+  SourceSchemaField,
   SourceSchemaPreview,
   SourcePollResult,
   SourceStream,
@@ -69,7 +72,7 @@ import {
   renderAgentPrompt,
   TerminalDispatcher,
 } from "./terminal";
-import { ExpandedSubscriptionMember, ExpandedSubscriptionPlan, LifecycleSignal } from "./sources/remote_modules";
+import { ExpandedFollowPlan, ExpandedSubscriptionMember, ExpandedSubscriptionPlan, LifecycleSignal } from "./sources/remote_modules";
 import { ActivationGate, DefaultActivationGate, GatingPolicy } from "./runtime_gate";
 import { Logger, NoopLogger } from "./logging";
 import { resolveSourceRegistration } from "./source_hosts";
@@ -446,6 +449,123 @@ export class AgentInboxService {
       }
       throw new Error(`preview failed: ${message}`);
     }
+  }
+
+  async follow(input: FollowInput): Promise<FollowResult> {
+    const templateArgs = input.templateArgs ?? {};
+    const resolved = await this.resolveFollowTemplate(input, templateArgs);
+    validateFollowTemplateArgs(resolved.templateSpec.argsSchema ?? [], templateArgs, resolved.templateSpec.templateId);
+    const plan = await this.adapters.expandFollowTemplate(resolved.source, {
+      template: input.template,
+      args: templateArgs,
+      source: resolved.source,
+    });
+    if (!plan) {
+      throw new Error(`unknown follow template ${input.providerOrKind}.${input.template}`);
+    }
+    validateExpandedFollowPlan(plan, resolved.templateSpec.templateId);
+
+    const sourceRefs = new Map<string, SourceStream>();
+    const sourceResults: FollowResult["sources"] = [];
+    for (const ensuredSource of plan.sources) {
+      const result = await this.ensureFollowSource(ensuredSource);
+      sourceRefs.set(ensuredSource.logicalName, result.source);
+      sourceResults.push({
+        sourceId: result.source.sourceId,
+        streamKind: result.source.streamKind,
+        created: result.created,
+      });
+    }
+
+    const createdSubscriptions: Subscription[] = [];
+    const subscriptionResults: FollowResult["subscriptions"] = [];
+    try {
+      for (const ensuredSubscription of plan.subscriptions) {
+        const source = sourceRefs.get(ensuredSubscription.sourceLogicalName);
+        if (!source) {
+          throw new Error(
+            `follow template ${plan.templateId} references unknown ensured source ${ensuredSubscription.sourceLogicalName}`,
+          );
+        }
+        const result = await this.ensureSubscription({
+          agentId: input.agentId,
+          sourceId: source.sourceId,
+          filter: ensuredSubscription.filter,
+          trackedResourceRef: ensuredSubscription.trackedResourceRef ?? null,
+          cleanupPolicy: ensuredSubscription.cleanupPolicy ?? null,
+          startPolicy: ensuredSubscription.startPolicy ?? input.startPolicy,
+          startOffset: ensuredSubscription.startOffset ?? input.startOffset ?? null,
+          startTime: ensuredSubscription.startTime ?? input.startTime ?? null,
+        });
+        if (result.created) {
+          createdSubscriptions.push(result.subscription);
+        }
+        subscriptionResults.push({
+          subscriptionId: result.subscription.subscriptionId,
+          sourceId: result.subscription.sourceId,
+          created: result.created,
+        });
+      }
+    } catch (error) {
+      await this.rollbackRegisteredSubscriptions(createdSubscriptions);
+      throw error;
+    }
+
+    return {
+      templateId: plan.templateId,
+      agentId: input.agentId,
+      sources: sourceResults,
+      subscriptions: subscriptionResults,
+    };
+  }
+
+  private async resolveFollowTemplate(
+    input: FollowInput,
+    templateArgs: Record<string, unknown>,
+  ): Promise<{ source: SourceStream; templateSpec: NonNullable<ResolvedSourceSchema["followSchema"]>["templates"][number] }> {
+    const previewInput = {
+      configRef: input.configRef ?? null,
+      config: mergeFollowPreviewConfig(input.config, templateArgs),
+    };
+    const candidates = this.adapters.followPreviewRefsForProviderOrKind(input.providerOrKind, previewInput.config);
+    let previewFailure: Error | null = null;
+    for (const sourceRef of candidates) {
+      try {
+        const source = buildPreviewSource({
+          sourceRef,
+          configRef: previewInput.configRef,
+          config: previewInput.config,
+        });
+        const templateSpec = (await this.adapters.listFollowTemplates(source)).find((candidate) =>
+          (candidate.providerOrKind === input.providerOrKind || sourceRef === input.providerOrKind) &&
+          followTemplateName(candidate.templateId) === input.template,
+        );
+        if (!templateSpec) {
+          continue;
+        }
+        await this.adapters.sourceAdapterFor(source.sourceType).validateSource?.(source);
+        return { source, templateSpec };
+      } catch (error) {
+        if (!previewFailure || sourceRef === input.providerOrKind || candidates.length === 1) {
+          previewFailure = error instanceof Error ? error : new Error(String(error));
+        }
+      }
+    }
+    if (previewFailure) {
+      throw new Error(`follow preview failed: ${previewFailure.message}`);
+    }
+    throw new Error(`unknown follow template ${input.providerOrKind}.${input.template}`);
+  }
+
+  private async ensureFollowSource(input: RegisterSourceInput & { logicalName: string }): Promise<{ source: SourceStream; created: boolean }> {
+    const existing = this.store.getSourceByKey(input.sourceType, input.sourceKey);
+    if (existing) {
+      return { source: existing, created: false };
+    }
+    return {
+      source: await this.registerSource(input),
+      created: true,
+    };
   }
 
   async removeSource(
@@ -910,6 +1030,41 @@ export class AgentInboxService {
     return [await this.registerSingleSubscription(input)];
   }
 
+  private async ensureSubscription(input: RegisterSubscriptionInput): Promise<{ subscription: Subscription; created: boolean }> {
+    if (input.shortcut) {
+      throw new Error("follow ensureSubscription does not support shortcuts");
+    }
+    const source = this.store.getSource(input.sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${input.sourceId}`);
+    }
+    const normalized = await this.normalizeSubscriptionRegistrationInput(input);
+    const existing = this.store.listSubscriptionsForAgent(input.agentId).find((subscription) =>
+      subscription.sourceId === source.sourceId &&
+      subscription.startPolicy === normalized.startPolicy &&
+      (subscription.startOffset ?? null) === normalized.startOffset &&
+      (subscription.startTime ?? null) === normalized.startTime &&
+      stableJson(subscription.filter) === stableJson(normalized.filter) &&
+      normalizeTrackedResourceRef(subscription.trackedResourceRef) === normalized.trackedResourceRef &&
+      stableJson(subscription.cleanupPolicy) === stableJson(normalized.cleanupPolicy)
+    );
+    if (existing) {
+      return { subscription: existing, created: false };
+    }
+    return {
+      subscription: await this.registerSingleSubscription({
+        ...input,
+        filter: normalized.filter,
+        trackedResourceRef: normalized.trackedResourceRef,
+        cleanupPolicy: normalized.cleanupPolicy,
+        startPolicy: normalized.startPolicy,
+        startOffset: normalized.startOffset,
+        startTime: normalized.startTime,
+      }),
+      created: true,
+    };
+  }
+
   private async expandShortcutRegistration(
     input: RegisterSubscriptionInput,
   ): Promise<{ source: SourceStream; plan: ExpandedSubscriptionPlan } | null> {
@@ -997,8 +1152,7 @@ export class AgentInboxService {
     if (!source) {
       throw new Error(`unknown source: ${input.sourceId}`);
     }
-    await validateSubscriptionFilter(input.filter ?? {});
-    const cleanupPolicy = normalizeCleanupPolicy(input.cleanupPolicy ?? null);
+    const normalized = await this.normalizeSubscriptionRegistrationInput(input);
     const idleState = this.store.getSourceIdleState(source.sourceId);
     if (idleState?.autoPausedAt) {
       await this.resumeSource(source.sourceId);
@@ -1009,12 +1163,12 @@ export class AgentInboxService {
       subscriptionId: generateCanonicalId("sub"),
       agentId: input.agentId,
       sourceId: input.sourceId,
-      filter: input.filter ?? {},
-      trackedResourceRef: normalizeTrackedResourceRef(input.trackedResourceRef),
-      cleanupPolicy,
-      startPolicy: input.startPolicy ?? "latest",
-      startOffset: input.startOffset ?? null,
-      startTime: input.startTime ?? null,
+      filter: normalized.filter,
+      trackedResourceRef: normalized.trackedResourceRef,
+      cleanupPolicy: normalized.cleanupPolicy,
+      startPolicy: normalized.startPolicy,
+      startOffset: normalized.startOffset,
+      startTime: normalized.startTime,
       createdAt: nowIso(),
     };
     this.ensureInboxForAgent(subscription.agentId);
@@ -1037,6 +1191,30 @@ export class AgentInboxService {
       this.refreshSourceIdleState(source.sourceId);
       throw error;
     }
+  }
+
+  private async normalizeSubscriptionRegistrationInput(input: RegisterSubscriptionInput): Promise<{
+    filter: Subscription["filter"];
+    trackedResourceRef: string | null;
+    cleanupPolicy: CleanupPolicy;
+    startPolicy: Subscription["startPolicy"];
+    startOffset: number | null;
+    startTime: string | null;
+  }> {
+    await validateSubscriptionFilter(input.filter ?? {});
+    const start = normalizeSubscriptionStartPosition({
+      startPolicy: input.startPolicy ?? "latest",
+      startOffset: input.startOffset ?? null,
+      startTime: input.startTime ?? null,
+    });
+    return {
+      filter: input.filter ?? {},
+      trackedResourceRef: normalizeTrackedResourceRef(input.trackedResourceRef),
+      cleanupPolicy: normalizeCleanupPolicy(input.cleanupPolicy ?? null),
+      startPolicy: start.startPolicy,
+      startOffset: start.startOffset,
+      startTime: start.startTime,
+    };
   }
 
   async removeSubscription(subscriptionId: string): Promise<{ removed: boolean; subscriptionId: string }> {
@@ -1099,18 +1277,16 @@ export class AgentInboxService {
     startTime?: string | null;
   }): Promise<Record<string, unknown>> {
     this.getSubscription(input.subscriptionId);
-    if (!SUBSCRIPTION_START_POLICIES.has(input.startPolicy)) {
-      throw new Error(`unsupported start policy: ${input.startPolicy}`);
-    }
+    const normalizedStart = normalizeSubscriptionStartPosition(input);
     const consumer = await this.backend.getConsumer({ subscriptionId: input.subscriptionId });
     if (!consumer) {
       throw new Error(`unknown consumer for subscription: ${input.subscriptionId}`);
     }
     const reset = await this.backend.reset({
       consumerId: consumer.consumerId,
-      startPolicy: input.startPolicy,
-      startOffset: input.startOffset ?? null,
-      startTime: input.startTime ?? null,
+      startPolicy: normalizedStart.startPolicy,
+      startOffset: normalizedStart.startOffset,
+      startTime: normalizedStart.startTime,
     });
     return {
       subscription: this.getSubscription(input.subscriptionId),
@@ -3179,6 +3355,16 @@ function buildPreviewSource(input: PreviewSourceSchemaInput): SourceStream {
   };
 }
 
+function mergeFollowPreviewConfig(
+  config: Record<string, unknown> | undefined,
+  templateArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...(config ?? {}),
+    ...templateArgs,
+  };
+}
+
 function sourceTypeForPreviewRef(sourceRef: string): SourceStream["sourceType"] {
   if (sourceRef === "local_event" || sourceRef === "remote_source" || sourceRef === "github_repo" || sourceRef === "github_repo_ci" || sourceRef === "feishu_bot") {
     return sourceRef;
@@ -3189,12 +3375,124 @@ function sourceTypeForPreviewRef(sourceRef: string): SourceStream["sourceType"] 
   throw new Error(`unknown source kind or type for preview: ${sourceRef}`);
 }
 
+function followTemplateName(templateId: string): string {
+  const trimmed = templateId.trim();
+  const separator = trimmed.lastIndexOf(".");
+  return separator === -1 ? trimmed : trimmed.slice(separator + 1);
+}
+
+function validateFollowTemplateArgs(
+  argsSchema: SourceSchemaField[],
+  args: Record<string, unknown>,
+  templateId: string,
+): void {
+  for (const field of argsSchema) {
+    const value = args[field.name];
+    if (field.required && value === undefined) {
+      throw new Error(`follow template ${templateId} requires argument ${field.name}`);
+    }
+    if (value === undefined) {
+      continue;
+    }
+    if (!matchesFollowArgType(value, field.type)) {
+      throw new Error(`follow template ${templateId} expected ${field.name} to be ${field.type}`);
+    }
+  }
+}
+
+function matchesFollowArgType(value: unknown, type: string): boolean {
+  if (type === "string") {
+    return typeof value === "string";
+  }
+  if (type === "number") {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+  if (type === "boolean") {
+    return typeof value === "boolean";
+  }
+  if (type === "string[]") {
+    return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+  }
+  if (type === "number[]") {
+    return Array.isArray(value) && value.every((entry) => typeof entry === "number" && Number.isFinite(entry));
+  }
+  return true;
+}
+
+function validateExpandedFollowPlan(plan: ExpandedFollowPlan, expectedTemplateId: string): void {
+  if (plan.templateId !== expectedTemplateId) {
+    throw new Error(`follow template ${expectedTemplateId} expanded to unexpected templateId ${plan.templateId}`);
+  }
+  if (plan.sources.length === 0) {
+    throw new Error(`follow template ${plan.templateId} did not produce any sources`);
+  }
+  const logicalNames = new Set<string>();
+  for (const source of plan.sources) {
+    const logicalName = source.logicalName.trim();
+    if (logicalName.length === 0) {
+      throw new Error(`follow template ${plan.templateId} returned an empty source logicalName`);
+    }
+    if (logicalNames.has(logicalName)) {
+      throw new Error(`follow template ${plan.templateId} returned duplicate source logicalName ${logicalName}`);
+    }
+    logicalNames.add(logicalName);
+  }
+  for (const subscription of plan.subscriptions) {
+    if (!logicalNames.has(subscription.sourceLogicalName)) {
+      throw new Error(
+        `follow template ${plan.templateId} references unknown ensured source ${subscription.sourceLogicalName}`,
+      );
+    }
+  }
+}
+
 function normalizeTrackedResourceRef(value: string | null | undefined): string | null {
   if (value == null) {
     return null;
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeSubscriptionStartPosition(input: {
+  startPolicy: Subscription["startPolicy"];
+  startOffset?: number | null;
+  startTime?: string | null;
+}): {
+  startPolicy: Subscription["startPolicy"];
+  startOffset: number | null;
+  startTime: string | null;
+} {
+  if (!SUBSCRIPTION_START_POLICIES.has(input.startPolicy)) {
+    throw new Error(`unsupported start policy: ${input.startPolicy}`);
+  }
+  const startOffset = input.startOffset ?? null;
+  const startTime = input.startTime ?? null;
+  if (input.startPolicy === "at_offset") {
+    if (startOffset == null || !Number.isInteger(startOffset) || startOffset < 1) {
+      throw new Error("subscriptions requires positive integer startOffset when startPolicy=at_offset");
+    }
+    return {
+      startPolicy: input.startPolicy,
+      startOffset,
+      startTime: null,
+    };
+  }
+  if (input.startPolicy === "at_time") {
+    if (!startTime || !isValidIsoTimestamp(startTime)) {
+      throw new Error("subscriptions requires valid ISO8601 startTime when startPolicy=at_time");
+    }
+    return {
+      startPolicy: input.startPolicy,
+      startOffset: null,
+      startTime: canonicalIsoTimestamp(startTime),
+    };
+  }
+  return {
+    startPolicy: input.startPolicy,
+    startOffset: null,
+    startTime: null,
+  };
 }
 
 function normalizeCleanupPolicy(input: CleanupPolicy | null): CleanupPolicy {
@@ -3243,6 +3541,25 @@ function normalizeGracePeriodSecs(value: number): number {
     throw new Error("cleanupPolicy gracePeriodSecs must be a non-negative integer");
   }
   return value;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sortJsonValue(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.keys(value as Record<string, unknown>)
+    .sort()
+    .reduce<Record<string, unknown>>((acc, key) => {
+      acc[key] = sortJsonValue((value as Record<string, unknown>)[key]);
+      return acc;
+    }, {});
 }
 
 function normalizeLifecycleSignal(signal: LifecycleSignal, fallbackOccurredAt?: string): LifecycleSignal | null {
