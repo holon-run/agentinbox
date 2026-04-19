@@ -94,6 +94,12 @@ persisted `filter`. When any explicit filter input mode is selected
 (`--filter-json`, `--filter-file`, or `--filter-stdin`), the supplied payload
 must be a non-empty JSON object.
 
+The control-plane `POST /subscriptions` API now always returns a
+`{ "subscriptions": [...] }` envelope. The CLI keeps the historical single
+subscription JSON shape for non-shortcut calls, but shortcut-driven creates may
+print the full envelope because one shortcut can expand into multiple
+subscriptions.
+
 `--shortcut` asks the source implementation to expand a named subscription
 shortcut into the standard persisted fields. Use `agentinbox source schema
 <source_id>` first to discover whether the source exposes any shortcuts and what
@@ -101,9 +107,10 @@ arguments they require. When `--shortcut` is present, do not also pass
 `--filter-*`, `--tracked-resource-ref`, or `--cleanup-policy-json`; the
 shortcut owns those fields.
 
-`--tracked-resource-ref` persists a source-scoped opaque resource identity such
-as `pr:373`. `--cleanup-policy-json` accepts the structured cleanup policy
-object persisted with the subscription, for example `{"mode":"manual"}` or
+`--tracked-resource-ref` persists an opaque resource identity such as `pr:373`
+or `repo:holon-run/agentinbox:pr:373`, depending on the source implementation.
+`--cleanup-policy-json` accepts the structured cleanup policy object persisted
+with the subscription, for example `{"mode":"manual"}` or
 `{"mode":"on_terminal_or_at","at":"2026-05-01T00:00:00.000Z","gracePeriodSecs":300}`.
 
 ## Inbox

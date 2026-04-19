@@ -29,6 +29,15 @@ const errorResponseSchema = {
   },
 } as const;
 
+const subscriptionCollectionSchema = {
+  type: "object",
+  required: ["subscriptions"],
+  additionalProperties: false,
+  properties: {
+    subscriptions: { type: "array", items: jsonObjectSchema },
+  },
+} as const;
+
 const deliveryHandleSchema = {
   type: "object",
   additionalProperties: false,
@@ -1106,13 +1115,7 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
       response: {
-        200: {
-          type: "object",
-          required: ["subscriptions"],
-          properties: {
-            subscriptions: { type: "array", items: jsonObjectSchema },
-          },
-        },
+        200: subscriptionCollectionSchema,
       },
     },
   }, async (request) => {
@@ -1153,7 +1156,7 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
       response: {
-        200: jsonObjectSchema,
+        200: subscriptionCollectionSchema,
         400: errorResponseSchema,
       },
     },

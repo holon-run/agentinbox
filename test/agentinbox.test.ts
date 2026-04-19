@@ -4692,6 +4692,106 @@ test("github repo terminal lifecycle fanout retires sibling repo and ci subscrip
   }
 });
 
+test("store can list subscriptions by host-scoped tracked resource ref", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const createdAt = "2026-04-19T00:00:00.000Z";
+    store.insertSource({
+      sourceId: "src_host_ref_repo",
+      hostId: "hst_github_a",
+      streamKind: "repo_events",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      status: "active",
+      checkpoint: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    store.insertSource({
+      sourceId: "src_host_ref_ci",
+      hostId: "hst_github_a",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+      status: "active",
+      checkpoint: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    store.insertSource({
+      sourceId: "src_host_ref_other",
+      hostId: "hst_github_b",
+      streamKind: "repo_events",
+      streamKey: "holon-run/other",
+      sourceType: "github_repo",
+      sourceKey: "holon-run/other",
+      configRef: null,
+      config: { owner: "holon-run", repo: "other", uxcAuth: "github-other" },
+      status: "active",
+      checkpoint: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    store.insertSubscription({
+      subscriptionId: "sub_host_ref_repo",
+      agentId: "agt_host_ref",
+      sourceId: "src_host_ref_repo",
+      filter: {},
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      startPolicy: "earliest",
+      startOffset: null,
+      startTime: null,
+      createdAt,
+    });
+    store.insertSubscription({
+      subscriptionId: "sub_host_ref_ci",
+      agentId: "agt_host_ref",
+      sourceId: "src_host_ref_ci",
+      filter: {},
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      startPolicy: "earliest",
+      startOffset: null,
+      startTime: null,
+      createdAt: "2026-04-19T00:00:01.000Z",
+    });
+    store.insertSubscription({
+      subscriptionId: "sub_host_ref_other",
+      agentId: "agt_host_ref",
+      sourceId: "src_host_ref_other",
+      filter: {},
+      trackedResourceRef: "repo:holon-run/agentinbox:pr:93",
+      cleanupPolicy: { mode: "on_terminal" },
+      startPolicy: "earliest",
+      startOffset: null,
+      startTime: null,
+      createdAt: "2026-04-19T00:00:02.000Z",
+    });
+
+    const matches = store.listSubscriptionsForHostTrackedResourceRef(
+      "hst_github_a",
+      "repo:holon-run/agentinbox:pr:93",
+    );
+
+    assert.deepEqual(
+      matches.map((subscription) => subscription.subscriptionId),
+      ["sub_host_ref_repo", "sub_host_ref_ci"],
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("gc does not retire subscriptions before they consume a terminal event", async () => {
   const { store, service, dir } = await makeService();
   try {

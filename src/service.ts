@@ -1884,20 +1884,7 @@ export class AgentInboxService {
     }
     const signalOccurredAt = signal.occurredAt ?? nowIso();
     const signalOccurredAtMs = Date.parse(signalOccurredAt);
-    const sourceHostIdBySourceId = new Map<string, string | null>();
-    for (const subscription of this.store.listSubscriptions()) {
-      if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
-        continue;
-      }
-      let subscriptionHostId = sourceHostIdBySourceId.get(subscription.sourceId);
-      if (subscriptionHostId === undefined) {
-        const subscriptionSource = this.store.getSource(subscription.sourceId);
-        subscriptionHostId = subscriptionSource?.hostId ?? null;
-        sourceHostIdBySourceId.set(subscription.sourceId, subscriptionHostId);
-      }
-      if (subscriptionHostId !== source.hostId) {
-        continue;
-      }
+    for (const subscription of this.store.listSubscriptionsForHostTrackedResourceRef(source.hostId, signal.ref)) {
       const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
       if (!retireAt) {
         continue;
