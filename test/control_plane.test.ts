@@ -2187,9 +2187,11 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.ok(schemaResponse.data.metadataFields.length > 0);
 
       const subscriptionResponse = await client.request<{
-        subscriptionId: string;
-        trackedResourceRef: string | null;
-        cleanupPolicy: Record<string, unknown>;
+        subscriptions: Array<{
+          subscriptionId: string;
+          trackedResourceRef: string | null;
+          cleanupPolicy: Record<string, unknown>;
+        }>;
       }>("/subscriptions", {
         agentId,
         sourceId: sourceResponse.data.sourceId,
@@ -2203,8 +2205,9 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
         startPolicy: "earliest",
       });
       assert.equal(subscriptionResponse.statusCode, 200);
-      assert.equal(subscriptionResponse.data.trackedResourceRef, "pr:69");
-      assert.deepEqual(subscriptionResponse.data.cleanupPolicy, {
+      assert.equal(subscriptionResponse.data.subscriptions.length, 1);
+      assert.equal(subscriptionResponse.data.subscriptions[0]?.trackedResourceRef, "pr:69");
+      assert.deepEqual(subscriptionResponse.data.subscriptions[0]?.cleanupPolicy, {
         mode: "on_terminal_or_at",
         at: "2026-05-01T00:00:00.000Z",
         gracePeriodSecs: 120,
@@ -2221,7 +2224,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(appendResponse.data.appended, 1);
 
       const pollResponse = await client.request<SubscriptionPollResult>(
-        `/subscriptions/${subscriptionResponse.data.subscriptionId}/poll`,
+        `/subscriptions/${subscriptionResponse.data.subscriptions[0]?.subscriptionId}/poll`,
         {},
       );
       assert.equal(pollResponse.statusCode, 200);
@@ -2264,7 +2267,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(historyAfterAck.data.entries.length, 1);
 
       const removeSubscriptionResponse = await client.request<{ removed: boolean; subscriptionId: string }>(
-        `/subscriptions/${encodeURIComponent(subscriptionResponse.data.subscriptionId)}`,
+        `/subscriptions/${encodeURIComponent(subscriptionResponse.data.subscriptions[0]?.subscriptionId ?? "")}`,
         undefined,
         "DELETE",
       );
@@ -3382,7 +3385,7 @@ test("control plane source remove accepts with_subscriptions for explicit cascad
         runtimeSessionId: "control-plane-remove-cascade-thread",
         tmuxPaneId: "%320",
       });
-      const subscription = await client.request<{ subscriptionId: string }>("/subscriptions", {
+      const subscription = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>("/subscriptions", {
         agentId: registered.data.agent.agentId,
         sourceId: source.data.sourceId,
       });
@@ -3401,7 +3404,7 @@ test("control plane source remove accepts with_subscriptions for explicit cascad
       assert.equal(removed.data.pausedSource, false);
 
       const missingSubscription = await client.request(
-        `/subscriptions/${encodeURIComponent(subscription.data.subscriptionId)}`,
+        `/subscriptions/${encodeURIComponent(subscription.data.subscriptions[0]?.subscriptionId ?? "")}`,
         undefined,
         "GET",
       );

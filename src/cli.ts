@@ -494,7 +494,10 @@ async function main(): Promise<void> {
       startOffset: parseOptionalNumber(takeFlagValue(normalized, "--start-offset")),
       startTime: takeFlagValue(normalized, "--start-time") ?? undefined,
     });
-    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    console.log(jsonResponse(withCommandMetadata(
+      normalizeSubscriptionAddOutput(response.data, Boolean(shortcutName)),
+      selection,
+    )));
     return;
   }
 
@@ -1190,6 +1193,22 @@ function withCommandMetadata<T extends Record<string, unknown>>(data: T, selecti
     ...(selection.autoRegistered ? { autoRegistered: true as const } : {}),
     ...(selection.warnings.length > 0 ? { warnings: selection.warnings } : {}),
   };
+}
+
+function normalizeSubscriptionAddOutput(data: Record<string, unknown>, shortcutUsed: boolean): Record<string, unknown> {
+  if (shortcutUsed) {
+    return data;
+  }
+  const subscriptions = data.subscriptions;
+  if (
+    Array.isArray(subscriptions) &&
+    subscriptions.length === 1 &&
+    subscriptions[0] &&
+    typeof subscriptions[0] === "object"
+  ) {
+    return subscriptions[0] as Record<string, unknown>;
+  }
+  return data;
 }
 
 function getRequiredTerminalContext() {

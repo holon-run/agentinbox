@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import initSqlJs from "sql.js";
 import { AdapterRegistry } from "../src/adapters";
-import { SqliteEventBusBackend } from "../src/backend";
+import { EventBusBackend, SqliteEventBusBackend } from "../src/backend";
 import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget } from "../src/model";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { ActivationGate } from "../src/runtime_gate";
@@ -124,12 +124,29 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }
 }
 
+class FailOnNthEnsureConsumerBackend extends SqliteEventBusBackend {
+  private ensureConsumerCalls = 0;
+
+  constructor(store: AgentInboxStore, private readonly failAtCall: number) {
+    super(store);
+  }
+
+  override async ensureConsumer(input: Parameters<SqliteEventBusBackend["ensureConsumer"]>[0]) {
+    this.ensureConsumerCalls += 1;
+    if (this.ensureConsumerCalls === this.failAtCall) {
+      throw new Error("ensureConsumer failed for test");
+    }
+    return super.ensureConsumer(input);
+  }
+}
+
 async function makeService(options?: {
   dispatcher?: ActivationDispatcher;
   terminalDispatcher?: TerminalDispatcher;
   activationGate?: ActivationGate;
   activationWindowMs?: number;
   activationMaxItems?: number;
+  backend?: EventBusBackend;
 }): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
@@ -142,7 +159,7 @@ async function makeService(options?: {
     store,
     adapters,
     options?.dispatcher,
-    new SqliteEventBusBackend(store),
+    options?.backend ?? new SqliteEventBusBackend(store),
     {
       windowMs: options?.activationWindowMs,
       maxItems: options?.activationMaxItems,
@@ -165,6 +182,7 @@ async function makeServiceFromDbPath(
     activationGate?: ActivationGate;
     activationWindowMs?: number;
     activationMaxItems?: number;
+    backend?: EventBusBackend;
   },
 ): Promise<{ store: AgentInboxStore; service: AgentInboxService }> {
   const store = await AgentInboxStore.open(dbPath);
@@ -177,7 +195,7 @@ async function makeServiceFromDbPath(
     store,
     adapters,
     options?.dispatcher,
-    new SqliteEventBusBackend(store),
+    options?.backend ?? new SqliteEventBusBackend(store),
     {
       windowMs: options?.activationWindowMs,
       maxItems: options?.activationMaxItems,
@@ -283,7 +301,42 @@ async function createLegacyDb(dbPath: string): Promise<void> {
   db.close();
 }
 
-async function readMigrationState(dbPath: string): Promise<{ appliedTags: string[]; hasNewIndex: boolean }> {
+async function createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath: string): Promise<void> {
+  const SQL = await initSqlJs({
+    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
+  });
+  const db = new SQL.Database();
+  const baselineSql = fs.readFileSync(path.resolve(__dirname, "../drizzle/migrations/0000_v1_initial.sql"), "utf8");
+  db.exec(`
+    create table if not exists __drizzle_migrations (
+      id integer primary key autoincrement,
+      tag text not null unique,
+      applied_at text not null
+    );
+  `);
+  db.exec(baselineSql);
+  db.exec(`
+    insert into __drizzle_migrations (tag, applied_at) values ('0000_v1_initial', '2026-04-19T00:00:00.000Z');
+    insert into source_hosts (host_id, host_type, host_key, config_ref, config_json, status, created_at, updated_at)
+    values ('hst_legacy_github', 'github', 'uxcAuth:default', null, '{}', 'active', '2026-04-19T00:00:00.000Z', '2026-04-19T00:00:00.000Z');
+    insert into sources (
+      source_id, host_id, stream_kind, stream_key, source_type, source_key, config_ref, config_json, status, checkpoint, created_at, updated_at
+    ) values (
+      'src_legacy_github', 'hst_legacy_github', 'repo_events', 'holon-run/agentinbox', 'github_repo', 'holon-run/agentinbox', null, '{}', 'active', null,
+      '2026-04-19T00:00:00.000Z', '2026-04-19T00:00:00.000Z'
+    );
+    insert into subscription_lifecycle_retirements (
+      subscription_id, source_id, tracked_resource_ref, retire_at, terminal_state, terminal_result, terminal_occurred_at, created_at, updated_at
+    ) values (
+      'sub_legacy_retirement', 'src_legacy_github', 'repo:holon-run/agentinbox:pr:72', '2026-04-19T01:00:00.000Z', 'closed', 'merged',
+      '2026-04-19T00:30:00.000Z', '2026-04-19T00:30:00.000Z', '2026-04-19T00:30:00.000Z'
+    );
+  `);
+  fs.writeFileSync(dbPath, Buffer.from(db.export()));
+  db.close();
+}
+
+async function readMigrationState(dbPath: string): Promise<{ appliedTags: string[]; hasNewIndex: boolean; retirementColumns: string[] }> {
   const SQL = await initSqlJs({
     locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
   });
@@ -294,8 +347,10 @@ async function readMigrationState(dbPath: string): Promise<{ appliedTags: string
   const hasNewIndex = indexResult.some((set) =>
     set.values.some((row) => String(row[1]) === "idx_inbox_items_source_occurred_at"),
   );
+  const retirementColumnsResult = db.exec("pragma table_info('subscription_lifecycle_retirements');") as Array<{ values: unknown[][] }>;
+  const retirementColumns = (retirementColumnsResult[0]?.values ?? []).map((row) => String(row[1]));
   db.close();
-  return { appliedTags, hasNewIndex };
+  return { appliedTags, hasNewIndex, retirementColumns };
 }
 
 test("store migrates a new database using drizzle SQL migrations", async () => {
@@ -304,8 +359,9 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial"]);
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
     assert.equal(state.hasNewIndex, true);
+    assert.deepEqual(state.retirementColumns.includes("host_id"), true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 0);
   } finally {
@@ -328,7 +384,7 @@ test("store reopens an existing v1 database without archiving it", async () => {
   const reopened = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial"]);
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
     assert.equal(warnings.length, 0);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 0);
@@ -351,7 +407,7 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, ["0000_v1_initial"]);
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
     assert.equal(state.hasNewIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 1);
@@ -360,6 +416,25 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
     assert.match(warnings[0] ?? "", /no data imported/);
   } finally {
     console.warn = originalWarn;
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store upgrades source-scoped lifecycle retirements to host-scoped retirements for existing v1 databases", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-lifecycle-host-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  await createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath);
+  const store = await AgentInboxStore.open(dbPath);
+  try {
+    const state = await readMigrationState(dbPath);
+    assert.deepEqual(state.appliedTags, ["0000_v1_initial", "0002_host_scoped_lifecycle_retirements"]);
+    assert.deepEqual(state.retirementColumns.includes("host_id"), true);
+    assert.deepEqual(state.retirementColumns.includes("source_id"), false);
+    const retirement = store.getSubscriptionLifecycleRetirement("sub_legacy_retirement");
+    assert.equal(retirement?.hostId, "hst_legacy_github");
+    assert.equal(retirement?.trackedResourceRef, "repo:holon-run/agentinbox:pr:72");
+  } finally {
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -1167,6 +1242,92 @@ test("github pr shortcut with withCi fails clearly when sibling ci stream is mis
       }),
       /requires an existing sibling ci_runs stream/,
     );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registerSubscription rejects multi-member shortcuts and directs callers to registerSubscriptions", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-pr-register-single-thread",
+      tmuxPaneId: "%947",
+    });
+
+    await assert.rejects(
+      service.registerSubscription({
+        agentId: agent.agent.agentId,
+        sourceId: repoSource.sourceId,
+        shortcut: {
+          name: "pr",
+          args: { number: 93, withCi: true },
+        },
+      }),
+      /use registerSubscriptions\(\) instead/,
+    );
+    assert.equal(store.listSubscriptions().length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registerSubscriptions rolls back earlier shortcut members when a later member fails", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-shortcut-rollback-"));
+  const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
+  let service: AgentInboxService;
+  const backend = new FailOnNthEnsureConsumerBackend(store, 2);
+  const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
+    homeDir: dir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+  });
+  service = new AgentInboxService(store, adapters, undefined, backend);
+  try {
+    const repoSource = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    await service.registerSource({
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-pr-rollback-thread",
+      tmuxPaneId: "%948",
+    });
+
+    await assert.rejects(
+      service.registerSubscriptions({
+        agentId: agent.agent.agentId,
+        sourceId: repoSource.sourceId,
+        shortcut: {
+          name: "pr",
+          args: { number: 93, withCi: true },
+        },
+      }),
+      /ensureConsumer failed for test/,
+    );
+    assert.equal(store.listSubscriptions().length, 0);
   } finally {
     await service.stop();
     store.close();

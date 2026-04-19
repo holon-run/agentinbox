@@ -1177,10 +1177,7 @@ function buildFastifyServer(service: AgentInboxService) {
       startOffset: typeof body.startOffset === "number" ? body.startOffset : undefined,
       startTime: optionalString(body.startTime) ?? undefined,
     };
-    if (input.shortcut) {
-      return { subscriptions: await service.registerSubscriptions(input) };
-    }
-    return service.registerSubscription(input);
+    return { subscriptions: await service.registerSubscriptions(input) };
   });
 
   app.get("/subscriptions/:subscriptionId", {

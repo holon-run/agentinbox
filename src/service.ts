@@ -889,26 +889,45 @@ export class AgentInboxService {
   }
 
   async registerSubscription(input: RegisterSubscriptionInput): Promise<Subscription> {
-    const subscriptions = await this.registerSubscriptions(input);
+    const expanded = await this.expandShortcutRegistration(input);
+    if (!expanded) {
+      return this.registerSingleSubscription(input);
+    }
+    if (expanded.plan.members.length !== 1) {
+      throw new Error(
+        `subscription shortcut ${input.shortcut?.name ?? "unknown"} for source ${input.sourceId} expands to ${expanded.plan.members.length} subscriptions; use registerSubscriptions() instead`,
+      );
+    }
+    const subscriptions = await this.registerExpandedShortcutSubscriptions(input, expanded.source, expanded.plan);
     return subscriptions[0]!;
   }
 
   async registerSubscriptions(input: RegisterSubscriptionInput): Promise<Subscription[]> {
-    if (input.shortcut) {
-      const source = this.store.getSource(input.sourceId);
-      if (!source) {
-        throw new Error(`unknown source: ${input.sourceId}`);
-      }
-      if (hasSubscriptionFieldOverride(input)) {
-        throw new Error("subscription add shortcut does not allow filter, trackedResourceRef, or cleanupPolicy overrides");
-      }
-      const expanded = await this.adapters.expandSubscriptionShortcut(source, input.shortcut);
-      if (!expanded) {
-        throw new Error(`unknown subscription shortcut ${input.shortcut.name} for source ${input.sourceId}`);
-      }
-      return this.registerExpandedShortcutSubscriptions(input, source, expanded);
+    const expanded = await this.expandShortcutRegistration(input);
+    if (expanded) {
+      return this.registerExpandedShortcutSubscriptions(input, expanded.source, expanded.plan);
     }
     return [await this.registerSingleSubscription(input)];
+  }
+
+  private async expandShortcutRegistration(
+    input: RegisterSubscriptionInput,
+  ): Promise<{ source: SourceStream; plan: ExpandedSubscriptionPlan } | null> {
+    if (!input.shortcut) {
+      return null;
+    }
+    const source = this.store.getSource(input.sourceId);
+    if (!source) {
+      throw new Error(`unknown source: ${input.sourceId}`);
+    }
+    if (hasSubscriptionFieldOverride(input)) {
+      throw new Error("subscription add shortcut does not allow filter, trackedResourceRef, or cleanupPolicy overrides");
+    }
+    const plan = await this.adapters.expandSubscriptionShortcut(source, input.shortcut);
+    if (!plan) {
+      throw new Error(`unknown subscription shortcut ${input.shortcut.name} for source ${input.sourceId}`);
+    }
+    return { source, plan };
   }
 
   private async registerExpandedShortcutSubscriptions(
@@ -924,17 +943,32 @@ export class AgentInboxService {
       member,
     }));
     const created: Subscription[] = [];
-    for (const { source: memberSource, member } of resolvedMembers) {
-      created.push(await this.registerSingleSubscription({
-        ...input,
-        sourceId: memberSource.sourceId,
-        shortcut: undefined,
-        filter: member.filter,
-        trackedResourceRef: member.trackedResourceRef ?? null,
-        cleanupPolicy: member.cleanupPolicy ?? null,
-      }));
+    try {
+      for (const { source: memberSource, member } of resolvedMembers) {
+        created.push(await this.registerSingleSubscription({
+          ...input,
+          sourceId: memberSource.sourceId,
+          shortcut: undefined,
+          filter: member.filter,
+          trackedResourceRef: member.trackedResourceRef ?? null,
+          cleanupPolicy: member.cleanupPolicy ?? null,
+        }));
+      }
+    } catch (error) {
+      await this.rollbackRegisteredSubscriptions(created);
+      throw error;
     }
     return created;
+  }
+
+  private async rollbackRegisteredSubscriptions(subscriptions: Subscription[]): Promise<void> {
+    for (const subscription of [...subscriptions].reverse()) {
+      try {
+        await this.removeSubscription(subscription.subscriptionId);
+      } catch (error) {
+        console.warn(`failed to roll back subscription ${subscription.subscriptionId}:`, error);
+      }
+    }
   }
 
   private resolveShortcutMemberSource(source: SourceStream, member: ExpandedSubscriptionMember): SourceStream {
@@ -985,18 +1019,24 @@ export class AgentInboxService {
     };
     this.ensureInboxForAgent(subscription.agentId);
     this.store.insertSubscription(subscription);
-
-    const stream = await this.ensureStreamForSource(source);
-    await this.backend.ensureConsumer({
-      streamId: stream.streamId,
-      subscriptionId: subscription.subscriptionId,
-      consumerKey: `subscription:${subscription.subscriptionId}`,
-      startPolicy: subscription.startPolicy,
-      startOffset: subscription.startOffset ?? null,
-      startTime: subscription.startTime ?? null,
-    });
-    this.store.deleteSourceIdleState(source.sourceId);
-    return subscription;
+    try {
+      const stream = await this.ensureStreamForSource(source);
+      await this.backend.ensureConsumer({
+        streamId: stream.streamId,
+        subscriptionId: subscription.subscriptionId,
+        consumerKey: `subscription:${subscription.subscriptionId}`,
+        startPolicy: subscription.startPolicy,
+        startOffset: subscription.startOffset ?? null,
+        startTime: subscription.startTime ?? null,
+      });
+      this.store.deleteSourceIdleState(source.sourceId);
+      return subscription;
+    } catch (error) {
+      this.store.deleteSubscription(subscription.subscriptionId);
+      this.clearSubscriptionRuntimeState(subscription);
+      this.refreshSourceIdleState(source.sourceId);
+      throw error;
+    }
   }
 
   async removeSubscription(subscriptionId: string): Promise<{ removed: boolean; subscriptionId: string }> {
@@ -1844,12 +1884,18 @@ export class AgentInboxService {
     }
     const signalOccurredAt = signal.occurredAt ?? nowIso();
     const signalOccurredAtMs = Date.parse(signalOccurredAt);
+    const sourceHostIdBySourceId = new Map<string, string | null>();
     for (const subscription of this.store.listSubscriptions()) {
       if (!subscription.trackedResourceRef || subscription.trackedResourceRef !== signal.ref) {
         continue;
       }
-      const subscriptionSource = this.store.getSource(subscription.sourceId);
-      if (!subscriptionSource || subscriptionSource.hostId !== source.hostId) {
+      let subscriptionHostId = sourceHostIdBySourceId.get(subscription.sourceId);
+      if (subscriptionHostId === undefined) {
+        const subscriptionSource = this.store.getSource(subscription.sourceId);
+        subscriptionHostId = subscriptionSource?.hostId ?? null;
+        sourceHostIdBySourceId.set(subscription.sourceId, subscriptionHostId);
+      }
+      if (subscriptionHostId !== source.hostId) {
         continue;
       }
       const retireAt = lifecycleRetireAtForSignal(subscription.cleanupPolicy, signalOccurredAtMs);
