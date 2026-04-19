@@ -171,13 +171,13 @@ function terminalTargets(agent: AgentWithTargets): TerminalTargetSummary[] {
 }
 
 function activeTerminalTargets(agent: AgentWithTargets): TerminalTargetSummary[] {
+  if (agent.agent.status !== "active") {
+    return [];
+  }
   return terminalTargets(agent).filter((target) => target.status === "active");
 }
 
 function terminalTargetsForCurrentMatch(agent: AgentWithTargets): TerminalTargetSummary[] {
-  if (agent.agent.status !== "active") {
-    return [];
-  }
   return activeTerminalTargets(agent);
 }
 
