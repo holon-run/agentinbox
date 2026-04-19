@@ -12,6 +12,16 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0-beta.3] - 2026-04-19
+
+### Fixed
+
+- Fixed silent notification black holes for session-bound agents by keeping
+  offline agents detached while terminal targets are being resumed or rebound.
+- Scoped GitHub `pr --withCi` sibling `ci_runs` subscriptions to the tracked PR
+  by normalizing workflow-run `pullRequestNumbers` and using that metadata in
+  generated CI filters.
+
 ## [1.0.0-beta.2] - 2026-04-19
 
 ### Changed
