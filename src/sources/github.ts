@@ -11,8 +11,10 @@ import {
 } from "../model";
 
 export const GITHUB_ENDPOINT = "https://api.github.com";
-const GITHUB_EVENT_HYDRATION_PER_PAGE = 1;
-const GITHUB_EVENT_HYDRATION_MAX_PAGES = 25;
+const DEFAULT_GITHUB_CALL_CLIENT = new UxcDaemonClient({ env: process.env });
+const GITHUB_EVENT_HYDRATION_MIN_PER_PAGE = 10;
+const GITHUB_EVENT_HYDRATION_MAX_PER_PAGE = 30;
+const GITHUB_EVENT_HYDRATION_MAX_PAGES = 3;
 const HYDRATABLE_GITHUB_REPO_EVENT_TYPES = new Set([
   "PullRequestReviewEvent",
   "PullRequestReviewCommentEvent",
@@ -44,7 +46,7 @@ export interface GithubCallClient {
 }
 
 export class GithubUxcClient {
-  constructor(private readonly client: GithubCallClient = new UxcDaemonClient({ env: process.env })) {}
+  constructor(private readonly client: GithubCallClient = DEFAULT_GITHUB_CALL_CLIENT) {}
 
   async createIssueComment(input: { owner: string; repo: string; issueNumber: number; body: string; auth?: string }): Promise<void> {
     await this.client.call({
@@ -341,7 +343,7 @@ export function normalizeGithubRepoEvent(
 export async function hydrateGithubRepoEventIfNeeded(
   config: GithubSourceConfig,
   raw: Record<string, unknown>,
-  client: GithubCallClient = new UxcDaemonClient({ env: process.env }),
+  client: GithubCallClient = DEFAULT_GITHUB_CALL_CLIENT,
 ): Promise<Record<string, unknown>> {
   if (!shouldHydrateGithubRepoEvent(raw)) {
     return raw;
@@ -352,18 +354,24 @@ export async function hydrateGithubRepoEventIfNeeded(
     return raw;
   }
 
+  const perPage = computeGithubHydrationPerPage(config.perPage);
   for (let page = 1; page <= GITHUB_EVENT_HYDRATION_MAX_PAGES; page += 1) {
-    const response = await client.call({
-      endpoint: GITHUB_ENDPOINT,
-      operation: "get:/repos/{owner}/{repo}/events",
-      payload: {
-        owner: config.owner,
-        repo: config.repo,
-        per_page: GITHUB_EVENT_HYDRATION_PER_PAGE,
-        page,
-      },
-      options: { auth: config.uxcAuth },
-    });
+    let response: Awaited<ReturnType<GithubCallClient["call"]>>;
+    try {
+      response = await client.call({
+        endpoint: GITHUB_ENDPOINT,
+        operation: "get:/repos/{owner}/{repo}/events",
+        payload: {
+          owner: config.owner,
+          repo: config.repo,
+          per_page: perPage,
+          page,
+        },
+        options: { auth: config.uxcAuth },
+      });
+    } catch {
+      return raw;
+    }
     const candidates = Array.isArray(response.data) ? response.data : [];
     if (candidates.length === 0) {
       break;
@@ -562,6 +570,13 @@ function extractMentions(...values: Array<string | null>): string[] {
     }
   }
   return Array.from(seen.values()).sort();
+}
+
+function computeGithubHydrationPerPage(perPage: number | undefined): number {
+  const configured = Number.isInteger(perPage) && perPage && perPage > 0
+    ? perPage
+    : GITHUB_EVENT_HYDRATION_MIN_PER_PAGE;
+  return Math.min(GITHUB_EVENT_HYDRATION_MAX_PER_PAGE, Math.max(GITHUB_EVENT_HYDRATION_MIN_PER_PAGE, configured));
 }
 
 function extractGithubRepoEventUrl(
