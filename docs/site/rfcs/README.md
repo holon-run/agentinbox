@@ -12,6 +12,10 @@
   2026-04-19 · Add a high-level `follow` command that expands module-defined templates into reusable host, stream, and subscription ensures without hardcoding providers into the AgentInbox core.
   <!-- mdorigin:index kind=article -->
 
+- [X Pay-Per-Use Sources](./x-pay-per-use-sources.md)
+  2026-04-19 · Evaluate X pay-per-use API as an AgentInbox source host, define viable stream kinds, and recommend a staged rollout.
+  <!-- mdorigin:index kind=article -->
+
 - [Current Agent Resolution And Safe Agent-Scoped CLI Behavior](./current-agent-resolution.md)
   2026-04-09 · Define how AgentInbox CLI should resolve the current agent, warn on cross-session targeting, and auto-register session-bound agents.
   <!-- mdorigin:index kind=article -->
