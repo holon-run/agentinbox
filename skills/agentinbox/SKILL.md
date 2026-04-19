@@ -118,6 +118,24 @@ Typical cases:
 For this kind of work, treat AgentInbox as the durable tracking layer and use a
 consistent lifecycle:
 
+Important boundary:
+
+- inbox items, subscriptions, and timers can outlive the current terminal
+  session
+- terminal delivery does not automatically survive session boundaries just
+  because the inbox state does
+- if the original runtime/terminal disappears, items may keep accumulating in
+  the inbox while notifications stop reaching you
+- if a later session should resume the same logical agent, re-register or
+  explicitly rebind that agent to the current terminal before assuming prompt
+  delivery is live again
+
+For example, resuming the same logical agent in a later session may look like:
+
+```bash
+agentinbox agent register --agent-id <agentId> --force-rebind
+```
+
 1. register the current terminal session and keep the returned `agentId`
 2. reuse broad shared sources when they already exist
 3. add narrow task-scoped subscriptions or timers for the specific PR, issue,
