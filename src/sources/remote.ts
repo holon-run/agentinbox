@@ -1,5 +1,11 @@
-import { ManagedSourceEnsureResponse, ManagedStreamReadResponse, UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePollResult, SourceStream } from "../model";
+import {
+  ManagedSourceEnsureResponse,
+  ManagedSourceListEntry,
+  ManagedSourceView,
+  ManagedStreamReadResponse,
+  UxcDaemonClient,
+} from "@holon-run/uxc-daemon-client";
+import { ActivationItem, AppendSourceEventInput, NotificationGrouping, SourcePollResult, SourceRuntimeState, SourceStream } from "../model";
 import { resolveAgentInboxHome } from "../paths";
 import { AgentInboxStore } from "../store";
 import { nowIso } from "../util";
@@ -29,6 +35,15 @@ interface RemoteSourceCheckpoint {
     sourceKey: string;
     streamId: string;
   };
+  managedRuntime?: {
+    status?: string | null;
+    runId?: string | null;
+    streamId?: string | null;
+    lastError?: string | null;
+    updatedAt?: string | null;
+    startedAt?: string | null;
+    stoppedAt?: string | null;
+  };
   streamCursor?: {
     afterOffset: number;
   };
@@ -42,6 +57,8 @@ export interface UxcRemoteSourceClient {
     sourceKey: string;
     spec: ManagedSourceSpec;
   }): Promise<ManagedSourceEnsureResponse>;
+  sourceStatus(namespace: string, sourceKey: string): Promise<ManagedSourceView>;
+  sourceList(): Promise<ManagedSourceListEntry[]>;
   sourceStop(namespace: string, sourceKey: string): Promise<void>;
   sourceDelete(namespace: string, sourceKey: string): Promise<void>;
   streamRead(args: {
@@ -74,6 +91,14 @@ export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
 
   async sourceStop(namespace: string, sourceKey: string): Promise<void> {
     await this.client.sourceStop(namespace, sourceKey);
+  }
+
+  sourceStatus(namespace: string, sourceKey: string): Promise<ManagedSourceView> {
+    return this.client.sourceStatus(namespace, sourceKey);
+  }
+
+  sourceList(): Promise<ManagedSourceListEntry[]> {
+    return this.client.sourceList();
   }
 
   async sourceDelete(namespace: string, sourceKey: string): Promise<void> {
@@ -178,6 +203,8 @@ export class RemoteSourceRuntime {
     this.errorCounts.delete(sourceId);
     this.nextRetryAt.delete(sourceId);
     const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+    const pausedAt = nowIso();
+    const baseRuntime = checkpoint.managedRuntime ?? checkpointRuntimeFromSource(source) ?? {};
     this.store.updateSourceRuntime(sourceId, {
       status: "paused",
       checkpoint: JSON.stringify({
@@ -189,6 +216,13 @@ export class RemoteSourceRuntime {
             streamId: checkpoint.managedSource.streamId,
           },
         } : {}),
+        managedRuntime: {
+          ...baseRuntime,
+          status: "stopped",
+          updatedAt: pausedAt,
+          stoppedAt: pausedAt,
+          lastError: null,
+        },
         lastError: null,
       } satisfies RemoteSourceCheckpoint),
     });
@@ -216,6 +250,53 @@ export class RemoteSourceRuntime {
       activeSourceIds: Array.from(this.inFlight.values()).sort(),
       erroredSourceIds: Array.from(this.errorCounts.keys()).sort(),
     };
+  }
+
+  async getSourceRuntime(source: SourceStream): Promise<SourceRuntimeState | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const binding = managedBindingForSource(source);
+    try {
+      const managed = await this.client.sourceStatus(binding.namespace, binding.sourceKey);
+      return runtimeStateFromManagedView(managed, "live");
+    } catch {
+      return runtimeStateFromCheckpoint(source);
+    }
+  }
+
+  async listSourceRuntimes(sources: SourceStream[]): Promise<Map<string, SourceRuntimeState | null>> {
+    const result = new Map<string, SourceRuntimeState | null>();
+    const remoteSources = sources.filter((source) => REMOTE_SOURCE_TYPES.has(source.sourceType));
+    for (const source of sources) {
+      if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+        result.set(source.sourceId, null);
+      }
+    }
+    if (remoteSources.length === 0) {
+      return result;
+    }
+
+    try {
+      const managedSources = await this.client.sourceList();
+      const byBinding = new Map(
+        managedSources.map((entry) => [managedSourceBindingKey(entry.namespace, entry.source_key), entry] as const),
+      );
+      for (const source of remoteSources) {
+        const binding = managedBindingForSource(source);
+        const live = byBinding.get(managedSourceBindingKey(binding.namespace, binding.sourceKey));
+        result.set(
+          source.sourceId,
+          live ? runtimeStateFromManagedSourceListEntry(live, "live") : runtimeStateFromCheckpoint(source),
+        );
+      }
+      return result;
+    } catch {
+      for (const source of remoteSources) {
+        result.set(source.sourceId, runtimeStateFromCheckpoint(source));
+      }
+      return result;
+    }
   }
 
   async projectLifecycleSignal(source: SourceStream, rawPayload: Record<string, unknown>): Promise<LifecycleSignal | null> {
@@ -398,6 +479,11 @@ export class RemoteSourceRuntime {
           streamCursor: {
             afterOffset: batch.next_after_offset,
           },
+          managedRuntime: checkpointRuntimeFromEnsureResponse(
+            ensured,
+            checkpoint.managedRuntime ?? null,
+            nowIso(),
+          ),
           lastEventAt: nowIso(),
           lastError: null,
         } satisfies RemoteSourceCheckpoint),
@@ -424,6 +510,11 @@ export class RemoteSourceRuntime {
           status: source.status === "paused" ? "paused" : "error",
           checkpoint: JSON.stringify({
             ...checkpoint,
+            managedRuntime: checkpointRuntimeWithError(
+              checkpoint.managedRuntime ?? checkpointRuntimeFromSource(source),
+              error instanceof Error ? error.message : String(error),
+              nowIso(),
+            ),
             lastError: error instanceof Error ? error.message : String(error),
           } satisfies RemoteSourceCheckpoint),
         });
@@ -494,6 +585,10 @@ function managedBindingForSource(source: SourceStream): { namespace: string; sou
   };
 }
 
+function managedSourceBindingKey(namespace: string, sourceKey: string): string {
+  return `${namespace}:${sourceKey}`;
+}
+
 function parseRemoteCheckpoint(checkpoint: string | null | undefined): RemoteSourceCheckpoint {
   if (!checkpoint) {
     return {};
@@ -503,6 +598,125 @@ function parseRemoteCheckpoint(checkpoint: string | null | undefined): RemoteSou
   } catch {
     return {};
   }
+}
+
+function runtimeStateFromManagedView(
+  managed: ManagedSourceView,
+  observation: SourceRuntimeState["observation"],
+): SourceRuntimeState {
+  return {
+    backend: "uxc",
+    observation,
+    namespace: managed.namespace,
+    sourceKey: managed.source_key,
+    status: managed.status,
+    runId: managed.run_id,
+    streamId: managed.stream_id,
+    lastError: managed.last_error ?? null,
+    updatedAt: unixToIso(managed.updated_at_unix),
+    startedAt: unixToIso(managed.started_at_unix ?? null),
+    stoppedAt: unixToIso(managed.stopped_at_unix ?? null),
+  };
+}
+
+function runtimeStateFromManagedSourceListEntry(
+  managed: ManagedSourceListEntry,
+  observation: SourceRuntimeState["observation"],
+): SourceRuntimeState {
+  return {
+    backend: "uxc",
+    observation,
+    namespace: managed.namespace,
+    sourceKey: managed.source_key,
+    status: managed.status,
+    runId: managed.run_id,
+    streamId: managed.stream_id,
+    lastError: managed.last_error ?? null,
+    updatedAt: unixToIso(managed.updated_at_unix),
+    startedAt: null,
+    stoppedAt: null,
+  };
+}
+
+function runtimeStateFromCheckpoint(source: SourceStream): SourceRuntimeState | null {
+  const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+  const binding = managedBindingForSource(source);
+  const runtime = checkpoint.managedRuntime;
+  const streamId = runtime?.streamId ?? checkpoint.managedSource?.streamId ?? null;
+  if (!runtime && !checkpoint.managedSource) {
+    return null;
+  }
+  return {
+    backend: "uxc",
+    observation: "cached",
+    namespace: binding.namespace,
+    sourceKey: binding.sourceKey,
+    status: runtime?.status ?? null,
+    runId: runtime?.runId ?? null,
+    streamId,
+    lastError: runtime?.lastError ?? checkpoint.lastError ?? null,
+    updatedAt: runtime?.updatedAt ?? source.updatedAt,
+    startedAt: runtime?.startedAt ?? null,
+    stoppedAt: runtime?.stoppedAt ?? null,
+  };
+}
+
+function checkpointRuntimeFromEnsureResponse(
+  ensured: ManagedSourceEnsureResponse,
+  previous: RemoteSourceCheckpoint["managedRuntime"] | null,
+  observedAt: string,
+): NonNullable<RemoteSourceCheckpoint["managedRuntime"]> {
+  return {
+    status: ensured.status,
+    runId: ensured.run_id,
+    streamId: ensured.stream_id,
+    lastError: null,
+    updatedAt: observedAt,
+    startedAt: previous?.runId === ensured.run_id ? previous.startedAt ?? null : null,
+    stoppedAt: null,
+  };
+}
+
+function checkpointRuntimeWithError(
+  previous: RemoteSourceCheckpoint["managedRuntime"] | null,
+  lastError: string,
+  observedAt: string,
+): NonNullable<RemoteSourceCheckpoint["managedRuntime"]> {
+  return {
+    status: previous?.status ?? null,
+    runId: previous?.runId ?? null,
+    streamId: previous?.streamId ?? null,
+    lastError,
+    updatedAt: observedAt,
+    startedAt: previous?.startedAt ?? null,
+    stoppedAt: previous?.stoppedAt ?? null,
+  };
+}
+
+function checkpointRuntimeFromSource(source: SourceStream): NonNullable<RemoteSourceCheckpoint["managedRuntime"]> | null {
+  const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+  if (checkpoint.managedRuntime) {
+    return checkpoint.managedRuntime;
+  }
+  if (!checkpoint.managedSource) {
+    return null;
+  }
+  return {
+    status: null,
+    runId: null,
+    streamId: checkpoint.managedSource.streamId,
+    lastError: checkpoint.lastError ?? null,
+    updatedAt: source.updatedAt,
+    startedAt: null,
+    stoppedAt: null,
+  };
+}
+
+function unixToIso(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return new Date(value * 1000).toISOString();
 }
 
 function computeErrorBackoffMs(baseIntervalSecs: number, errorCount: number): number {

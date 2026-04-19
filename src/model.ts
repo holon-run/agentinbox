@@ -46,6 +46,20 @@ export interface SourceStream {
   updatedAt: string;
 }
 
+export interface SourceRuntimeState {
+  backend: "uxc";
+  observation: "live" | "cached";
+  namespace: string;
+  sourceKey: string;
+  status?: string | null;
+  runId?: string | null;
+  streamId?: string | null;
+  lastError?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  stoppedAt?: string | null;
+}
+
 export interface SourceIdleState {
   sourceId: string;
   idleSince: string;

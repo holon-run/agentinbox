@@ -20,6 +20,47 @@ import { TerminalDispatcher } from "../src/terminal";
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   public readonly ensuredSources: Array<{ namespace: string; sourceKey: string }> = [];
   public readonly stoppedSources: Array<{ namespace: string; sourceKey: string }> = [];
+  private readonly managedStatuses = new Map<string, {
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    status: string;
+    updated_at_unix: number;
+    started_at_unix?: number | null;
+    stopped_at_unix?: number | null;
+    last_error?: string | null;
+  }>();
+
+  setManagedStatus(namespace: string, sourceKey: string, input: {
+    status?: string;
+    lastError?: string | null;
+    updatedAtUnix?: number;
+    startedAtUnix?: number | null;
+    stoppedAtUnix?: number | null;
+  }): void {
+    const key = `${namespace}:${sourceKey}`;
+    const current = this.managedStatuses.get(key) ?? {
+      namespace,
+      source_key: sourceKey,
+      run_id: `run:${sourceKey}`,
+      stream_id: `stream:${sourceKey}`,
+      status: "running",
+      updated_at_unix: Math.floor(Date.now() / 1000),
+      started_at_unix: Math.floor(Date.now() / 1000),
+      stopped_at_unix: null,
+      last_error: null,
+    };
+    this.managedStatuses.set(key, {
+      ...current,
+      status: input.status ?? current.status,
+      last_error: input.lastError !== undefined ? input.lastError : current.last_error ?? null,
+      updated_at_unix: input.updatedAtUnix ?? current.updated_at_unix,
+      started_at_unix: input.startedAtUnix !== undefined ? input.startedAtUnix : current.started_at_unix ?? null,
+      stopped_at_unix: input.stoppedAtUnix !== undefined ? input.stoppedAtUnix : current.stopped_at_unix ?? null,
+    });
+  }
+
   async sourceEnsure(args: { namespace: string; sourceKey: string; spec: unknown }): Promise<{
     namespace: string;
     source_key: string;
@@ -31,7 +72,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }> {
     void args.spec;
     this.ensuredSources.push({ namespace: args.namespace, sourceKey: args.sourceKey });
-    return {
+    const ensured = {
       namespace: args.namespace,
       source_key: args.sourceKey,
       run_id: `run:${args.sourceKey}`,
@@ -40,15 +81,78 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
       reused: true,
       replaced_previous: false,
     };
+    this.managedStatuses.set(`${args.namespace}:${args.sourceKey}`, {
+      ...ensured,
+      updated_at_unix: Math.floor(Date.now() / 1000),
+      started_at_unix: Math.floor(Date.now() / 1000),
+      stopped_at_unix: null,
+      last_error: null,
+    });
+    return ensured;
   }
 
   async sourceStop(namespace: string, sourceKey: string): Promise<void> {
     this.stoppedSources.push({ namespace, sourceKey });
+    const current = this.managedStatuses.get(`${namespace}:${sourceKey}`);
+    if (current) {
+      this.managedStatuses.set(`${namespace}:${sourceKey}`, {
+        ...current,
+        status: "stopped",
+        updated_at_unix: Math.floor(Date.now() / 1000),
+        stopped_at_unix: Math.floor(Date.now() / 1000),
+        last_error: null,
+      });
+    }
     return;
   }
 
   async sourceDelete(_namespace: string, _sourceKey: string): Promise<void> {
+    this.managedStatuses.delete(`${_namespace}:${_sourceKey}`);
     return;
+  }
+
+  async sourceStatus(namespace: string, sourceKey: string): Promise<{
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    spec_key: string;
+    status: string;
+    created_at_unix: number;
+    updated_at_unix: number;
+    started_at_unix?: number | null;
+    stopped_at_unix?: number | null;
+    last_error?: string | null;
+  }> {
+    const current = this.managedStatuses.get(`${namespace}:${sourceKey}`);
+    if (!current) {
+      throw new Error(`unknown managed source: ${namespace}/${sourceKey}`);
+    }
+    return {
+      ...current,
+      spec_key: `${namespace}:${sourceKey}`,
+      created_at_unix: current.started_at_unix ?? current.updated_at_unix,
+    };
+  }
+
+  async sourceList(): Promise<Array<{
+    namespace: string;
+    source_key: string;
+    status: string;
+    run_id: string;
+    stream_id: string;
+    updated_at_unix: number;
+    last_error?: string | null;
+  }>> {
+    return Array.from(this.managedStatuses.values()).map((current) => ({
+      namespace: current.namespace,
+      source_key: current.source_key,
+      status: current.status,
+      run_id: current.run_id,
+      stream_id: current.stream_id,
+      updated_at_unix: current.updated_at_unix,
+      last_error: current.last_error ?? null,
+    }));
   }
 
   async streamRead(_args: { streamId: string; afterOffset?: number; limit?: number }): Promise<{
@@ -648,6 +752,138 @@ test("control plane GET /agents can include activation target summaries", async 
       assert.equal(listed.activationTargets[1]?.kind, "webhook");
       assert.equal(listed.activationTargets[1]?.status, "active");
       assert.equal("url" in (listed.activationTargets[1] ?? {}), false);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane source views surface backend managed runtime state", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-source-runtime-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const fake = new FakeRemoteSourceClient();
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: fake,
+  });
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    });
+
+    await adapters.start();
+    await service.start();
+    fake.setManagedStatus("agentinbox", "github_repo:holon-run/agentinbox", {
+      status: "starting",
+      lastError: "warming up",
+      updatedAtUnix: 1713139200,
+      startedAtUnix: 1713139100,
+    });
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const listed = await client.request<{
+        sources: Array<{
+          sourceId: string;
+          status: string;
+          runtime?: {
+            backend: string;
+            observation: string;
+            namespace: string;
+            sourceKey: string;
+            status: string;
+            runId: string;
+            streamId: string;
+            lastError: string | null;
+            updatedAt: string | null;
+          } | null;
+        }>;
+      }>("/sources", undefined, "GET");
+      assert.equal(listed.statusCode, 200);
+      const listedSource = listed.data.sources.find((entry) => entry.sourceId === source.sourceId);
+      assert.ok(listedSource);
+      assert.equal(listedSource?.status, "active");
+      assert.equal(listedSource?.runtime?.backend, "uxc");
+      assert.equal(listedSource?.runtime?.observation, "live");
+      assert.equal(listedSource?.runtime?.namespace, "agentinbox");
+      assert.equal(listedSource?.runtime?.sourceKey, "github_repo:holon-run/agentinbox");
+      assert.equal(listedSource?.runtime?.status, "starting");
+      assert.equal(listedSource?.runtime?.runId, "run:github_repo:holon-run/agentinbox");
+      assert.equal(listedSource?.runtime?.streamId, "stream:github_repo:holon-run/agentinbox");
+      assert.equal(listedSource?.runtime?.lastError, "warming up");
+      assert.equal(listedSource?.runtime?.updatedAt, "2024-04-15T00:00:00.000Z");
+
+      const details = await client.request<{
+        source: { sourceId: string; status: string };
+        runtime?: {
+          backend: string;
+          observation: string;
+          namespace: string;
+          sourceKey: string;
+          status: string;
+          runId: string;
+          streamId: string;
+          lastError: string | null;
+          updatedAt: string | null;
+        } | null;
+      }>(`/sources/${encodeURIComponent(source.sourceId)}`, undefined, "GET");
+      assert.equal(details.statusCode, 200);
+      assert.equal(details.data.source.sourceId, source.sourceId);
+      assert.equal(details.data.source.status, "active");
+      assert.equal(details.data.runtime?.backend, "uxc");
+      assert.equal(details.data.runtime?.observation, "live");
+      assert.equal(details.data.runtime?.namespace, "agentinbox");
+      assert.equal(details.data.runtime?.sourceKey, "github_repo:holon-run/agentinbox");
+      assert.equal(details.data.runtime?.status, "starting");
+      assert.equal(details.data.runtime?.runId, "run:github_repo:holon-run/agentinbox");
+      assert.equal(details.data.runtime?.streamId, "stream:github_repo:holon-run/agentinbox");
+      assert.equal(details.data.runtime?.lastError, "warming up");
+      assert.equal(details.data.runtime?.updatedAt, "2024-04-15T00:00:00.000Z");
+
+      const status = await client.request<{
+        sources: Array<{
+          sourceId: string;
+          runtime?: {
+            backend: string;
+            observation: string;
+            namespace: string;
+            sourceKey: string;
+            status: string;
+            runId: string;
+            streamId: string;
+            lastError: string | null;
+            updatedAt: string | null;
+          } | null;
+        }>;
+      }>("/status", undefined, "GET");
+      assert.equal(status.statusCode, 200);
+      const statusSource = status.data.sources.find((entry) => entry.sourceId === source.sourceId);
+      assert.ok(statusSource);
+      assert.equal(statusSource?.runtime?.backend, "uxc");
+      assert.equal(statusSource?.runtime?.observation, "live");
+      assert.equal(statusSource?.runtime?.namespace, "agentinbox");
+      assert.equal(statusSource?.runtime?.sourceKey, "github_repo:holon-run/agentinbox");
+      assert.equal(statusSource?.runtime?.status, "starting");
+      assert.equal(statusSource?.runtime?.runId, "run:github_repo:holon-run/agentinbox");
+      assert.equal(statusSource?.runtime?.streamId, "stream:github_repo:holon-run/agentinbox");
+      assert.equal(statusSource?.runtime?.lastError, "warming up");
+      assert.equal(statusSource?.runtime?.updatedAt, "2024-04-15T00:00:00.000Z");
     } finally {
       await started.close();
     }
