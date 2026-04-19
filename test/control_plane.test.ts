@@ -134,6 +134,11 @@ test("cli accepts --json as a no-op compatibility flag on default JSON commands"
   const env = {
     ...process.env,
     AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%962",
+    CODEX_THREAD_ID: "thread-json-compat",
   };
 
   try {
