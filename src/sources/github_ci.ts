@@ -284,6 +284,7 @@ export function normalizeGithubWorkflowRunEvent(
   const variant = buildWorkflowRunVariant(workflowName, status, conclusion);
   const actor = asRecord(run.actor);
   const headCommit = asRecord(run.head_commit);
+  const pullRequestNumbers = extractPullRequestNumbers(run.pull_requests);
 
   return {
     sourceId: source.sourceId,
@@ -304,6 +305,7 @@ export function normalizeGithubWorkflowRunEvent(
       event: asString(run.event),
       headSha: asString(run.head_sha),
       headBranch: asString(run.head_branch),
+      pullRequestNumbers,
       runNumber: asNumber(run.run_number),
       runAttempt: asNumber(run.run_attempt),
       actor: asString(actor.login),
@@ -322,6 +324,7 @@ export function normalizeGithubWorkflowRunEvent(
       event: asString(run.event),
       head_sha: asString(run.head_sha),
       head_branch: asString(run.head_branch),
+      pull_requests: pullRequestNumbers.map((number) => ({ number })),
       run_number: asNumber(run.run_number),
       run_attempt: asNumber(run.run_attempt),
       html_url: asString(run.html_url),
@@ -391,6 +394,20 @@ function asString(value: unknown): string | null {
 
 function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function extractPullRequestNumbers(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const numbers = new Set<number>();
+  for (const entry of value) {
+    const number = asNumber(asRecord(entry).number);
+    if (number && Number.isInteger(number) && number > 0) {
+      numbers.add(number);
+    }
+  }
+  return Array.from(numbers).sort((left, right) => left - right);
 }
 
 function inferWorkflowRunStatus(run: Record<string, unknown>, conclusion: string | null): string {

@@ -82,6 +82,7 @@ test("normalizeGithubWorkflowRunEvent extracts workflow run metadata", () => {
     updated_at: "2026-04-06T10:05:00Z",
     actor: { login: "jolestar" },
     head_commit: { id: "abc123", message: "fix ci" },
+    pull_requests: [{ number: 93 }, { number: 91 }, { number: 93 }],
   });
 
   assert.ok(normalized);
@@ -89,6 +90,8 @@ test("normalizeGithubWorkflowRunEvent extracts workflow run metadata", () => {
   assert.equal(normalized?.eventVariant, "workflow_run.ci.completed.failure");
   assert.equal(normalized?.metadata?.headBranch, "main");
   assert.equal(normalized?.metadata?.conclusion, "failure");
+  assert.deepEqual(normalized?.metadata?.pullRequestNumbers, [91, 93]);
+  assert.deepEqual(normalized?.rawPayload?.pull_requests, [{ number: 91 }, { number: 93 }]);
   assert.equal(normalized?.deliveryHandle, null);
 });
 
@@ -115,6 +118,94 @@ test("normalizeGithubWorkflowRunEvent falls back to observed status and display 
   assert.equal(normalized?.eventVariant, "workflow_run.nightly_checks.observed");
   assert.equal(normalized?.metadata?.name, "Nightly Checks");
   assert.equal(normalized?.metadata?.status, "observed");
+  assert.deepEqual(normalized?.metadata?.pullRequestNumbers, []);
+});
+
+test("github_repo_ci subscriptions can filter by pull request numbers", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const fake = new FakeGithubActionsClient();
+    const runtime = new GithubCiSourceRuntime(store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
+    const source: SourceStream = {
+      sourceId: "src_ci_pr_filter",
+      hostId: "hst_ci_pr_filter",
+      streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox",
+      sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox",
+      configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default", perPage: 10 },
+      status: "active",
+      checkpoint: null,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    store.insertSource(source);
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "github-ci-pr-filter-thread",
+      tmuxPaneId: "%203",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: { metadata: { pullRequestNumbers: [72] } },
+      startPolicy: "earliest",
+    });
+
+    fake.workflowRuns = [
+      {
+        id: 2001,
+        workflow_id: 10,
+        name: "CI",
+        status: "completed",
+        conclusion: "failure",
+        event: "pull_request",
+        head_sha: "sha-pr-72",
+        head_branch: "feature/pr-72",
+        updated_at: "2026-04-06T10:01:00Z",
+        pull_requests: [{ number: 72 }],
+      },
+      {
+        id: 2002,
+        workflow_id: 10,
+        name: "CI",
+        status: "completed",
+        conclusion: "failure",
+        event: "pull_request",
+        head_sha: "sha-pr-73",
+        head_branch: "feature/pr-73",
+        updated_at: "2026-04-06T10:02:00Z",
+        pull_requests: [{ number: 73 }],
+      },
+      {
+        id: 2003,
+        workflow_id: 10,
+        name: "Holon Trigger",
+        status: "completed",
+        conclusion: "success",
+        event: "issue_comment",
+        head_sha: "sha-main",
+        head_branch: "main",
+        updated_at: "2026-04-06T10:03:00Z",
+      },
+    ];
+
+    await runtime.ensureSource(source);
+    await runtime.pollSource(source.sourceId);
+    const subscriptionResult = await service.pollSubscription(subscription.subscriptionId);
+    const items = service.listInboxItems(subscription.agentId);
+
+    assert.equal(subscriptionResult.inboxItemsCreated, 1);
+    assert.equal(items.length, 1);
+    assert.deepEqual(items[0]?.metadata?.pullRequestNumbers, [72]);
+    assert.equal(items[0]?.metadata?.headBranch, "feature/pr-72");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("github_repo_ci source runtime appends workflow run events and subscriptions materialize inbox items", async () => {

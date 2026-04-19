@@ -1234,6 +1234,13 @@ test("github pr shortcut with withCi creates repo and sibling ci subscriptions",
       subscriptions.map((subscription) => subscription.trackedResourceRef),
       ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
     );
+    assert.deepEqual(
+      subscriptions.map((subscription) => subscription.filter),
+      [
+        { metadata: { number: 93, isPullRequest: true } },
+        { metadata: { pullRequestNumbers: [93] } },
+      ],
+    );
     assert.deepEqual(subscriptions.map((subscription) => subscription.cleanupPolicy), [
       { mode: "on_terminal" },
       { mode: "on_terminal" },

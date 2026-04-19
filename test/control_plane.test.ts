@@ -1576,6 +1576,7 @@ test("cli github pr shortcut with withCi returns created sibling subscriptions",
     const payload = JSON.parse(added.stdout) as {
       subscriptions: Array<{
         sourceId: string;
+        filter: Record<string, unknown>;
         trackedResourceRef: string | null;
         cleanupPolicy: Record<string, unknown>;
       }>;
@@ -1588,6 +1589,13 @@ test("cli github pr shortcut with withCi returns created sibling subscriptions",
     assert.deepEqual(
       payload.subscriptions.map((subscription) => subscription.trackedResourceRef),
       ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
+    );
+    assert.deepEqual(
+      payload.subscriptions.map((subscription) => subscription.filter),
+      [
+        { metadata: { number: 93, isPullRequest: true } },
+        { metadata: { pullRequestNumbers: [93] } },
+      ],
     );
     assert.deepEqual(payload.subscriptions.map((subscription) => subscription.cleanupPolicy), [
       { mode: "on_terminal" },
@@ -1757,6 +1765,7 @@ test("control plane github pr shortcut with withCi returns created sibling subsc
       const subscription = await client.request<{
         subscriptions: Array<{
           sourceId: string;
+          filter: Record<string, unknown>;
           trackedResourceRef: string | null;
           cleanupPolicy: Record<string, unknown>;
         }>;
@@ -1777,6 +1786,13 @@ test("control plane github pr shortcut with withCi returns created sibling subsc
       assert.deepEqual(
         subscription.data.subscriptions.map((created) => created.trackedResourceRef),
         ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
+      );
+      assert.deepEqual(
+        subscription.data.subscriptions.map((created) => created.filter),
+        [
+          { metadata: { number: 93, isPullRequest: true } },
+          { metadata: { pullRequestNumbers: [93] } },
+        ],
       );
       assert.deepEqual(subscription.data.subscriptions.map((created) => created.cleanupPolicy), [
         { mode: "on_terminal" },
