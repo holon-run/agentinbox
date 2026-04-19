@@ -456,6 +456,11 @@ export function expandGithubSubscriptionShortcut(input: {
       ...(withCi
         ? [{
             streamKind: "ci_runs",
+            filter: {
+              metadata: {
+                pullRequestNumbers: [number],
+              },
+            },
             trackedResourceRef,
             cleanupPolicy: { mode: "on_terminal" as const },
           }]

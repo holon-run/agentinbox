@@ -468,6 +468,7 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
         { name: "event", type: "string|null", description: "GitHub trigger event for the workflow run." },
         { name: "headBranch", type: "string|null", description: "Head branch for the workflow run." },
         { name: "headSha", type: "string|null", description: "Head commit SHA for the workflow run." },
+        { name: "pullRequestNumbers", type: "number[]", description: "Pull request numbers associated with the workflow run." },
         { name: "actor", type: "string|null", description: "Actor login for the workflow run." },
         { name: "commitMessage", type: "string|null", description: "Head commit message when present." },
         { name: "htmlUrl", type: "string|null", description: "GitHub Actions run URL." },

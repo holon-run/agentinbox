@@ -429,6 +429,11 @@ test("github subscription shortcut helpers expose and expand the builtin pr shor
       },
       {
         streamKind: "ci_runs",
+        filter: {
+          metadata: {
+            pullRequestNumbers: [74],
+          },
+        },
         trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
         cleanupPolicy: { mode: "on_terminal" },
       },
