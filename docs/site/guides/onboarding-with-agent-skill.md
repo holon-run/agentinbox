@@ -54,7 +54,7 @@ If GitHub auth should be reused from `gh`:
 uxc auth credential import github --from gh
 ```
 
-This requires `uxc` 0.15.0 or newer:
+This requires `uxc` 0.15.3 or newer:
 
 - https://github.com/holon-run/uxc
 
