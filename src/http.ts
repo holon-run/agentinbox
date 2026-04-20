@@ -822,11 +822,34 @@ function buildFastifyServer(service: AgentInboxService) {
       body: {
         type: "object",
         additionalProperties: false,
-        required: ["backend"],
+        oneOf: [
+          {
+            required: ["backend"],
+            properties: {
+              backend: { type: "string", enum: ["tmux", "iterm2"] },
+            },
+          },
+          {
+            required: ["agentId", "webhook"],
+            properties: {
+              webhook: {
+                type: "object",
+                additionalProperties: false,
+                required: ["url"],
+                properties: {
+                  url: { type: "string", minLength: 1 },
+                  activationMode: { type: "string", enum: ["activation_only", "activation_with_items"] },
+                  notifyLeaseMs: { type: "integer", minimum: 1 },
+                  minUnackedItems: { type: "integer", minimum: 1 },
+                },
+              },
+            },
+          },
+        ],
         properties: {
           agentId: { type: "string" },
           forceRebind: { type: "boolean" },
-          backend: { type: "string", minLength: 1 },
+          backend: { type: "string", enum: ["tmux", "iterm2"] },
           runtimeKind: { type: "string" },
           runtimeSessionId: { type: "string" },
           runtimePid: { type: "integer", minimum: 1 },
@@ -836,6 +859,17 @@ function buildFastifyServer(service: AgentInboxService) {
           itermSessionId: { type: "string" },
           notifyLeaseMs: { type: "integer", minimum: 1 },
           minUnackedItems: { type: "integer", minimum: 1 },
+          webhook: {
+            type: "object",
+            additionalProperties: false,
+            required: ["url"],
+            properties: {
+              url: { type: "string", minLength: 1 },
+              activationMode: { type: "string", enum: ["activation_only", "activation_with_items"] },
+              notifyLeaseMs: { type: "integer", minimum: 1 },
+              minUnackedItems: { type: "integer", minimum: 1 },
+            },
+          },
         },
       },
       response: {
@@ -845,10 +879,11 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const body = request.body as Record<string, unknown>;
+    const webhookBody = body.webhook as Record<string, unknown> | undefined;
     return service.registerAgent({
       agentId: optionalString(body.agentId) ?? null,
       forceRebind: body.forceRebind === true,
-      backend: String(body.backend) as never,
+      backend: optionalString(body.backend) as never,
       runtimeKind: optionalString(body.runtimeKind) as never,
       runtimeSessionId: optionalString(body.runtimeSessionId),
       runtimePid: typeof body.runtimePid === "number" ? body.runtimePid : null,
@@ -859,6 +894,14 @@ function buildFastifyServer(service: AgentInboxService) {
       itermSessionId: optionalString(body.itermSessionId),
       notifyLeaseMs: typeof body.notifyLeaseMs === "number" ? body.notifyLeaseMs : null,
       minUnackedItems: typeof body.minUnackedItems === "number" ? body.minUnackedItems : null,
+      webhook: webhookBody
+        ? {
+            url: String(webhookBody.url),
+            activationMode: optionalString(webhookBody.activationMode) as never,
+            notifyLeaseMs: typeof webhookBody.notifyLeaseMs === "number" ? webhookBody.notifyLeaseMs : null,
+            minUnackedItems: typeof webhookBody.minUnackedItems === "number" ? webhookBody.minUnackedItems : null,
+          }
+        : null,
     });
   });
 
@@ -1859,6 +1902,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
+    message.startsWith("webhook agent registration requires") ||
+    message.startsWith("agent registration requires either") ||
     message.startsWith("notifyLeaseMs must be a positive integer") ||
     message.startsWith("minUnackedItems must be a positive integer") ||
     message.startsWith("invalid webhook activation target") ||

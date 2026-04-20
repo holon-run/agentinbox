@@ -395,9 +395,38 @@ async function main(): Promise<void> {
   }
 
   if (command === "agent" && normalized[1] === "register") {
+    const agentId = takeFlagValue(normalized, "--agent-id") ?? undefined;
+    const notifyLeaseMs = parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined;
+    const minUnackedItems = parseOptionalNumber(takeFlagValue(normalized, "--min-unacked-items")) ?? undefined;
+    const webhookUrl = takeFlagValue(normalized, "--webhook-url");
+    if (webhookUrl) {
+      if (!agentId) {
+        throw new Error(
+          "usage: agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N]",
+        );
+      }
+      const webhookNotifyLeaseMs = parseOptionalNumber(
+        takeFlagValue(normalized, "--webhook-notify-lease-ms"),
+      ) ?? notifyLeaseMs;
+      const webhookMinUnackedItems = parseOptionalNumber(
+        takeFlagValue(normalized, "--webhook-min-unacked-items"),
+      ) ?? minUnackedItems;
+      await printRemote(client, "/agents", {
+        agentId,
+        forceRebind: normalized.includes("--force-rebind"),
+        webhook: {
+          url: webhookUrl,
+          activationMode: takeFlagValue(normalized, "--webhook-activation-mode") ?? undefined,
+          notifyLeaseMs: webhookNotifyLeaseMs,
+          minUnackedItems: webhookMinUnackedItems,
+        },
+      });
+      return;
+    }
+
     const detected = detectTerminalContext(process.env);
     await printRemote(client, "/agents", {
-      agentId: takeFlagValue(normalized, "--agent-id") ?? undefined,
+      agentId,
       forceRebind: normalized.includes("--force-rebind"),
       backend: detected.backend,
       runtimeKind: detected.runtimeKind,
@@ -407,8 +436,8 @@ async function main(): Promise<void> {
       tty: detected.tty ?? undefined,
       termProgram: detected.termProgram ?? undefined,
       itermSessionId: detected.itermSessionId ?? undefined,
-      notifyLeaseMs: parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined,
-      minUnackedItems: parseOptionalNumber(takeFlagValue(normalized, "--min-unacked-items")) ?? undefined,
+      notifyLeaseMs,
+      minUnackedItems,
     });
     return;
   }
@@ -1456,6 +1485,7 @@ Usage:
 
 Usage:
   agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N] [--min-unacked-items N]
+  agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N]
   agentinbox agent list
   agentinbox agent current
   agentinbox agent show <agentId>

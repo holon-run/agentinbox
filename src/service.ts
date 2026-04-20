@@ -692,19 +692,24 @@ export class AgentInboxService {
   registerAgent(input: RegisterAgentInput): RegisterAgentResult {
     validateNotifyLeaseMs(input.notifyLeaseMs);
     validateMinUnackedItems(input.minUnackedItems);
-    validateTerminalRegistration(input);
+    validateRegisterAgentInput(input);
 
+    const webhookInput = input.webhook ?? null;
     const runtimeKind = input.runtimeKind ?? "unknown";
-    const agentId = input.agentId ?? this.resolveAutoAgentId({
-      runtimeKind,
-      runtimeSessionId: input.runtimeSessionId ?? null,
-      backend: input.backend,
-      tmuxPaneId: input.tmuxPaneId ?? null,
-      itermSessionId: input.itermSessionId ?? null,
-      tty: input.tty ?? null,
-    });
+    const agentId = webhookInput
+      ? input.agentId!
+      : input.agentId ?? this.resolveAutoAgentId({
+          runtimeKind,
+          runtimeSessionId: input.runtimeSessionId ?? null,
+          backend: input.backend!,
+          tmuxPaneId: input.tmuxPaneId ?? null,
+          itermSessionId: input.itermSessionId ?? null,
+          tty: input.tty ?? null,
+        });
     const now = nowIso();
-    this.handleAgentRegistrationConflicts(agentId, input);
+    if (!webhookInput) {
+      this.handleAgentRegistrationConflicts(agentId, input);
+    }
     const existingAgent = this.store.getAgent(agentId);
     const agent = existingAgent
       ? this.store.updateAgent(agentId, {
@@ -730,11 +735,20 @@ export class AgentInboxService {
           return created;
         })();
 
-    const terminalTarget = this.upsertTerminalActivationTarget(agent.agentId, input, now);
+    let terminalTarget: TerminalActivationTarget | null = null;
+    let webhookTarget: WebhookActivationTarget | null = null;
+    if (webhookInput) {
+      webhookTarget = this.upsertWebhookActivationTarget(agent.agentId, webhookInput, now);
+      this.removeTerminalActivationTargets(agent.agentId);
+    } else {
+      terminalTarget = this.upsertTerminalActivationTarget(agent.agentId, input, now);
+    }
     const inbox = this.ensureInboxForAgent(agent.agentId);
     return {
       agent,
       terminalTarget,
+      webhookTarget,
+      activationChannel: webhookTarget ? "webhook" : terminalTarget ? "terminal" : null,
       inbox,
     };
   }
@@ -1462,7 +1476,7 @@ export class AgentInboxService {
     });
     this.notifyInboxWatchers(agentId, [entry]);
 
-    const targets = this.store.listActivationTargetsForAgent(agentId).filter((target) => target.status === "active");
+    const targets = this.listEffectiveActiveActivationTargets(agentId);
     for (const target of targets) {
       this.enqueueActivationTarget(target, {
         agentId,
@@ -1785,7 +1799,7 @@ export class AgentInboxService {
       });
 
       const inbox = this.ensureInboxForAgent(subscription.agentId);
-      const targets = this.store.listActivationTargetsForAgent(subscription.agentId).filter((target) => target.status === "active");
+      const targets = this.listEffectiveActiveActivationTargets(subscription.agentId);
       let matched = 0;
       let inboxItemsCreated = 0;
       let lastProcessedOffset: number | null = null;
@@ -2136,7 +2150,7 @@ export class AgentInboxService {
       const candidate = assignedAgentIdFromContext({
         runtimeKind: input.runtimeKind,
         runtimeSessionId: input.runtimeSessionId,
-        backend: input.backend,
+        backend: input.backend!,
         tmuxPaneId: input.tmuxPaneId,
         itermSessionId: input.itermSessionId,
         tty: input.tty,
@@ -2156,6 +2170,15 @@ export class AgentInboxService {
   }
 
   private handleAgentRegistrationConflicts(agentId: string, input: RegisterAgentInput): void {
+    const activeWebhookTarget = this.store
+      .listActivationTargetsForAgent(agentId)
+      .find((target): target is WebhookActivationTarget => target.kind === "webhook" && target.status === "active");
+    if (activeWebhookTarget) {
+      throw new Error(
+        `agent register conflict: agent ${agentId} already has active webhook target ${activeWebhookTarget.targetId}; terminal registration is disabled while webhook is active`,
+      );
+    }
+
     const currentTarget = findExistingTerminalActivationTarget(this.store, input);
     if (currentTarget && currentTarget.agentId !== agentId) {
       if (!input.forceRebind) {
@@ -2183,6 +2206,40 @@ export class AgentInboxService {
         this.store.deleteActivationTarget(agentId, target.targetId);
       }
     }
+  }
+
+  private upsertWebhookActivationTarget(
+    agentId: string,
+    input: AddWebhookActivationTargetInput,
+    now: string,
+  ): WebhookActivationTarget {
+    validateNotifyLeaseMs(input.notifyLeaseMs);
+    validateMinUnackedItems(input.minUnackedItems);
+    const mode = normalizeWebhookActivationMode(input.activationMode);
+    const targets = this.store
+      .listActivationTargetsForAgent(agentId)
+      .filter((target): target is WebhookActivationTarget => target.kind === "webhook");
+    const matching = targets.find((target) => target.url === input.url);
+    const existing = matching ?? targets[0] ?? null;
+    if (existing) {
+      const target = this.store.updateWebhookActivationTarget(existing.targetId, {
+        url: input.url,
+        mode,
+        notifyLeaseMs: input.notifyLeaseMs ?? existing.notifyLeaseMs,
+        minUnackedItems: input.minUnackedItems ?? existing.minUnackedItems ?? null,
+        updatedAt: now,
+        lastSeenAt: now,
+      });
+      for (const duplicate of targets) {
+        if (duplicate.targetId !== target.targetId) {
+          this.store.deleteActivationTarget(agentId, duplicate.targetId);
+        }
+      }
+      this.markAgentActive(agentId);
+      return target;
+    }
+
+    return this.addWebhookActivationTarget(agentId, input);
   }
 
   private upsertTerminalActivationTarget(agentId: string, input: RegisterAgentInput, now: string): TerminalActivationTarget {
@@ -2228,7 +2285,7 @@ export class AgentInboxService {
       runtimeKind: input.runtimeKind ?? "unknown",
       runtimeSessionId: input.runtimeSessionId ?? null,
       runtimePid: input.runtimePid ?? null,
-      backend: input.backend,
+      backend: input.backend!,
       tmuxPaneId: input.tmuxPaneId ?? null,
       tty: input.tty ?? null,
       termProgram: input.termProgram ?? null,
@@ -2240,6 +2297,24 @@ export class AgentInboxService {
     this.store.insertActivationTarget(target);
     this.markAgentActive(agentId);
     return target;
+  }
+
+  private removeTerminalActivationTargets(agentId: string): void {
+    const targets = this.store
+      .listActivationTargetsForAgent(agentId)
+      .filter((target): target is TerminalActivationTarget => target.kind === "terminal");
+    for (const target of targets) {
+      this.store.deleteActivationTarget(agentId, target.targetId);
+    }
+  }
+
+  private listEffectiveActiveActivationTargets(agentId: string): ActivationTarget[] {
+    const targets = this.store.listActivationTargetsForAgent(agentId).filter((target) => target.status === "active");
+    return effectiveActiveTargets(targets);
+  }
+
+  private isEffectiveActiveTarget(agentId: string, targetId: string): boolean {
+    return this.listEffectiveActiveActivationTargets(agentId).some((target) => target.targetId === targetId);
   }
 
   private enqueueActivationTarget(
@@ -2502,6 +2577,10 @@ export class AgentInboxService {
       this.store.deleteActivationDispatchState(agentId, targetId);
       return;
     }
+    if (!this.isEffectiveActiveTarget(agentId, targetId)) {
+      this.store.deleteActivationDispatchState(agentId, targetId);
+      return;
+    }
     const inbox = this.ensureInboxForAgent(agentId);
     const unacked = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }).length;
     if (unacked === 0) {
@@ -2587,6 +2666,15 @@ export class AgentInboxService {
     }
     if (target.status === "offline") {
       return "offline";
+    }
+    if (!this.isEffectiveActiveTarget(input.agentId, input.targetId)) {
+      this.logger.debug("activation.dispatch_suppressed", {
+        agentId: input.agentId,
+        targetId: target.targetId,
+        reason: "non_effective_target",
+        targetKind: target.kind,
+      });
+      return "suppressed";
     }
     const state = this.store.getActivationDispatchState(input.agentId, input.targetId);
     const inbox = this.ensureInboxForAgent(input.agentId);
@@ -3220,7 +3308,7 @@ export class AgentInboxService {
           continue;
         }
         this.notifyInboxWatchers(inbox.ownerAgentId, [entry]);
-        const targets = this.store.listActivationTargetsForAgent(inbox.ownerAgentId).filter((target) => target.status === "active");
+        const targets = this.listEffectiveActiveActivationTargets(inbox.ownerAgentId);
         for (const target of targets) {
           this.enqueueActivationTarget(target, {
             agentId: inbox.ownerAgentId,
@@ -3758,7 +3846,13 @@ export class ActivationDispatcher {
   }
 }
 
-function validateTerminalRegistration(input: RegisterAgentInput): void {
+function validateRegisterAgentInput(input: RegisterAgentInput): void {
+  if (input.webhook) {
+    if (!input.agentId) {
+      throw new Error("webhook agent registration requires agentId");
+    }
+    return;
+  }
   if (input.backend === "tmux") {
     if (!input.tmuxPaneId) {
       throw new Error("tmux agent registration requires tmuxPaneId");
@@ -3771,7 +3865,10 @@ function validateTerminalRegistration(input: RegisterAgentInput): void {
     }
     return;
   }
-  throw new Error(`unsupported terminal backend: ${String(input.backend)}`);
+  if (input.backend) {
+    throw new Error(`unsupported terminal backend: ${input.backend}`);
+  }
+  throw new Error("agent registration requires either a terminal backend or webhook");
 }
 
 function validateNotifyLeaseMs(value: number | null | undefined): void {
@@ -3871,6 +3968,9 @@ function normalizeWebhookActivationMode(mode: AddWebhookActivationTargetInput["a
 }
 
 function findExistingTerminalActivationTarget(store: AgentInboxStore, input: RegisterAgentInput): TerminalActivationTarget | null {
+  if (!input.backend) {
+    return null;
+  }
   if (input.runtimeSessionId) {
     const target = store.getTerminalActivationTargetByRuntimeSession(input.runtimeKind ?? "unknown", input.runtimeSessionId);
     if (target) {
@@ -3889,6 +3989,14 @@ function findExistingTerminalActivationTarget(store: AgentInboxStore, input: Reg
     }
   }
   return null;
+}
+
+function effectiveActiveTargets(targets: ActivationTarget[]): ActivationTarget[] {
+  const activeWebhookTargets = targets.filter((target): target is WebhookActivationTarget => target.kind === "webhook" && target.status === "active");
+  if (activeWebhookTargets.length > 0) {
+    return activeWebhookTargets;
+  }
+  return targets.filter((target) => target.status === "active");
 }
 
 function isSameTerminalIdentity(target: TerminalActivationTarget, input: RegisterAgentInput): boolean {
