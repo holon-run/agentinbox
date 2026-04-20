@@ -12,6 +12,14 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0-beta.5] - 2026-04-20
+
+### Changed
+
+- Rolled the beta release line forward without additional code changes beyond
+  `v1.0.0-beta.4`, so local environments can converge on the latest published
+  beta package and release tag.
+
 ## [1.0.0-beta.4] - 2026-04-20
 
 ### Fixed
