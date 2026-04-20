@@ -3812,7 +3812,8 @@ test("notification thresholds defer activation until minUnackedItems is reached"
       notifyLeaseMs: 100,
       minUnackedItems: 2,
     });
-    service.addWebhookActivationTarget(registered.agent.agentId, {
+    const terminalTarget = requireTerminalTarget(registered);
+    const webhookTarget = service.addWebhookActivationTarget(registered.agent.agentId, {
       url: "http://127.0.0.1:9999/webhook",
       activationMode: "activation_with_items",
       notifyLeaseMs: 100,
@@ -3841,8 +3842,10 @@ test("notification thresholds defer activation until minUnackedItems is reached"
     assert.equal(dispatcher.calls.length, 0);
     assert.equal(terminalDispatcher.calls.length, 0);
     const statesAfterFirst = store.listActivationDispatchStatesForAgent(registered.agent.agentId);
-    assert.equal(statesAfterFirst.length, 2);
+    assert.equal(statesAfterFirst.length, 1);
     assert.ok(statesAfterFirst.every((state) => state.status === "dirty" && state.leaseExpiresAt === null));
+    assert.equal(statesAfterFirst[0]?.targetId, webhookTarget.targetId);
+    assert.equal(store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId), null);
 
     await service.appendSourceEventByCaller(source.sourceId, {
       sourceNativeId: "evt-threshold-2",
@@ -3854,7 +3857,8 @@ test("notification thresholds defer activation until minUnackedItems is reached"
     await sleep(40);
 
     assert.equal(dispatcher.calls.length, 1);
-    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.equal(dispatcher.calls[0]?.activation.targetId, webhookTarget.targetId);
+    assert.equal(terminalDispatcher.calls.length, 0);
   } finally {
     await service.stop();
     store.close();
