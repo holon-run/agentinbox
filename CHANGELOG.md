@@ -12,6 +12,17 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0-beta.4] - 2026-04-20
+
+### Fixed
+
+- Made GitHub `pr --withCi` follow filters more reliable by combining
+  `pullRequestNumbers` matching with a deterministic head branch and repository
+  fallback when workflow-run payloads omit PR linkage.
+- Tightened `github_repo_ci` polling to paginate back to the checkpoint
+  boundary, reducing the chance of missing PR workflow runs that land on older
+  pages while still avoiding unbounded reprocessing.
+
 ## [1.0.0-beta.3] - 2026-04-19
 
 ### Fixed
