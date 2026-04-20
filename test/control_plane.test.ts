@@ -2774,6 +2774,7 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(activation.agentId, agentId);
       assert.equal(activation.targetKind, "webhook");
       assert.equal(activation.newItemCount, 1);
+      assert.ok(activation.latestEntryId);
 
       const inboxResponse = await client.request<{ entries: Array<{ entryId: string }> }>(
         `/agents/${encodeURIComponent(agentId)}/inbox/entries`,

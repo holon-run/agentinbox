@@ -2759,6 +2759,7 @@ export class AgentInboxService {
           targetKind: target.kind,
           subscriptionIds: input.subscriptionIds,
           sourceIds: input.sourceIds,
+          latestEntryId: latestEntryIdForNotification(input.entries),
           newEntryCount: input.entries.length,
           newItemCount: input.newItemCount,
           summary,
@@ -2905,6 +2906,7 @@ export class AgentInboxService {
       totalUnackedCount,
       summary,
       preview,
+      latestEntryId: latestEntryIdForNotification(entries),
     });
     return {
       prompt,
@@ -3925,6 +3927,10 @@ function summarizeActivation(inboxId: string, newItemCount: number, firstSummary
     return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
   }
   return `${newItemCount} new ${itemWord} in ${inboxId}`;
+}
+
+function latestEntryIdForNotification(entries: InboxEntry[]): string | null {
+  return entries.length > 0 ? entries[entries.length - 1]?.entryId ?? null : null;
 }
 
 function latestSummary(entries: Array<{ summary: string | null }>): string | null {

@@ -1801,8 +1801,8 @@ export class AgentInboxStore {
       `
       insert into activations (
         activation_id, kind, agent_id, inbox_id, target_id, target_kind,
-        subscription_ids_json, source_ids_json, new_item_count, summary, items_json, created_at, delivered_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        subscription_ids_json, source_ids_json, latest_entry_id, new_entry_count, new_item_count, summary, items_json, created_at, delivered_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         activation.activationId,
@@ -1813,6 +1813,8 @@ export class AgentInboxStore {
         activation.targetKind,
         JSON.stringify(activation.subscriptionIds),
         JSON.stringify(activation.sourceIds),
+        activation.latestEntryId,
+        activation.newEntryCount,
         activation.newItemCount,
         activation.summary,
         activation.entries ? JSON.stringify(activation.entries) : (activation.items ? JSON.stringify(activation.items) : null),
@@ -2427,6 +2429,7 @@ export class AgentInboxStore {
   }
 
   private mapActivation(row: Record<string, unknown>): Activation {
+    const entries = row.items_json ? parseJson<Activation["entries"]>(row.items_json as string) : undefined;
     return {
       kind: "agentinbox.activation",
       activationId: String(row.activation_id),
@@ -2436,10 +2439,11 @@ export class AgentInboxStore {
       targetKind: row.target_kind as Activation["targetKind"],
       subscriptionIds: parseJson<string[]>(row.subscription_ids_json as string),
       sourceIds: parseJson<string[]>(row.source_ids_json as string),
-      newEntryCount: row.items_json ? parseJson<Activation["entries"]>(row.items_json as string)?.length ?? 0 : Number(row.new_item_count),
+      latestEntryId: row.latest_entry_id == null ? null : String(row.latest_entry_id),
+      newEntryCount: Number(row.new_entry_count ?? (entries?.length ?? row.new_item_count ?? 0)),
       newItemCount: Number(row.new_item_count),
       summary: String(row.summary),
-      entries: row.items_json ? parseJson<Activation["entries"]>(row.items_json as string) : undefined,
+      entries,
       createdAt: String(row.created_at),
       deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
     };

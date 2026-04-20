@@ -472,6 +472,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
@@ -502,6 +503,7 @@ test("store reopens an existing v1 database without archiving it", async () => {
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
@@ -530,6 +532,7 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
@@ -556,6 +559,7 @@ test("store upgrades source-scoped lifecycle retirements to host-scoped retireme
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
@@ -3159,8 +3163,10 @@ test("direct inbox text messages create inbox items and trigger activation", asy
     assert.equal(dispatcher.calls.length, 1);
     assert.equal(dispatcher.calls[0].activation.agentId, alpha.agentId);
     assert.equal(dispatcher.calls[0].activation.newItemCount, 1);
+    assert.ok(dispatcher.calls[0].activation.latestEntryId);
     assert.equal(dispatcher.calls[0].activation.items?.[0]?.itemId, delivered.itemId);
     assert.match(dispatcher.calls[0].activation.summary, /from direct_text_message:/);
+    assert.equal(store.listActivations()[0]?.latestEntryId, dispatcher.calls[0].activation.latestEntryId);
   } finally {
     await service.stop();
     store.close();
@@ -3637,6 +3643,12 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
 
     assert.equal(dispatcher.calls.length, 1);
     assert.equal(terminalDispatcher.calls.length, 1);
+    const activationEntries = dispatcher.calls[0].activation.entries ?? [];
+    assert.equal(
+      dispatcher.calls[0].activation.latestEntryId,
+      activationEntries.length > 0 ? activationEntries[activationEntries.length - 1]?.entryId ?? null : null,
+    );
+    assert.match(terminalDispatcher.calls[0]!.prompt, /Latest entryId: ent_/);
 
     await service.appendSourceEventByCaller(source.sourceId, {
       sourceNativeId: "evt-2",
