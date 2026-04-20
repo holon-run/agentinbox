@@ -1043,6 +1043,42 @@ export class AgentInboxStore {
     return target;
   }
 
+  updateWebhookActivationTarget(
+    targetId: string,
+    input: {
+      url: string;
+      mode: WebhookActivationTarget["mode"];
+      notifyLeaseMs: number;
+      minUnackedItems: number | null;
+      updatedAt: string;
+      lastSeenAt: string;
+    },
+  ): WebhookActivationTarget {
+    this.db.run(
+      `
+      update activation_targets
+      set kind = 'webhook', status = 'active', offline_since = null, last_error = null, consecutive_failures = 0,
+          mode = ?, notify_lease_ms = ?, min_unacked_items = ?, url = ?, updated_at = ?, last_seen_at = ?
+      where target_id = ? and kind = 'webhook'
+    `,
+      [
+        input.mode,
+        input.notifyLeaseMs,
+        input.minUnackedItems,
+        input.url,
+        input.updatedAt,
+        input.lastSeenAt,
+        targetId,
+      ],
+    );
+    this.persist();
+    const target = this.getActivationTarget(targetId);
+    if (!target || target.kind !== "webhook") {
+      throw new Error(`unknown webhook activation target: ${targetId}`);
+    }
+    return target;
+  }
+
   updateActivationTargetRuntime(
     targetId: string,
     input: {

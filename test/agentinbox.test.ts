@@ -342,10 +342,16 @@ async function registerTmuxAgent(service: AgentInboxService, suffix: string): Pr
     tmuxPaneId: `%${suffix}`,
     notifyLeaseMs: 50,
   });
+  const terminalTarget = requireTerminalTarget(registered);
   return {
     agentId: registered.agent.agentId,
-    targetId: registered.terminalTarget.targetId,
+    targetId: terminalTarget.targetId,
   };
+}
+
+function requireTerminalTarget(result: { terminalTarget: TerminalActivationTarget | null }): TerminalActivationTarget {
+  assert.ok(result.terminalTarget);
+  return result.terminalTarget;
 }
 
 async function createLegacyDb(dbPath: string): Promise<void> {
@@ -647,8 +653,10 @@ test("agent register creates a stable agent, inbox, and terminal activation targ
       itermSessionId: "4B4CB6B2-A73B-4420-94A7-BD2CA216A285",
       tty: "/dev/ttys049",
     }));
+    const firstTerminalTarget = requireTerminalTarget(first);
+    const secondTerminalTarget = requireTerminalTarget(second);
     assert.equal(second.agent.agentId, first.agent.agentId);
-    assert.equal(second.terminalTarget.targetId, first.terminalTarget.targetId);
+    assert.equal(secondTerminalTarget.targetId, firstTerminalTarget.targetId);
     assert.equal(store.listAgents().length, 1);
     assert.equal(store.listActivationTargetsForAgent(first.agent.agentId).length, 1);
     const details = service.getInboxDetailsByAgent(first.agent.agentId) as { inbox: { ownerAgentId: string } };
@@ -680,7 +688,7 @@ test("agent register accepts caller-supplied agent ids and upserts the same logi
 
     assert.equal(first.agent.agentId, "agent-alpha");
     assert.equal(second.agent.agentId, "agent-alpha");
-    assert.equal(second.terminalTarget.targetId, first.terminalTarget.targetId);
+    assert.equal(requireTerminalTarget(second).targetId, requireTerminalTarget(first).targetId);
     assert.equal(store.listAgents().length, 1);
   } finally {
     await service.stop();
@@ -738,11 +746,82 @@ test("agent register force rebind moves the logical agent to the current termina
 
     assert.equal(rebound.agent.agentId, "agent-alpha");
     assert.equal(rebound.agent.runtimeSessionId, "thread-agent-alpha-rebound");
-    assert.notEqual(rebound.terminalTarget.targetId, first.terminalTarget.targetId);
+    assert.notEqual(requireTerminalTarget(rebound).targetId, requireTerminalTarget(first).targetId);
     const targets = service.listActivationTargets("agent-alpha");
     assert.equal(targets.length, 1);
     assert.equal(targets[0].kind, "terminal");
     assert.equal(targets[0].kind === "terminal" ? targets[0].tmuxPaneId : null, "%505");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook agent registration requires an explicit agent id", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    assert.throws(() => {
+      service.registerAgent({
+        webhook: {
+          url: "http://127.0.0.1:9999/activate",
+        },
+      });
+    }, /webhook agent registration requires agentId/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook agent registration converges the agent to webhook-only and is idempotent for the same url", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const terminal = service.registerAgent({
+      agentId: "agent-webhook-only",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-webhook-before",
+      tmuxPaneId: "%178",
+      notifyLeaseMs: 100,
+    });
+    assert.equal(terminal.activationChannel, "terminal");
+    assert.ok(terminal.terminalTarget);
+
+    const firstWebhook = service.registerAgent({
+      agentId: "agent-webhook-only",
+      webhook: {
+        url: "http://127.0.0.1:9999/activate",
+        activationMode: "activation_with_items",
+        notifyLeaseMs: 300,
+        minUnackedItems: 2,
+      },
+    });
+    assert.equal(firstWebhook.activationChannel, "webhook");
+    assert.equal(firstWebhook.terminalTarget, null);
+    assert.ok(firstWebhook.webhookTarget);
+    assert.equal(firstWebhook.webhookTarget?.url, "http://127.0.0.1:9999/activate");
+    assert.equal(firstWebhook.webhookTarget?.notifyLeaseMs, 300);
+    assert.equal(firstWebhook.webhookTarget?.minUnackedItems, 2);
+
+    const secondWebhook = service.registerAgent({
+      agentId: "agent-webhook-only",
+      webhook: {
+        url: "http://127.0.0.1:9999/activate",
+        activationMode: "activation_only",
+      },
+    });
+    assert.equal(secondWebhook.activationChannel, "webhook");
+    assert.equal(secondWebhook.terminalTarget, null);
+    assert.ok(secondWebhook.webhookTarget);
+    assert.equal(secondWebhook.webhookTarget?.targetId, firstWebhook.webhookTarget?.targetId);
+    assert.equal(secondWebhook.webhookTarget?.mode, "activation_only");
+
+    const targets = service.listActivationTargets("agent-webhook-only");
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]?.kind, "webhook");
+    assert.equal(store.listActivationDispatchStatesForAgent("agent-webhook-only").length, 0);
   } finally {
     await service.stop();
     store.close();
@@ -2366,6 +2445,7 @@ test("subscription remove preserves unrelated activation dispatch state", async 
       tmuxPaneId: "%334",
       notifyLeaseMs: 100,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "remove-sub-state-demo",
@@ -2386,7 +2466,7 @@ test("subscription remove preserves unrelated activation dispatch state", async 
 
     store.upsertActivationDispatchState({
       agentId: registered.agent.agentId,
-      targetId: registered.terminalTarget.targetId,
+      targetId: terminalTarget.targetId,
       status: "notified",
       leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       lastNotifiedFingerprint: null,
@@ -2407,7 +2487,7 @@ test("subscription remove preserves unrelated activation dispatch state", async 
 
     const state = store.getActivationDispatchState(
       registered.agent.agentId,
-      registered.terminalTarget.targetId,
+      terminalTarget.targetId,
     );
     assert.ok(state);
     assert.deepEqual(state.pendingSubscriptionIds, [first.subscriptionId]);
@@ -3624,7 +3704,7 @@ test("compact and gc remove only acked inbox items older than retention", async 
   }
 });
 
-test("webhook and terminal targets share ack-gated notification flow", async () => {
+test("active webhook targets suppress terminal activation dispatch for the same agent", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const terminalDispatcher = new RecordingTerminalDispatcher();
   const { store, service, dir } = await makeService({
@@ -3642,7 +3722,8 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
       tmuxPaneId: "%42",
       notifyLeaseMs: 100,
     });
-    service.addWebhookActivationTarget(registered.agent.agentId, {
+    const terminalTarget = requireTerminalTarget(registered);
+    const webhookTarget = service.addWebhookActivationTarget(registered.agent.agentId, {
       url: "http://127.0.0.1:9999/webhook",
       activationMode: "activation_with_items",
       notifyLeaseMs: 100,
@@ -3668,13 +3749,15 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
     await sleep(40);
 
     assert.equal(dispatcher.calls.length, 1);
-    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.equal(terminalDispatcher.calls.length, 0);
     const activationEntries = dispatcher.calls[0].activation.entries ?? [];
     assert.equal(
       dispatcher.calls[0].activation.latestEntryId,
       activationEntries.length > 0 ? activationEntries[activationEntries.length - 1]?.entryId ?? null : null,
     );
-    assert.match(terminalDispatcher.calls[0]!.prompt, /Latest entryId: ent_/);
+    assert.equal(dispatcher.calls[0].activation.targetId, webhookTarget.targetId);
+    assert.equal(store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId), null);
+    assert.ok(store.getActivationDispatchState(registered.agent.agentId, webhookTarget.targetId));
 
     await service.appendSourceEventByCaller(source.sourceId, {
       sourceNativeId: "evt-2",
@@ -3686,7 +3769,7 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
     await sleep(40);
 
     assert.equal(dispatcher.calls.length, 1);
-    assert.equal(terminalDispatcher.calls.length, 1);
+    assert.equal(terminalDispatcher.calls.length, 0);
 
     const ack = await service.ackAllInboxItems(registered.agent.agentId);
     assert.equal(ack.acked, 2);
@@ -3701,8 +3784,8 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
     await sleep(40);
 
     assert.equal(dispatcher.calls.length, 2);
-    assert.equal(terminalDispatcher.calls.length, 2);
-    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 2);
+    assert.equal(terminalDispatcher.calls.length, 0);
+    assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 1);
   } finally {
     await service.stop();
     store.close();
@@ -3796,6 +3879,7 @@ test("lease reminders stay suppressed while unacked items remain below minUnacke
       notifyLeaseMs: 50,
       minUnackedItems: 2,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "local-event-threshold-reminder",
@@ -3817,7 +3901,7 @@ test("lease reminders stay suppressed while unacked items remain below minUnacke
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 0);
-    let state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    let state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(state);
     assert.equal(state.status, "dirty");
     assert.equal(state.leaseExpiresAt, null);
@@ -3827,7 +3911,7 @@ test("lease reminders stay suppressed while unacked items remain below minUnacke
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 0);
-    state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(state);
     assert.equal(state.status, "dirty");
     assert.equal(state.leaseExpiresAt, null);
@@ -3853,6 +3937,7 @@ test("re-registering a terminal agent preserves notification policy when flags a
       notifyLeaseMs: 250,
       minUnackedItems: 4,
     });
+    const registeredTerminalTarget = requireTerminalTarget(registered);
 
     const rebound = service.registerAgent({
       agentId: registered.agent.agentId,
@@ -3861,11 +3946,12 @@ test("re-registering a terminal agent preserves notification policy when flags a
       runtimeSessionId: "thread-policy-preserve",
       tmuxPaneId: "%422",
     });
+    const reboundTerminalTarget = requireTerminalTarget(rebound);
 
-    assert.equal(rebound.terminalTarget.targetId, registered.terminalTarget.targetId);
-    assert.equal(rebound.terminalTarget.notifyLeaseMs, 250);
-    assert.equal(rebound.terminalTarget.minUnackedItems, 4);
-    assert.deepEqual(rebound.terminalTarget.notificationPolicy, {
+    assert.equal(reboundTerminalTarget.targetId, registeredTerminalTarget.targetId);
+    assert.equal(reboundTerminalTarget.notifyLeaseMs, 250);
+    assert.equal(reboundTerminalTarget.minUnackedItems, 4);
+    assert.deepEqual(reboundTerminalTarget.notificationPolicy, {
       notifyLeaseMs: 250,
       minUnackedItems: 4,
     });
@@ -4371,6 +4457,7 @@ test("preview-aware terminal prompts still dedupe unchanged lease reminders", as
       tmuxPaneId: "%58",
       notifyLeaseMs: 50,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "local-event-inline-preview-dedupe",
@@ -4400,7 +4487,7 @@ test("preview-aware terminal prompts still dedupe unchanged lease reminders", as
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 1);
-    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    const state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(state?.lastNotifiedFingerprint);
   } finally {
     await service.stop();
@@ -4425,6 +4512,7 @@ test("lease expiry does not repeat identical terminal prompts for unchanged inbo
       tmuxPaneId: "%53",
       notifyLeaseMs: 50,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "local-event-terminal-reminder-dedupe",
@@ -4452,7 +4540,7 @@ test("lease expiry does not repeat identical terminal prompts for unchanged inbo
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 1);
-    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    const state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(state);
     assert.equal(state.status, "notified");
     assert.ok(state.leaseExpiresAt);
@@ -4480,6 +4568,7 @@ test("dirty terminal reminders re-notify only when the effective prompt changes"
       tmuxPaneId: "%54",
       notifyLeaseMs: 50,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "local-event-terminal-reminder-changes",
@@ -4519,7 +4608,7 @@ test("dirty terminal reminders re-notify only when the effective prompt changes"
 
     assert.equal(terminalDispatcher.calls.length, 2);
     assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 2 unacked items in inbox/);
-    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    const state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(state?.lastNotifiedFingerprint);
     assert.equal(state?.pendingNewItemCount, 0);
     assert.equal(state?.pendingSummary, null);
@@ -4546,6 +4635,7 @@ test("terminal reminder fingerprints use the canonical unacked item set", async 
       tmuxPaneId: "%55",
       notifyLeaseMs: 50,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "local-event-terminal-reminder-canonical-items",
@@ -4566,7 +4656,7 @@ test("terminal reminder fingerprints use the canonical unacked item set", async 
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    const initialState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    const initialState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(initialState?.lastNotifiedFingerprint);
 
     await service.appendSourceEventByCaller(source.sourceId, {
@@ -4586,7 +4676,7 @@ test("terminal reminder fingerprints use the canonical unacked item set", async 
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 2);
-    const updatedState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId);
+    const updatedState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(updatedState?.lastNotifiedFingerprint);
     assert.notEqual(updatedState?.lastNotifiedFingerprint, initialState?.lastNotifiedFingerprint);
     assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item in inbox/);
@@ -4720,6 +4810,7 @@ test("busy terminal defer uses capped exponential backoff", async () => {
       termProgram: "iTerm.app",
       notifyLeaseMs: 100,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "busy-gate-backoff",
@@ -4741,7 +4832,7 @@ test("busy terminal defer uses capped exponential backoff", async () => {
     await sleep(40);
 
     for (const [attempt, expectedRetryMs] of [[2, 10_000], [3, 20_000], [4, 40_000], [5, 80_000], [6, 160_000], [7, 300_000]] as const) {
-      const current = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+      const current = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
       store.upsertActivationDispatchState({
         ...current,
         leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
@@ -4750,12 +4841,12 @@ test("busy terminal defer uses capped exponential backoff", async () => {
       await (service as any).syncActivationDispatchStates();
       await sleep(20);
 
-      const next = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+      const next = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
       assert.equal(next.deferAttempts, attempt);
       const retryMs = Date.parse(next.leaseExpiresAt!) - Date.now();
       assert.ok(retryMs <= expectedRetryMs && retryMs >= Math.max(0, expectedRetryMs - 10_000));
     }
-    const finalState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const finalState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.equal(finalState.deferReason, "terminal_busy");
     assert.equal(terminalDispatcher.calls.length, 0);
   } finally {
@@ -4781,6 +4872,7 @@ test("unexpected defer reasons are preserved in deferred state", async () => {
       tmuxPaneId: "%139",
       notifyLeaseMs: 100,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "custom-defer-reason",
@@ -4801,7 +4893,7 @@ test("unexpected defer reasons are preserved in deferred state", async () => {
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.equal(state.deferReason, "custom_busy_reason");
     assert.equal(state.deferAttempts, 1);
   } finally {
@@ -4827,6 +4919,7 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
       tmuxPaneId: "%137",
       notifyLeaseMs: 100,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "busy-gate-latest-only",
@@ -4847,7 +4940,7 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    const firstState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const firstState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     const firstFingerprint = firstState.pendingFingerprint;
     assert.ok(firstFingerprint);
 
@@ -4860,7 +4953,7 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    const secondState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const secondState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.equal(secondState.pendingFingerprint, null);
     assert.equal(secondState.deferAttempts, 1);
 
@@ -4875,7 +4968,7 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
 
     assert.equal(terminalDispatcher.calls.length, 1);
     assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 2 unacked items in inbox/);
-    const delivered = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const delivered = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.ok(delivered.lastNotifiedFingerprint);
     assert.notEqual(delivered.lastNotifiedFingerprint, firstFingerprint);
     assert.equal(delivered.pendingFingerprint, null);
@@ -4902,6 +4995,7 @@ test("gate reopening suppresses duplicate terminal dispatches for an already-not
       tmuxPaneId: "%138",
       notifyLeaseMs: 50,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "busy-gate-duplicate-suppression",
@@ -4923,7 +5017,7 @@ test("gate reopening suppresses duplicate terminal dispatches for an already-not
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 1);
-    const notifiedState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const notifiedState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.ok(notifiedState.lastNotifiedFingerprint);
 
     activationGate.set("inject", "gate_unknown_or_idle");
@@ -4946,7 +5040,7 @@ test("gate reopening suppresses duplicate terminal dispatches for an already-not
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 1);
-    const suppressedState = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const suppressedState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.equal(suppressedState.status, "notified");
     assert.equal(suppressedState.pendingFingerprint, null);
   } finally {
@@ -4972,6 +5066,7 @@ test("successful terminal dispatch suppresses unchanged reinjection even outside
       tmuxPaneId: "%140",
       notifyLeaseMs: 50,
     });
+    const terminalTarget = requireTerminalTarget(registered);
     const source = await service.registerSource({
       sourceType: "local_event",
       sourceKey: "terminal-success-suppress",
@@ -4995,7 +5090,7 @@ test("successful terminal dispatch suppresses unchanged reinjection even outside
     assert.equal(terminalDispatcher.calls.length, 0);
 
     activationGate.set("inject", "gate_unknown_or_idle");
-    const deferred = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const deferred = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     const deferredSummary = deferred.pendingSummary;
     const deferredNewItemCount = deferred.pendingNewItemCount;
     const deferredSubscriptionIds = deferred.pendingSubscriptionIds;
@@ -5013,7 +5108,7 @@ test("successful terminal dispatch suppresses unchanged reinjection even outside
     const entries = store.listInboxEntries(registered.inbox.inboxId, { includeAcked: false });
     const outcome = await (service as any).dispatchActivationTarget({
       agentId: registered.agent.agentId,
-      targetId: registered.terminalTarget.targetId,
+      targetId: terminalTarget.targetId,
       newItemCount: deferredNewItemCount,
       totalUnackedCount: entries.length,
       summary: deferredSummary,
@@ -5024,7 +5119,7 @@ test("successful terminal dispatch suppresses unchanged reinjection even outside
 
     assert.equal(outcome, "suppressed");
     assert.equal(terminalDispatcher.calls.length, 1);
-    const state = store.getActivationDispatchState(registered.agent.agentId, registered.terminalTarget.targetId)!;
+    const state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.equal(state.status, "notified");
     assert.equal(state.pendingFingerprint, null);
   } finally {
@@ -5750,7 +5845,7 @@ test("registerAgent clears offline and error runtime fields for the current term
       tmuxPaneId: "%87",
       notifyLeaseMs: 100,
     });
-    const targetId = registered.terminalTarget.targetId;
+    const targetId = requireTerminalTarget(registered).targetId;
     store.updateActivationTargetRuntime(targetId, {
       status: "offline",
       offlineSince: "2026-04-01T00:00:00.000Z",

@@ -822,7 +822,6 @@ function buildFastifyServer(service: AgentInboxService) {
       body: {
         type: "object",
         additionalProperties: false,
-        required: ["backend"],
         properties: {
           agentId: { type: "string" },
           forceRebind: { type: "boolean" },
@@ -836,6 +835,17 @@ function buildFastifyServer(service: AgentInboxService) {
           itermSessionId: { type: "string" },
           notifyLeaseMs: { type: "integer", minimum: 1 },
           minUnackedItems: { type: "integer", minimum: 1 },
+          webhook: {
+            type: "object",
+            additionalProperties: false,
+            required: ["url"],
+            properties: {
+              url: { type: "string", minLength: 1 },
+              activationMode: { type: "string" },
+              notifyLeaseMs: { type: "integer", minimum: 1 },
+              minUnackedItems: { type: "integer", minimum: 1 },
+            },
+          },
         },
       },
       response: {
@@ -845,10 +855,11 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const body = request.body as Record<string, unknown>;
+    const webhookBody = body.webhook as Record<string, unknown> | undefined;
     return service.registerAgent({
       agentId: optionalString(body.agentId) ?? null,
       forceRebind: body.forceRebind === true,
-      backend: String(body.backend) as never,
+      backend: optionalString(body.backend) as never,
       runtimeKind: optionalString(body.runtimeKind) as never,
       runtimeSessionId: optionalString(body.runtimeSessionId),
       runtimePid: typeof body.runtimePid === "number" ? body.runtimePid : null,
@@ -859,6 +870,14 @@ function buildFastifyServer(service: AgentInboxService) {
       itermSessionId: optionalString(body.itermSessionId),
       notifyLeaseMs: typeof body.notifyLeaseMs === "number" ? body.notifyLeaseMs : null,
       minUnackedItems: typeof body.minUnackedItems === "number" ? body.minUnackedItems : null,
+      webhook: webhookBody
+        ? {
+            url: String(webhookBody.url),
+            activationMode: optionalString(webhookBody.activationMode) as never,
+            notifyLeaseMs: typeof webhookBody.notifyLeaseMs === "number" ? webhookBody.notifyLeaseMs : null,
+            minUnackedItems: typeof webhookBody.minUnackedItems === "number" ? webhookBody.minUnackedItems : null,
+          }
+        : null,
     });
   });
 

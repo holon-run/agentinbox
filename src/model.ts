@@ -346,7 +346,7 @@ export interface RegisterAgentInput {
   runtimeKind?: RuntimeKind | null;
   runtimeSessionId?: string | null;
   runtimePid?: number | null;
-  backend: TerminalBackend;
+  backend?: TerminalBackend;
   mode?: TerminalMode;
   tmuxPaneId?: string | null;
   tty?: string | null;
@@ -354,11 +354,14 @@ export interface RegisterAgentInput {
   itermSessionId?: string | null;
   notifyLeaseMs?: number | null;
   minUnackedItems?: number | null;
+  webhook?: AddWebhookActivationTargetInput | null;
 }
 
 export interface RegisterAgentResult {
   agent: Agent;
-  terminalTarget: TerminalActivationTarget;
+  terminalTarget: TerminalActivationTarget | null;
+  webhookTarget: WebhookActivationTarget | null;
+  activationChannel: ActivationTargetKind | null;
   inbox: Inbox;
 }
 

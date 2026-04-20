@@ -1246,6 +1246,53 @@ test("cli agent register accepts min-unacked-items", async () => {
   }
 });
 
+test("cli agent register supports webhook-only registration without terminal context", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-webhook-reg-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "",
+    CODEX_THREAD_ID: "",
+  };
+
+  try {
+    const register = runCli([
+      "agent",
+      "register",
+      "--agent-id",
+      "agent-cli-webhook",
+      "--webhook-url",
+      "http://127.0.0.1:9999/activate",
+      "--webhook-activation-mode",
+      "activation_with_items",
+      "--webhook-notify-lease-ms",
+      "240",
+      "--webhook-min-unacked-items",
+      "2",
+    ], env);
+    assert.equal(register.status, 0, register.stderr);
+    const payload = JSON.parse(register.stdout) as {
+      agent: { agentId: string };
+      terminalTarget: null;
+      webhookTarget: { url: string; mode: string; notifyLeaseMs: number; minUnackedItems: number | null };
+      activationChannel: string | null;
+    };
+    assert.equal(payload.agent.agentId, "agent-cli-webhook");
+    assert.equal(payload.terminalTarget, null);
+    assert.equal(payload.webhookTarget.url, "http://127.0.0.1:9999/activate");
+    assert.equal(payload.webhookTarget.mode, "activation_with_items");
+    assert.equal(payload.webhookTarget.notifyLeaseMs, 240);
+    assert.equal(payload.webhookTarget.minUnackedItems, 2);
+    assert.equal(payload.activationChannel, "webhook");
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli source schema resolves source ids to instance schema", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-schema-"));
   const env = {
@@ -3520,6 +3567,66 @@ test("control plane accepts caller-supplied agent ids and rejects conflicting re
       });
       assert.equal(rebound.statusCode, 200);
       assert.equal(rebound.data.terminalTarget.tmuxPaneId, "%602");
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane supports webhook-only agent registration and removes stale terminal targets", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-webhook-register-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }));
+  const service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  try {
+    await adapters.start();
+    await service.start();
+    const server = createServer(service);
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const terminal = await client.request<{ agent: { agentId: string }; activationChannel: string | null }>("/agents", {
+        agentId: "agent-http-webhook",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-webhook-terminal",
+        tmuxPaneId: "%178",
+      });
+      assert.equal(terminal.statusCode, 200);
+      assert.equal(terminal.data.activationChannel, "terminal");
+
+      const webhook = await client.request<{
+        agent: { agentId: string };
+        terminalTarget: null;
+        webhookTarget: { url: string; mode: string };
+        activationChannel: string | null;
+      }>("/agents", {
+        agentId: "agent-http-webhook",
+        webhook: {
+          url: "http://127.0.0.1:9999/activate",
+          activationMode: "activation_with_items",
+        },
+      });
+      assert.equal(webhook.statusCode, 200);
+      assert.equal(webhook.data.agent.agentId, "agent-http-webhook");
+      assert.equal(webhook.data.terminalTarget, null);
+      assert.equal(webhook.data.webhookTarget.url, "http://127.0.0.1:9999/activate");
+      assert.equal(webhook.data.webhookTarget.mode, "activation_with_items");
+      assert.equal(webhook.data.activationChannel, "webhook");
+
+      const targets = service.listActivationTargets("agent-http-webhook");
+      assert.equal(targets.length, 1);
+      assert.equal(targets[0]?.kind, "webhook");
     } finally {
       await started.close();
     }
