@@ -2170,6 +2170,15 @@ export class AgentInboxService {
   }
 
   private handleAgentRegistrationConflicts(agentId: string, input: RegisterAgentInput): void {
+    const activeWebhookTarget = this.store
+      .listActivationTargetsForAgent(agentId)
+      .find((target): target is WebhookActivationTarget => target.kind === "webhook" && target.status === "active");
+    if (activeWebhookTarget) {
+      throw new Error(
+        `agent register conflict: agent ${agentId} already has active webhook target ${activeWebhookTarget.targetId}; terminal registration is disabled while webhook is active`,
+      );
+    }
+
     const currentTarget = findExistingTerminalActivationTarget(this.store, input);
     if (currentTarget && currentTarget.agentId !== agentId) {
       if (!input.forceRebind) {

@@ -3654,6 +3654,16 @@ test("control plane supports webhook-only agent registration and removes stale t
       const targets = service.listActivationTargets("agent-http-webhook");
       assert.equal(targets.length, 1);
       assert.equal(targets[0]?.kind, "webhook");
+
+      const terminalConflict = await client.request<{ error: string }>("/agents", {
+        agentId: "agent-http-webhook",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-webhook-terminal-2",
+        tmuxPaneId: "%179",
+      });
+      assert.equal(terminalConflict.statusCode, 400);
+      assert.match(terminalConflict.data.error, /already has active webhook target/);
     } finally {
       await started.close();
     }

@@ -829,6 +829,38 @@ test("webhook agent registration converges the agent to webhook-only and is idem
   }
 });
 
+test("terminal registration is rejected while an active webhook target exists for the agent", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const webhook = service.registerAgent({
+      agentId: "agent-webhook-sticky",
+      webhook: {
+        url: "http://127.0.0.1:9999/activate",
+        activationMode: "activation_with_items",
+      },
+    });
+    assert.equal(webhook.activationChannel, "webhook");
+
+    assert.throws(() => {
+      service.registerAgent({
+        agentId: "agent-webhook-sticky",
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-webhook-sticky-terminal",
+        tmuxPaneId: "%179",
+      });
+    }, /agent register conflict: agent agent-webhook-sticky already has active webhook target/);
+
+    const targets = service.listActivationTargets("agent-webhook-sticky");
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0]?.kind, "webhook");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("shared source can route one stream event to multiple agent inboxes", async () => {
   const { store, service, dir } = await makeService();
   try {
