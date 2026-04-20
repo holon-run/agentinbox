@@ -259,6 +259,8 @@ export const activations = sqliteTable("activations", {
   targetKind: text("target_kind").notNull(),
   subscriptionIdsJson: text("subscription_ids_json").notNull(),
   sourceIdsJson: text("source_ids_json").notNull(),
+  latestEntryId: text("latest_entry_id"),
+  newEntryCount: integer("new_entry_count").notNull(),
   newItemCount: integer("new_item_count").notNull(),
   summary: text("summary").notNull(),
   itemsJson: text("items_json"),
