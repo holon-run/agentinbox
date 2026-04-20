@@ -10,6 +10,7 @@ import {
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
   SourcePollResult,
+  SourceRuntimeState,
   SourceStream,
   SourceType,
 } from "./model";
@@ -244,6 +245,17 @@ export class AdapterRegistry {
       return null;
     }
     return this.remoteSource.deriveNotificationGrouping(source, item);
+  }
+
+  async getSourceRuntime(source: SourceStream): Promise<SourceRuntimeState | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.getSourceRuntime(source);
+  }
+
+  async listSourceRuntimes(sources: SourceStream[]): Promise<Map<string, SourceRuntimeState | null>> {
+    return this.remoteSource.listSourceRuntimes(sources);
   }
 
   async summarizeDigestThread(

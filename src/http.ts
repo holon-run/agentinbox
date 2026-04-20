@@ -309,7 +309,7 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
     },
-  }, async () => ({ sources: service.listSources() }));
+  }, async () => ({ sources: await service.listSourceViews() }));
 
   app.post("/sources", {
     schema: {

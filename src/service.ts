@@ -35,6 +35,7 @@ import {
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
   SourceHost,
+  SourceRuntimeState,
   SourceSchema,
   SourceSchemaField,
   SourceSchemaPreview,
@@ -277,6 +278,10 @@ export class AgentInboxService {
     return this.store.listSources();
   }
 
+  async listSourceViews(): Promise<Array<SourceStream & { runtime: SourceRuntimeState | null }>> {
+    return this.attachSourceRuntimes(this.store.listSources());
+  }
+
   listHosts(): SourceHost[] {
     return this.store.listSourceHosts();
   }
@@ -324,8 +329,10 @@ export class AgentInboxService {
         ? schema
         : withResolvedIdentity(source.sourceId, fallbackSchema, resolvedIdentity))
       : fallbackSchema;
+    const runtime = await this.adapters.getSourceRuntime(source);
     return {
       source,
+      runtime,
       host: source.hostId ? this.store.getSourceHost(source.hostId) : null,
       resolvedIdentity,
       ...(resolutionError ? { resolutionError } : {}),
@@ -1956,7 +1963,8 @@ export class AgentInboxService {
     return this.adapters.invokeDeliveryOperation(source, handle, canonicalOperation.name, input, attempt);
   }
 
-  status(): Record<string, unknown> {
+  async status(): Promise<Record<string, unknown>> {
+    const sources = await this.listSourceViews();
     return {
       retention: {
         ackedInboxItemsMs: this.ackedRetentionMs,
@@ -1965,7 +1973,7 @@ export class AgentInboxService {
       },
       counts: this.store.getCounts(),
       agents: this.store.listAgents(),
-      sources: this.store.listSources(),
+      sources,
       subscriptions: this.store.listSubscriptions(),
       inboxes: this.store.listInboxes(),
       activationTargets: this.store.listActivationTargets(),
@@ -1981,6 +1989,16 @@ export class AgentInboxService {
         lastOfflineAgentGcAt: this.lastOfflineAgentGcAt > 0 ? new Date(this.lastOfflineAgentGcAt).toISOString() : null,
       },
     };
+  }
+
+  private async attachSourceRuntimes(
+    sources: SourceStream[],
+  ): Promise<Array<SourceStream & { runtime: SourceRuntimeState | null }>> {
+    const runtimes = await this.adapters.listSourceRuntimes(sources);
+    return sources.map((source) => ({
+      ...source,
+      runtime: runtimes.get(source.sourceId) ?? null,
+    }));
   }
 
   private ensureInboxForAgent(agentId: string): Inbox {

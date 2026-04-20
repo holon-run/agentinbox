@@ -18,6 +18,17 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   private readonly offsets = new Map<string, number>();
   private readonly streamSpecs = new Map<string, ManagedSourceSpec>();
   private readonly streamCheckpointKeys = new Map<string, string[]>();
+  private readonly managedStatuses = new Map<string, {
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    status: string;
+    updated_at_unix: number;
+    started_at_unix?: number | null;
+    stopped_at_unix?: number | null;
+    last_error?: string | null;
+  }>();
   public readonly ensuredSources: Array<{ namespace: string; sourceKey: string }> = [];
   public readonly stoppedSources: Array<{ namespace: string; sourceKey: string }> = [];
   public readonly deletedSources: Array<{ namespace: string; sourceKey: string }> = [];
@@ -48,7 +59,7 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
     this.ensuredSources.push({ namespace: args.namespace, sourceKey: args.sourceKey });
     const streamId = `stream:${args.sourceKey}`;
     this.streamSpecs.set(streamId, args.spec);
-    return {
+    const ensured = {
       namespace: args.namespace,
       source_key: args.sourceKey,
       run_id: `run:${args.sourceKey}`,
@@ -57,16 +68,79 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
       reused: true,
       replaced_previous: false,
     };
+    this.managedStatuses.set(`${args.namespace}:${args.sourceKey}`, {
+      ...ensured,
+      updated_at_unix: Math.floor(Date.now() / 1000),
+      started_at_unix: Math.floor(Date.now() / 1000),
+      stopped_at_unix: null,
+      last_error: null,
+    });
+    return ensured;
   }
 
   async sourceStop(namespace: string, sourceKey: string): Promise<void> {
     this.stoppedSources.push({ namespace, sourceKey });
+    const current = this.managedStatuses.get(`${namespace}:${sourceKey}`);
+    if (current) {
+      this.managedStatuses.set(`${namespace}:${sourceKey}`, {
+        ...current,
+        status: "stopped",
+        updated_at_unix: Math.floor(Date.now() / 1000),
+        stopped_at_unix: Math.floor(Date.now() / 1000),
+        last_error: null,
+      });
+    }
     return;
   }
 
   async sourceDelete(namespace: string, sourceKey: string): Promise<void> {
     this.deletedSources.push({ namespace, sourceKey });
+    this.managedStatuses.delete(`${namespace}:${sourceKey}`);
     return;
+  }
+
+  async sourceStatus(namespace: string, sourceKey: string): Promise<{
+    namespace: string;
+    source_key: string;
+    run_id: string;
+    stream_id: string;
+    spec_key: string;
+    status: string;
+    created_at_unix: number;
+    updated_at_unix: number;
+    started_at_unix?: number | null;
+    stopped_at_unix?: number | null;
+    last_error?: string | null;
+  }> {
+    const current = this.managedStatuses.get(`${namespace}:${sourceKey}`);
+    if (!current) {
+      throw new Error(`unknown managed source: ${namespace}/${sourceKey}`);
+    }
+    return {
+      ...current,
+      spec_key: `${namespace}:${sourceKey}`,
+      created_at_unix: current.started_at_unix ?? current.updated_at_unix,
+    };
+  }
+
+  async sourceList(): Promise<Array<{
+    namespace: string;
+    source_key: string;
+    status: string;
+    run_id: string;
+    stream_id: string;
+    updated_at_unix: number;
+    last_error?: string | null;
+  }>> {
+    return Array.from(this.managedStatuses.values()).map((current) => ({
+      namespace: current.namespace,
+      source_key: current.source_key,
+      status: current.status,
+      run_id: current.run_id,
+      stream_id: current.stream_id,
+      updated_at_unix: current.updated_at_unix,
+      last_error: current.last_error ?? null,
+    }));
   }
 
   async streamRead(args: { streamId: string; afterOffset?: number; limit?: number }): Promise<{
@@ -842,7 +916,7 @@ test("pauseSource stops managed source, preserves binding, and resume re-ensures
     }]);
     assert.equal(remoteRuntime.errorCounts.has(source.sourceId), false);
     assert.equal(remoteRuntime.nextRetryAt.has(source.sourceId), false);
-    assert.deepEqual((service.status().adapters as { remote: { erroredSourceIds: string[] } }).remote.erroredSourceIds, []);
+    assert.deepEqual(((await service.status()).adapters as { remote: { erroredSourceIds: string[] } }).remote.erroredSourceIds, []);
 
     const pausedPoll = await service.pollSource(source.sourceId);
     assert.equal(pausedPoll.note, "source is paused; resume it before polling");
