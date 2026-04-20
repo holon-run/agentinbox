@@ -165,7 +165,7 @@ agentinbox source resume <remote_source_id>
 
 ## Upgrade Expectations
 
-`AgentInbox` is still early beta software.
+`AgentInbox` is on the stable v1 release line.
 
 - local DB schema and source/runtime semantics may still change between
   versions

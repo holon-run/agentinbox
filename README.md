@@ -55,18 +55,19 @@ manually or relying on the agent runtime to expose its own notification API.
 
 ## Status
 
-`AgentInbox` is public beta software.
+`AgentInbox` is on the stable v1 release line.
 
 - the local control plane, daemon model, inbox model, and activation targets
   are implemented
 - GitHub repo, GitHub repo CI, Feishu bot, and local event ingress source
   adapters are implemented
-- filtering and source model are still evolving
+- filtering and source breadth are still evolving
 - first-run onboarding is currently skill-first rather than wizard-first
 
-## v1.0.0 Beta Upgrade Notes
+## v1 Upgrade Notes
 
-`v1.0.0-beta.0` was the first release on the final v1 storage and API boundary.
+`v1.0.0-beta.0` was the first release on the final v1 storage and API boundary,
+and `1.0.0` keeps that same boundary.
 
 - pre-v1 local databases are archived and replaced with a fresh v1 database
 - old local state is not imported into the new v1 database

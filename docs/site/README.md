@@ -29,7 +29,7 @@ webhook targets.
 
 ## Current Status
 
-`AgentInbox` is public beta software.
+`AgentInbox` is on the stable v1 release line.
 
 - local daemon, agent registration, inbox read/watch/ack, and activation
   targets are implemented

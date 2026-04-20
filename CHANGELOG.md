@@ -12,6 +12,39 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.0] - 2026-04-20
+
+### Added
+
+- Shipped the stable v1 `AgentInbox` storage and API boundary, including
+  canonical host + stream registration, durable inbox entry/thread reads, and
+  handle-scoped delivery operations for local agent integrations.
+- Added first-class GitHub PR review workflow support across shared repo and CI
+  sources, including PR shortcut expansion, PR-scoped lifecycle cleanup, and
+  durable latest-entry notification metadata for downstream agents.
+
+### Changed
+
+- Graduated the `v1.0.0-beta` line to the stable `1.0.0` release without
+  changing the final beta code surface beyond release metadata and docs.
+- Standardized the local daemon, control plane, and public CLI on the finalized
+  v1 identifier and source model.
+
+### Fixed
+
+- Fixed silent notification black holes for session-bound terminal agents by
+  keeping offline targets detached until they are explicitly resumed or rebound.
+- Hardened GitHub review and CI tracking so PR-scoped subscriptions survive
+  preview truncation, missing workflow PR linkage, and older-page workflow run
+  pagination boundaries more reliably.
+
+### Upgrade Notes
+
+- `1.0.0` keeps the same v1 local-storage boundary introduced in
+  `v1.0.0-beta.0`.
+- If you are upgrading from any pre-v1 build, AgentInbox archives the old local
+  database and starts with a fresh v1 database under `~/.agentinbox/`.
+
 ## [1.0.0-beta.5] - 2026-04-20
 
 ### Changed
