@@ -2427,6 +2427,7 @@ export class AgentInboxStore {
   }
 
   private mapActivation(row: Record<string, unknown>): Activation {
+    const entries = row.items_json ? parseJson<Activation["entries"]>(row.items_json as string) : undefined;
     return {
       kind: "agentinbox.activation",
       activationId: String(row.activation_id),
@@ -2436,10 +2437,11 @@ export class AgentInboxStore {
       targetKind: row.target_kind as Activation["targetKind"],
       subscriptionIds: parseJson<string[]>(row.subscription_ids_json as string),
       sourceIds: parseJson<string[]>(row.source_ids_json as string),
-      newEntryCount: row.items_json ? parseJson<Activation["entries"]>(row.items_json as string)?.length ?? 0 : Number(row.new_item_count),
+      latestEntryId: entries && entries.length > 0 ? entries[entries.length - 1]?.entryId ?? null : null,
+      newEntryCount: entries?.length ?? Number(row.new_item_count),
       newItemCount: Number(row.new_item_count),
       summary: String(row.summary),
-      entries: row.items_json ? parseJson<Activation["entries"]>(row.items_json as string) : undefined,
+      entries,
       createdAt: String(row.created_at),
       deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
     };

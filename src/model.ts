@@ -280,6 +280,7 @@ export interface Activation {
   targetKind: ActivationTargetKind;
   subscriptionIds: string[];
   sourceIds: string[];
+  latestEntryId: string | null;
   newEntryCount: number;
   newItemCount: number;
   summary: string;

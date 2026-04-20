@@ -92,18 +92,20 @@ export function renderAgentPrompt(input: {
   totalUnackedCount: number;
   summary?: string | null;
   preview?: string | null;
+  latestEntryId?: string | null;
 }): string {
   const totalUnackedCount = input.totalUnackedCount;
   const itemWord = totalUnackedCount === 1 ? "item" : "items";
   const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} in inbox ${input.inboxId}.`;
+  const latestEntryIdSuffix = input.latestEntryId ? ` Latest entryId: ${input.latestEntryId}.` : "";
   if (totalUnackedCount === 1 && input.preview) {
     const suffix = /(?:[.!?…]|\.{3})$/.test(input.preview) ? "" : ".";
-    return `${base} Preview: ${input.preview}${suffix} Read the inbox for full details if needed.`;
+    return `${base}${latestEntryIdSuffix} Preview: ${input.preview}${suffix} Read the inbox for full details if needed.`;
   }
   if (input.summary) {
-    return `${base} Summary: ${input.summary}. Please read the inbox, process them, and ack when finished.`;
+    return `${base}${latestEntryIdSuffix} Summary: ${input.summary}. Please read the inbox, process them, and ack when finished.`;
   }
-  return `${base} Please read the inbox, process them, and ack when finished.`;
+  return `${base}${latestEntryIdSuffix} Please read the inbox, process them, and ack when finished.`;
 }
 
 const MAX_INLINE_PREVIEW_INPUT_CHARS = 240;

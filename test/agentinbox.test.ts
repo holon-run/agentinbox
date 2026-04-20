@@ -3159,6 +3159,7 @@ test("direct inbox text messages create inbox items and trigger activation", asy
     assert.equal(dispatcher.calls.length, 1);
     assert.equal(dispatcher.calls[0].activation.agentId, alpha.agentId);
     assert.equal(dispatcher.calls[0].activation.newItemCount, 1);
+    assert.ok(dispatcher.calls[0].activation.latestEntryId);
     assert.equal(dispatcher.calls[0].activation.items?.[0]?.itemId, delivered.itemId);
     assert.match(dispatcher.calls[0].activation.summary, /from direct_text_message:/);
   } finally {
@@ -3637,6 +3638,8 @@ test("webhook and terminal targets share ack-gated notification flow", async () 
 
     assert.equal(dispatcher.calls.length, 1);
     assert.equal(terminalDispatcher.calls.length, 1);
+    assert.equal(dispatcher.calls[0].activation.latestEntryId, dispatcher.calls[0].activation.entries?.[0]?.entryId ?? null);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /Latest entryId: ent_/);
 
     await service.appendSourceEventByCaller(source.sourceId, {
       sourceNativeId: "evt-2",
