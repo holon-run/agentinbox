@@ -503,6 +503,7 @@ test("store reopens an existing v1 database without archiving it", async () => {
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
@@ -531,6 +532,7 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
@@ -557,6 +559,7 @@ test("store upgrades source-scoped lifecycle retirements to host-scoped retireme
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, [
       "0000_v1_initial",
+      "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
     ]);
