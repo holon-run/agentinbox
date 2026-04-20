@@ -331,7 +331,7 @@ export class RemoteSourceRuntime {
     if (typeof module.expandSubscriptionShortcut !== "function") {
       return null;
     }
-    const expanded = module.expandSubscriptionShortcut({
+    const expanded = await module.expandSubscriptionShortcut({
       name: input.name,
       args: input.args,
       source: moduleInputSource(source),

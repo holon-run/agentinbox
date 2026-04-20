@@ -395,7 +395,7 @@ test("github subscription shortcut helpers expose and expand the builtin pr shor
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  assert.deepEqual(expandGithubSubscriptionShortcut({
+  assert.deepEqual(await expandGithubSubscriptionShortcut({
     name: "pr",
     args: { number: 74 },
     source,
@@ -412,11 +412,20 @@ test("github subscription shortcut helpers expose and expand the builtin pr shor
       cleanupPolicy: { mode: "on_terminal" },
     }],
   });
-  assert.deepEqual(expandGithubSubscriptionShortcut({
+  const fake = new FakeUxcClient();
+  fake.responses.push({
+    data: {
+      head: {
+        ref: "issue-74",
+        repo: { full_name: "holon-run/agentinbox" },
+      },
+    },
+  });
+  assert.deepEqual(await expandGithubSubscriptionShortcut({
     name: "pr",
     args: { number: 74, withCi: true },
     source,
-  }), {
+  }, new GithubUxcClient(fake)), {
     members: [
       {
         streamKind: "repo_events",
@@ -432,9 +441,7 @@ test("github subscription shortcut helpers expose and expand the builtin pr shor
       {
         streamKind: "ci_runs",
         filter: {
-          metadata: {
-            pullRequestNumbers: [74],
-          },
+          expr: "contains(metadata.pullRequestNumbers, 74) || ( metadata.headBranch == \"issue-74\" && ( metadata.headRepositoryFullName == \"holon-run/agentinbox\" || !exists(metadata.headRepositoryFullName) ) )",
         },
         trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
         cleanupPolicy: { mode: "on_terminal" },
@@ -463,11 +470,20 @@ test("github follow helpers expose templates and expand the builtin pr template"
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  assert.deepEqual(expandGithubFollowTemplate({
+  const fake = new FakeUxcClient();
+  fake.responses.push({
+    data: {
+      head: {
+        ref: "issue-74",
+        repo: { full_name: "holon-run/agentinbox" },
+      },
+    },
+  });
+  assert.deepEqual(await expandGithubFollowTemplate({
     template: "pr",
     args: { number: 74, withCi: true },
     source,
-  }), {
+  }, new GithubUxcClient(fake)), {
     templateId: "github.pr",
     sources: [
       {
@@ -500,15 +516,45 @@ test("github follow helpers expose templates and expand the builtin pr template"
       {
         sourceLogicalName: "ci_runs",
         filter: {
-          metadata: {
-            pullRequestNumbers: [74],
-          },
+          expr: "contains(metadata.pullRequestNumbers, 74) || ( metadata.headBranch == \"issue-74\" && ( metadata.headRepositoryFullName == \"holon-run/agentinbox\" || !exists(metadata.headRepositoryFullName) ) )",
         },
         trackedResourceRef: "repo:holon-run/agentinbox:pr:74",
         cleanupPolicy: { mode: "on_terminal" },
       },
     ],
   });
+});
+
+test("github follow and shortcut CI fallback allow missing head repository metadata", async () => {
+  const source: SourceStream = {
+    sourceId: "src_follow_template_missing_head_repo",
+    hostId: "hst_follow_template_missing_head_repo",
+    streamKind: "repo_events",
+    streamKey: "holon-run/agentinbox",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const fake = new FakeUxcClient();
+  fake.responses.push({ data: { head: { ref: "issue-74", repo: null } } });
+  fake.responses.push({ data: { head: { ref: "issue-74", repo: null } } });
+  const shortcut = await expandGithubSubscriptionShortcut({
+    name: "pr",
+    args: { number: 74, withCi: true },
+    source,
+  }, new GithubUxcClient(fake));
+  const follow = await expandGithubFollowTemplate({
+    template: "pr",
+    args: { number: 74, withCi: true },
+    source,
+  }, new GithubUxcClient(fake));
+  assert.equal(shortcut?.members[1]?.filter?.expr, "contains(metadata.pullRequestNumbers, 74) || metadata.headBranch == \"issue-74\"");
+  assert.equal(follow?.subscriptions[1]?.filter?.expr, "contains(metadata.pullRequestNumbers, 74) || metadata.headBranch == \"issue-74\"");
 });
 
 test("github delivery adapter maps issue comments and review replies to uxc calls", async () => {

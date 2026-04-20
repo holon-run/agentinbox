@@ -20,6 +20,7 @@ import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubDeliveryAdapter } from "./sources/github";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { ExpandedFollowPlan, ExpandedSubscriptionPlan, ExpandFollowTemplateInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry, builtinRemoteSourceTypes } from "./sources/remote_modules";
+import { GithubCallClient } from "./sources/github";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
 
 export interface SourceAdapter {
@@ -84,10 +85,13 @@ export class AdapterRegistry {
       homeDir?: string;
       remoteSourceClient?: UxcRemoteSourceClient;
       remoteModuleRegistry?: RemoteSourceModuleRegistry;
+      githubCallClient?: GithubCallClient;
     },
   ) {
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
-    this.remoteModuleRegistry = options?.remoteModuleRegistry ?? new RemoteSourceModuleRegistry();
+    this.remoteModuleRegistry = options?.remoteModuleRegistry ?? new RemoteSourceModuleRegistry({
+      githubCallClient: options?.githubCallClient,
+    });
     this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
       homeDir: this.homeDir,
       client: options?.remoteSourceClient,
