@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@fastify/swagger": "^9.5.2",
-    "@holon-run/uxc-daemon-client": "^0.15.0",
+    "@holon-run/uxc-daemon-client": "^0.15.3",
     "fastify": "^5.6.1",
     "jexl": "^2.3.0",
     "sql.js": "^1.13.0"
