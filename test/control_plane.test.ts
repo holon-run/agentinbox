@@ -13,9 +13,30 @@ import { createServer } from "../src/http";
 import { DEFAULT_AGENTINBOX_PORT, resolveClientTransport, resolveDaemonPaths, resolveServeConfig } from "../src/paths";
 import { Activation, InboxItem, SubscriptionPollResult } from "../src/model";
 import { AgentInboxService } from "../src/service";
+import { GithubCallClient } from "../src/sources/github";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
+
+class FakeGithubCallClient implements GithubCallClient {
+  public calls: Array<Record<string, unknown>> = [];
+
+  async call(args: Record<string, unknown>): Promise<{ data: unknown }> {
+    this.calls.push(args);
+    const payload = (args.payload ?? {}) as Record<string, unknown>;
+    const owner = String(payload.owner ?? "holon-run");
+    const repo = String(payload.repo ?? "agentinbox");
+    const pullNumber = Number(payload.pull_number ?? 0);
+    return {
+      data: {
+        head: {
+          ref: `issue-${pullNumber}`,
+          repo: { full_name: `${owner}/${repo}` },
+        },
+      },
+    };
+  }
+}
 
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   public readonly ensuredSources: Array<{ namespace: string; sourceKey: string }> = [];
@@ -670,6 +691,7 @@ test("control plane exposes delivery actions and invoke for remote modules", asy
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
     homeDir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
     stdout: "",
@@ -1349,6 +1371,7 @@ test("cli follow supports repeated --arg values and returns ensured sources", as
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
     homeDir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(store, adapters);
   const server = createServer(service);
@@ -1882,6 +1905,7 @@ test("cli subscription add supports generic shortcut invocation", async () => {
 
 test("cli github pr shortcut with withCi returns created sibling subscriptions", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-github-shortcut-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
   const env = {
     ...process.env,
@@ -1893,8 +1917,17 @@ test("cli github pr shortcut with withCi returns created sibling subscriptions",
     CODEX_THREAD_ID: "thread-github-shortcut",
   };
 
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
+  });
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
   try {
-    const store = await AgentInboxStore.open(dbPath);
     store.insertSource({
       sourceId: "src_cli_github_repo",
       hostId: "hst_cli_github",
@@ -1923,48 +1956,57 @@ test("cli github pr shortcut with withCi returns created sibling subscriptions",
       createdAt: "2026-04-14T00:00:00.000Z",
       updatedAt: "2026-04-14T00:00:00.000Z",
     });
-    store.close();
-
-    const added = runCli([
-      "subscription",
-      "add",
-      "src_cli_github_repo",
-      "--shortcut",
-      "pr",
-      "--shortcut-args-json",
-      "{\"number\":93,\"withCi\":true}",
-    ], env);
-    assert.equal(added.status, 0, added.stderr);
-    const payload = JSON.parse(added.stdout) as {
-      subscriptions: Array<{
-        sourceId: string;
-        filter: Record<string, unknown>;
-        trackedResourceRef: string | null;
-        cleanupPolicy: Record<string, unknown>;
-      }>;
-    };
-    assert.equal(payload.subscriptions.length, 2);
-    assert.deepEqual(
-      payload.subscriptions.map((subscription) => subscription.sourceId).sort(),
-      ["src_cli_github_ci", "src_cli_github_repo"],
-    );
-    assert.deepEqual(
-      payload.subscriptions.map((subscription) => subscription.trackedResourceRef),
-      ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
-    );
-    assert.deepEqual(
-      payload.subscriptions.map((subscription) => subscription.filter),
-      [
-        { metadata: { number: 93, isPullRequest: true } },
-        { metadata: { pullRequestNumbers: [93] } },
-      ],
-    );
-    assert.deepEqual(payload.subscriptions.map((subscription) => subscription.cleanupPolicy), [
-      { mode: "on_terminal" },
-      { mode: "on_terminal" },
-    ]);
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const added = await runCliAsync([
+        "subscription",
+        "add",
+        "src_cli_github_repo",
+        "--shortcut",
+        "pr",
+        "--shortcut-args-json",
+        "{\"number\":93,\"withCi\":true}",
+      ], env);
+      assert.equal(added.status, 0, added.stderr);
+      const payload = JSON.parse(added.stdout) as {
+        subscriptions: Array<{
+          sourceId: string;
+          filter: Record<string, unknown>;
+          trackedResourceRef: string | null;
+          cleanupPolicy: Record<string, unknown>;
+        }>;
+      };
+      assert.equal(payload.subscriptions.length, 2);
+      assert.deepEqual(
+        payload.subscriptions.map((subscription) => subscription.sourceId).sort(),
+        ["src_cli_github_ci", "src_cli_github_repo"],
+      );
+      assert.deepEqual(
+        payload.subscriptions.map((subscription) => subscription.trackedResourceRef),
+        ["repo:holon-run/agentinbox:pr:93", "repo:holon-run/agentinbox:pr:93"],
+      );
+      assert.deepEqual(
+        payload.subscriptions.map((subscription) => subscription.filter),
+        [
+          { metadata: { number: 93, isPullRequest: true } },
+          {
+            expr: "contains(metadata.pullRequestNumbers, 93) || ( metadata.headBranch == \"issue-93\" && ( metadata.headRepositoryFullName == \"holon-run/agentinbox\" || !exists(metadata.headRepositoryFullName) ) )",
+          },
+        ],
+      );
+      assert.deepEqual(payload.subscriptions.map((subscription) => subscription.cleanupPolicy), [
+        { mode: "on_terminal" },
+        { mode: "on_terminal" },
+      ]);
+    } finally {
+      await started.close();
+    }
   } finally {
-    void runCli(["daemon", "stop"], env);
+    await adapters.stop();
+    await service.stop();
+    store.close();
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
@@ -2012,6 +2054,7 @@ test("control plane subscriptions accept generic shortcut invocation", async () 
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
     homeDir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
     stdout: "",
@@ -2090,6 +2133,7 @@ test("control plane github pr shortcut with withCi returns created sibling subsc
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
     homeDir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
     stdout: "",
@@ -2153,7 +2197,9 @@ test("control plane github pr shortcut with withCi returns created sibling subsc
         subscription.data.subscriptions.map((created) => created.filter),
         [
           { metadata: { number: 93, isPullRequest: true } },
-          { metadata: { pullRequestNumbers: [93] } },
+          {
+            expr: "contains(metadata.pullRequestNumbers, 93) || ( metadata.headBranch == \"issue-93\" && ( metadata.headRepositoryFullName == \"holon-run/agentinbox\" || !exists(metadata.headRepositoryFullName) ) )",
+          },
         ],
       );
       assert.deepEqual(subscription.data.subscriptions.map((created) => created.cleanupPolicy), [
@@ -2258,6 +2304,7 @@ test("control plane follow ensures sources and dedupes subscriptions", async () 
   const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }), {
     homeDir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   const service = new AgentInboxService(store, adapters);
   const server = createServer(service);

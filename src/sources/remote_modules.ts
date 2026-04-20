@@ -23,6 +23,7 @@ import {
   expandGithubSubscriptionShortcut,
   GITHUB_ENDPOINT,
   GithubCallClient,
+  GithubUxcClient,
   githubDeliveryOperationsForHandle,
   githubFollowTemplateSpec,
   githubSubscriptionShortcutSpec,
@@ -163,9 +164,9 @@ export interface RemoteSourceModule {
   // Optional capability hooks used by resolved schema and future subscription ergonomics.
   describeCapabilities?(source: SourceStream): RemoteSourceCapabilityDescription;
   listSubscriptionShortcuts?(source: SourceStream): SubscriptionShortcutSpec[];
-  expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null;
+  expandSubscriptionShortcut?(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null | Promise<ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null>;
   listFollowTemplates?(source: SourceStream): FollowTemplateSpec[];
-  expandFollowTemplate?(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null;
+  expandFollowTemplate?(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null | Promise<ExpandedFollowPlan | null>;
   deriveTrackedResource?(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null;
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SourceStream): LifecycleSignal | null;
   deriveInlinePreview?(item: ActivationItem, source: SourceStream): string | null;
@@ -181,10 +182,15 @@ const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bo
 
 export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
+  private readonly githubRepoModule: RemoteSourceModule;
+
+  constructor(options?: { githubCallClient?: GithubCallClient }) {
+    this.githubRepoModule = createGithubRepoRemoteModule({ callClient: options?.githubCallClient });
+  }
 
   resolve(source: SourceStream, homeDir: string): Promise<RemoteSourceModule> {
     if (source.sourceType === "github_repo") {
-      return Promise.resolve(GITHUB_REPO_MODULE);
+      return Promise.resolve(this.githubRepoModule);
     }
     if (source.sourceType === "github_repo_ci") {
       return Promise.resolve(GITHUB_REPO_CI_MODULE);
@@ -317,6 +323,7 @@ function asNonEmptyString(value: unknown): string | null {
 }
 
 export function createGithubRepoRemoteModule(options?: { callClient?: GithubCallClient }): RemoteSourceModule {
+  const githubClient = new GithubUxcClient(options?.callClient);
   return {
     id: "builtin.github_repo",
     listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
@@ -381,14 +388,14 @@ export function createGithubRepoRemoteModule(options?: { callClient?: GithubCall
     listSubscriptionShortcuts(): SubscriptionShortcutSpec[] {
       return githubSubscriptionShortcutSpec();
     },
-    expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null {
-      return expandGithubSubscriptionShortcut(input);
+    async expandSubscriptionShortcut(input: ExpandSubscriptionShortcutInput): Promise<ExpandedSubscriptionInput | ExpandedSubscriptionPlan | null> {
+      return expandGithubSubscriptionShortcut(input, githubClient);
     },
     listFollowTemplates(): FollowTemplateSpec[] {
       return githubFollowTemplateSpec();
     },
-    expandFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
-      return expandGithubFollowTemplate(input);
+    async expandFollowTemplate(input: ExpandFollowTemplateInput): Promise<ExpandedFollowPlan | null> {
+      return expandGithubFollowTemplate(input, githubClient);
     },
     deriveTrackedResource(filter: SubscriptionFilter, source: SourceStream): { ref: string } | null {
       return deriveGithubTrackedResource(filter, source);
@@ -513,6 +520,7 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
         { name: "conclusion", type: "string|null", description: "Workflow run conclusion when completed." },
         { name: "event", type: "string|null", description: "GitHub trigger event for the workflow run." },
         { name: "headBranch", type: "string|null", description: "Head branch for the workflow run." },
+        { name: "headRepositoryFullName", type: "string|null", description: "Head repository full name for the workflow run when available." },
         { name: "headSha", type: "string|null", description: "Head commit SHA for the workflow run." },
         { name: "pullRequestNumbers", type: "number[]", description: "Pull request numbers associated with the workflow run." },
         { name: "actor", type: "string|null", description: "Actor login for the workflow run." },

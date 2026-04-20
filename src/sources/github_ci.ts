@@ -5,6 +5,7 @@ import { AgentInboxStore } from "../store";
 export const GITHUB_CI_ENDPOINT = "https://api.github.com";
 export const DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS = 30;
 export const DEFAULT_GITHUB_CI_PER_PAGE = 20;
+const MAX_PAGES_PER_SYNC = 10;
 const MAX_SEEN_KEYS = 512;
 const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
 
@@ -42,11 +43,12 @@ interface GithubActionsLikeClient {
 export class GithubActionsUxcClient {
   constructor(private readonly client: GithubActionsLikeClient = new UxcDaemonClient({ env: process.env })) {}
 
-  async listWorkflowRuns(config: GithubCiSourceConfig): Promise<Record<string, unknown>[]> {
+  async listWorkflowRuns(config: GithubCiSourceConfig, page = 1): Promise<Record<string, unknown>[]> {
     const payload: Record<string, unknown> = {
       owner: config.owner,
       repo: config.repo,
       per_page: config.perPage ?? DEFAULT_GITHUB_CI_PER_PAGE,
+      page,
     };
     if (config.eventFilter) {
       payload.event = config.eventFilter;
@@ -187,32 +189,54 @@ export class GithubCiSourceRuntime {
       }
       this.lastPollAt.set(sourceId, Date.now());
       const checkpoint = parseGithubCiCheckpoint(source.checkpoint);
-      const runs = await this.client.listWorkflowRuns(config);
       let appended = 0;
       let deduped = 0;
-      let lastSeenUpdatedAt: string | undefined = checkpoint.lastSeenUpdatedAt ?? undefined;
+      let eventsRead = 0;
+      let pageCount = 0;
+      const checkpointLastSeenUpdatedAt = checkpoint.lastSeenUpdatedAt ?? undefined;
+      let lastSeenUpdatedAt: string | undefined = checkpointLastSeenUpdatedAt;
       const seenKeys = new Set<string>(checkpoint.seenRunKeys ?? []);
 
-      for (const run of runs.slice().reverse()) {
-        const normalized = normalizeGithubWorkflowRunEvent(source, config, run);
-        if (!normalized) {
-          continue;
+      const perPage = config.perPage ?? DEFAULT_GITHUB_CI_PER_PAGE;
+      for (let page = 1; page <= MAX_PAGES_PER_SYNC; page += 1) {
+        const runs = await this.client.listWorkflowRuns(config, page);
+        pageCount = page;
+        eventsRead += runs.length;
+        let pageHasNewRuns = false;
+
+        for (const run of runs.slice().reverse()) {
+          const normalized = normalizeGithubWorkflowRunEvent(source, config, run);
+          if (!normalized) {
+            continue;
+          }
+          const eventUpdatedAt = normalized.metadata?.updatedAt;
+          const runKey = `${normalized.sourceNativeId}:${normalized.eventVariant}`;
+          const isNewerThanCheckpoint =
+            typeof eventUpdatedAt === "string" &&
+            (!checkpointLastSeenUpdatedAt || eventUpdatedAt > checkpointLastSeenUpdatedAt);
+          const isAtCheckpointBoundary =
+            typeof eventUpdatedAt === "string" &&
+            typeof checkpointLastSeenUpdatedAt === "string" &&
+            eventUpdatedAt === checkpointLastSeenUpdatedAt;
+          const shouldProcess =
+            !checkpointLastSeenUpdatedAt ||
+            isNewerThanCheckpoint ||
+            (isAtCheckpointBoundary && !seenKeys.has(runKey));
+          if (!shouldProcess) {
+            continue;
+          }
+          pageHasNewRuns = true;
+          const result = await this.appendSourceEvent(normalized);
+          appended += result.appended;
+          deduped += result.deduped;
+          seenKeys.add(runKey);
+          if (typeof eventUpdatedAt === "string" && (!lastSeenUpdatedAt || eventUpdatedAt >= lastSeenUpdatedAt)) {
+            lastSeenUpdatedAt = eventUpdatedAt;
+          }
         }
-        const eventUpdatedAt = normalized.metadata?.updatedAt;
-        const runKey = `${normalized.sourceNativeId}:${normalized.eventVariant}`;
-        const shouldProcess =
-          !lastSeenUpdatedAt ||
-          (typeof eventUpdatedAt === "string" && eventUpdatedAt > lastSeenUpdatedAt) ||
-          !seenKeys.has(runKey);
-        if (!shouldProcess) {
-          continue;
-        }
-        const result = await this.appendSourceEvent(normalized);
-        appended += result.appended;
-        deduped += result.deduped;
-        seenKeys.add(runKey);
-        if (typeof eventUpdatedAt === "string" && (!lastSeenUpdatedAt || eventUpdatedAt >= lastSeenUpdatedAt)) {
-          lastSeenUpdatedAt = eventUpdatedAt;
+
+        if (!pageHasNewRuns || runs.length < perPage) {
+          break;
         }
       }
 
@@ -233,8 +257,8 @@ export class GithubCiSourceRuntime {
         sourceType: "github_repo_ci",
         appended,
         deduped,
-        eventsRead: runs.length,
-        note: `workflow runs fetched=${runs.length}`,
+        eventsRead,
+        note: `workflow runs fetched=${eventsRead} pages=${pageCount}`,
       };
     } catch (error) {
       const source = this.store.getSource(sourceId);
@@ -284,6 +308,7 @@ export function normalizeGithubWorkflowRunEvent(
   const variant = buildWorkflowRunVariant(workflowName, status, conclusion);
   const actor = asRecord(run.actor);
   const headCommit = asRecord(run.head_commit);
+  const headRepository = asRecord(run.head_repository);
   const pullRequestNumbers = extractPullRequestNumbers(run.pull_requests);
 
   return {
@@ -305,6 +330,7 @@ export function normalizeGithubWorkflowRunEvent(
       event: asString(run.event),
       headSha: asString(run.head_sha),
       headBranch: asString(run.head_branch),
+      headRepositoryFullName: asString(headRepository.full_name),
       pullRequestNumbers,
       runNumber: asNumber(run.run_number),
       runAttempt: asNumber(run.run_attempt),
@@ -324,6 +350,9 @@ export function normalizeGithubWorkflowRunEvent(
       event: asString(run.event),
       head_sha: asString(run.head_sha),
       head_branch: asString(run.head_branch),
+      head_repository: {
+        full_name: asString(headRepository.full_name),
+      },
       pull_requests: pullRequestNumbers.map((number) => ({ number })),
       run_number: asNumber(run.run_number),
       run_attempt: asNumber(run.run_attempt),

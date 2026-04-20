@@ -10,6 +10,7 @@ import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, Ter
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { ActivationGate } from "../src/runtime_gate";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
+import { GithubCallClient } from "../src/sources/github";
 import { AgentInboxStore } from "../src/store";
 import { assignedAgentIdFromContext, TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
 import { nowIso } from "../src/util";
@@ -75,6 +76,26 @@ class MutableActivationGate implements ActivationGate {
     return {
       outcome: this.outcome,
       reason: this.reason,
+    };
+  }
+}
+
+class FakeGithubCallClient implements GithubCallClient {
+  public calls: Array<Record<string, unknown>> = [];
+
+  async call(args: Record<string, unknown>): Promise<{ data: unknown }> {
+    this.calls.push(args);
+    const payload = (args.payload ?? {}) as Record<string, unknown>;
+    const owner = String(payload.owner ?? "holon-run");
+    const repo = String(payload.repo ?? "agentinbox");
+    const pullNumber = Number(payload.pull_number ?? 0);
+    return {
+      data: {
+        head: {
+          ref: `issue-${pullNumber}`,
+          repo: { full_name: `${owner}/${repo}` },
+        },
+      },
     };
   }
 }
@@ -256,6 +277,7 @@ async function makeService(options?: {
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
     homeDir: dir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(
     store,
@@ -292,6 +314,7 @@ async function makeServiceFromDbPath(
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
     homeDir: dir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(
     store,
@@ -1441,7 +1464,9 @@ test("github pr shortcut with withCi creates repo and sibling ci subscriptions",
       subscriptions.map((subscription) => subscription.filter),
       [
         { metadata: { number: 93, isPullRequest: true } },
-        { metadata: { pullRequestNumbers: [93] } },
+        {
+          expr: "contains(metadata.pullRequestNumbers, 93) || ( metadata.headBranch == \"issue-93\" && ( metadata.headRepositoryFullName == \"holon-run/agentinbox\" || !exists(metadata.headRepositoryFullName) ) )",
+        },
       ],
     );
     assert.deepEqual(subscriptions.map((subscription) => subscription.cleanupPolicy), [
@@ -1761,6 +1786,7 @@ test("registerSubscriptions rolls back earlier shortcut members when a later mem
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
     homeDir: dir,
     remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
   });
   service = new AgentInboxService(store, adapters, undefined, backend);
   try {

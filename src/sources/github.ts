@@ -47,6 +47,11 @@ export interface GithubCallClient {
   }): Promise<{ data: unknown }>;
 }
 
+interface GithubPullRequestDetails {
+  headRefName: string | null;
+  headRepositoryFullName: string | null;
+}
+
 export class GithubUxcClient {
   constructor(private readonly client: GithubCallClient = DEFAULT_GITHUB_CALL_CLIENT) {}
 
@@ -121,6 +126,30 @@ export class GithubUxcClient {
       },
       options: { auth: input.auth },
     });
+  }
+
+  async getPullRequestDetails(input: {
+    owner: string;
+    repo: string;
+    pullNumber: number;
+    auth?: string;
+  }): Promise<GithubPullRequestDetails> {
+    const response = await this.client.call({
+      endpoint: GITHUB_ENDPOINT,
+      operation: "get:/repos/{owner}/{repo}/pulls/{pull_number}",
+      payload: {
+        owner: input.owner,
+        repo: input.repo,
+        pull_number: input.pullNumber,
+      },
+      options: { auth: input.auth },
+    });
+    const data = asRecord(response.data);
+    const head = asRecord(data.head);
+    return {
+      headRefName: asString(head.ref),
+      headRepositoryFullName: asString(asRecord(head.repo).full_name),
+    };
   }
 }
 
@@ -463,18 +492,18 @@ export function githubFollowTemplateSpec(): FollowTemplateSpec[] {
   ];
 }
 
-export function expandGithubSubscriptionShortcut(input: {
+export async function expandGithubSubscriptionShortcut(input: {
   name: string;
   args?: Record<string, unknown>;
   source: SourceStream;
-}): {
+}, client: GithubUxcClient = new GithubUxcClient()): Promise<{
   members: Array<{
     streamKind?: string | null;
     filter?: SubscriptionFilter;
     trackedResourceRef: string;
     cleanupPolicy: { mode: "on_terminal" };
   }>;
-} | null {
+} | null> {
   if (input.name !== "pr") {
     return null;
   }
@@ -484,6 +513,9 @@ export function expandGithubSubscriptionShortcut(input: {
   }
   const trackedResourceRef = canonicalGithubPullRequestRef(input.source, number);
   const withCi = input.args?.withCi === true;
+  const ciFilter = withCi
+    ? await buildGithubPrCiFilter(input.source, number, client)
+    : null;
   return {
     members: [
       {
@@ -500,11 +532,7 @@ export function expandGithubSubscriptionShortcut(input: {
       ...(withCi
         ? [{
             streamKind: "ci_runs",
-            filter: {
-              metadata: {
-                pullRequestNumbers: [number],
-              },
-            },
+            filter: ciFilter ?? undefined,
             trackedResourceRef,
             cleanupPolicy: { mode: "on_terminal" as const },
           }]
@@ -513,7 +541,10 @@ export function expandGithubSubscriptionShortcut(input: {
   };
 }
 
-export function expandGithubFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
+export async function expandGithubFollowTemplate(
+  input: ExpandFollowTemplateInput,
+  client: GithubUxcClient = new GithubUxcClient(),
+): Promise<ExpandedFollowPlan | null> {
   const config = parseGithubSourceConfig(input.source);
   if (input.template === "repo") {
     return {
@@ -548,6 +579,9 @@ export function expandGithubFollowTemplate(input: ExpandFollowTemplateInput): Ex
   if (input.template === "pr") {
     const trackedResourceRef = canonicalGithubPullRequestRef(input.source, number);
     const withCi = input.args?.withCi === true;
+    const ciFilter = withCi
+      ? await buildGithubPrCiFilter(input.source, number, client)
+      : null;
     return {
       templateId: "github.pr",
       sources: [
@@ -583,11 +617,7 @@ export function expandGithubFollowTemplate(input: ExpandFollowTemplateInput): Ex
         ...(withCi
           ? [{
               sourceLogicalName: "ci_runs",
-              filter: {
-                metadata: {
-                  pullRequestNumbers: [number],
-                },
-              },
+              filter: ciFilter ?? undefined,
               trackedResourceRef,
               cleanupPolicy: { mode: "on_terminal" as const },
             }]
@@ -621,6 +651,56 @@ export function expandGithubFollowTemplate(input: ExpandFollowTemplateInput): Ex
       },
     ],
   };
+}
+
+async function buildGithubPrCiFilter(
+  source: SourceStream,
+  number: number,
+  client: GithubUxcClient,
+): Promise<SubscriptionFilter> {
+  const config = parseGithubSourceConfig(source);
+  const baseExpr = `contains(metadata.pullRequestNumbers, ${number})`;
+  try {
+    const details = await client.getPullRequestDetails({
+      owner: config.owner,
+      repo: config.repo,
+      pullNumber: number,
+      auth: config.uxcAuth,
+    });
+    if (!details.headRefName) {
+      throw new Error(`could not resolve head branch for PR #${number}`);
+    }
+    return {
+      expr: buildGithubPrCiFilterExpr(number, details.headRefName, details.headRepositoryFullName),
+    };
+  } catch {
+    return { expr: baseExpr };
+  }
+}
+
+function buildGithubPrCiFilterExpr(
+  number: number,
+  headRefName: string,
+  headRepositoryFullName: string | null,
+): string {
+  const base = `contains(metadata.pullRequestNumbers, ${number})`;
+  const branchExpr = `metadata.headBranch == ${JSON.stringify(headRefName)}`;
+  if (!headRepositoryFullName) {
+    return `${base} || ${branchExpr}`;
+  }
+  return [
+    base,
+    "||",
+    "(",
+    branchExpr,
+    "&&",
+    "(",
+    `metadata.headRepositoryFullName == ${JSON.stringify(headRepositoryFullName)}`,
+    "||",
+    "!exists(metadata.headRepositoryFullName)",
+    ")",
+    ")",
+  ].join(" ");
 }
 
 export function projectGithubLifecycleSignal(rawPayload: Record<string, unknown>, source: SourceStream): {
