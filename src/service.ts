@@ -3856,6 +3856,9 @@ function validateRegisterAgentInput(input: RegisterAgentInput): void {
     }
     return;
   }
+  if (input.backend) {
+    throw new Error(`unsupported terminal backend: ${input.backend}`);
+  }
   throw new Error("agent registration requires either a terminal backend or webhook");
 }
 

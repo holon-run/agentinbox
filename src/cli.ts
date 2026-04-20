@@ -400,6 +400,11 @@ async function main(): Promise<void> {
     const minUnackedItems = parseOptionalNumber(takeFlagValue(normalized, "--min-unacked-items")) ?? undefined;
     const webhookUrl = takeFlagValue(normalized, "--webhook-url");
     if (webhookUrl) {
+      if (!agentId) {
+        throw new Error(
+          "usage: agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N]",
+        );
+      }
       const webhookNotifyLeaseMs = parseOptionalNumber(
         takeFlagValue(normalized, "--webhook-notify-lease-ms"),
       ) ?? notifyLeaseMs;

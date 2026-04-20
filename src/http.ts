@@ -822,10 +822,34 @@ function buildFastifyServer(service: AgentInboxService) {
       body: {
         type: "object",
         additionalProperties: false,
+        oneOf: [
+          {
+            required: ["backend"],
+            properties: {
+              backend: { type: "string", enum: ["tmux", "iterm2"] },
+            },
+          },
+          {
+            required: ["agentId", "webhook"],
+            properties: {
+              webhook: {
+                type: "object",
+                additionalProperties: false,
+                required: ["url"],
+                properties: {
+                  url: { type: "string", minLength: 1 },
+                  activationMode: { type: "string", enum: ["activation_only", "activation_with_items"] },
+                  notifyLeaseMs: { type: "integer", minimum: 1 },
+                  minUnackedItems: { type: "integer", minimum: 1 },
+                },
+              },
+            },
+          },
+        ],
         properties: {
           agentId: { type: "string" },
           forceRebind: { type: "boolean" },
-          backend: { type: "string", minLength: 1 },
+          backend: { type: "string", enum: ["tmux", "iterm2"] },
           runtimeKind: { type: "string" },
           runtimeSessionId: { type: "string" },
           runtimePid: { type: "integer", minimum: 1 },
@@ -841,7 +865,7 @@ function buildFastifyServer(service: AgentInboxService) {
             required: ["url"],
             properties: {
               url: { type: "string", minLength: 1 },
-              activationMode: { type: "string" },
+              activationMode: { type: "string", enum: ["activation_only", "activation_with_items"] },
               notifyLeaseMs: { type: "integer", minimum: 1 },
               minUnackedItems: { type: "integer", minimum: 1 },
             },
@@ -1878,6 +1902,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
+    message.startsWith("webhook agent registration requires") ||
+    message.startsWith("agent registration requires either") ||
     message.startsWith("notifyLeaseMs must be a positive integer") ||
     message.startsWith("minUnackedItems must be a positive integer") ||
     message.startsWith("invalid webhook activation target") ||

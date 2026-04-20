@@ -1293,6 +1293,33 @@ test("cli agent register supports webhook-only registration without terminal con
   }
 });
 
+test("cli agent register requires --agent-id when --webhook-url is used", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-webhook-agent-id-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "",
+    CODEX_THREAD_ID: "",
+  };
+
+  try {
+    const register = runCli([
+      "agent",
+      "register",
+      "--webhook-url",
+      "http://127.0.0.1:9999/activate",
+    ], env);
+    assert.notEqual(register.status, 0);
+    assert.match(register.stderr, /usage: agentinbox agent register --agent-id ID --webhook-url URL/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli source schema resolves source ids to instance schema", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-schema-"));
   const env = {
@@ -3627,6 +3654,54 @@ test("control plane supports webhook-only agent registration and removes stale t
       const targets = service.listActivationTargets("agent-http-webhook");
       assert.equal(targets.length, 1);
       assert.equal(targets[0]?.kind, "webhook");
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("control plane validates webhook and terminal registration shapes with 400 responses", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-http-reg-val-"));
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const store = await AgentInboxStore.open(dbPath);
+  const adapters = new AdapterRegistry(store, async () => ({ appended: 0, deduped: 0 }));
+  const service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  try {
+    await adapters.start();
+    await service.start();
+    const server = createServer(service);
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+
+      const missingMode = await client.request<{ error: string }>("/agents", {});
+      assert.equal(missingMode.statusCode, 400);
+      assert.match(missingMode.data.error, /must match exactly one schema in oneOf/);
+
+      const invalidBackend = await client.request<{ error: string }>("/agents", {
+        backend: "ssh",
+      });
+      assert.equal(invalidBackend.statusCode, 400);
+      assert.match(invalidBackend.data.error, /must be equal to one of the allowed values/);
+
+      const invalidActivationMode = await client.request<{ error: string }>("/agents", {
+        agentId: "agent-http-invalid-webhook",
+        webhook: {
+          url: "http://127.0.0.1:9999/activate",
+          activationMode: "both",
+        },
+      });
+      assert.equal(invalidActivationMode.statusCode, 400);
+      assert.match(invalidActivationMode.data.error, /must be equal to one of the allowed values/);
     } finally {
       await started.close();
     }
