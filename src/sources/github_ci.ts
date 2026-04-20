@@ -193,7 +193,8 @@ export class GithubCiSourceRuntime {
       let deduped = 0;
       let eventsRead = 0;
       let pageCount = 0;
-      let lastSeenUpdatedAt: string | undefined = checkpoint.lastSeenUpdatedAt ?? undefined;
+      const checkpointLastSeenUpdatedAt = checkpoint.lastSeenUpdatedAt ?? undefined;
+      let lastSeenUpdatedAt: string | undefined = checkpointLastSeenUpdatedAt;
       const seenKeys = new Set<string>(checkpoint.seenRunKeys ?? []);
 
       const perPage = config.perPage ?? DEFAULT_GITHUB_CI_PER_PAGE;
@@ -210,10 +211,17 @@ export class GithubCiSourceRuntime {
           }
           const eventUpdatedAt = normalized.metadata?.updatedAt;
           const runKey = `${normalized.sourceNativeId}:${normalized.eventVariant}`;
+          const isNewerThanCheckpoint =
+            typeof eventUpdatedAt === "string" &&
+            (!checkpointLastSeenUpdatedAt || eventUpdatedAt > checkpointLastSeenUpdatedAt);
+          const isAtCheckpointBoundary =
+            typeof eventUpdatedAt === "string" &&
+            typeof checkpointLastSeenUpdatedAt === "string" &&
+            eventUpdatedAt === checkpointLastSeenUpdatedAt;
           const shouldProcess =
-            !lastSeenUpdatedAt ||
-            (typeof eventUpdatedAt === "string" && eventUpdatedAt > lastSeenUpdatedAt) ||
-            !seenKeys.has(runKey);
+            !checkpointLastSeenUpdatedAt ||
+            isNewerThanCheckpoint ||
+            (isAtCheckpointBoundary && !seenKeys.has(runKey));
           if (!shouldProcess) {
             continue;
           }

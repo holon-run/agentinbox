@@ -557,6 +557,38 @@ test("github follow and shortcut CI fallback allow missing head repository metad
   assert.equal(follow?.subscriptions[1]?.filter?.expr, "contains(metadata.pullRequestNumbers, 74) || metadata.headBranch == \"issue-74\"");
 });
 
+test("github follow and shortcut CI fallback degrade to PR-number matching when PR details lookup fails", async () => {
+  const source: SourceStream = {
+    sourceId: "src_follow_template_lookup_error",
+    hostId: "hst_follow_template_lookup_error",
+    streamKind: "repo_events",
+    streamKey: "holon-run/agentinbox",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox", uxcAuth: "github-default" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const fake = new FakeUxcClient();
+  fake.errors.push(new Error("temporary github outage"));
+  fake.errors.push(new Error("temporary github outage"));
+  const shortcut = await expandGithubSubscriptionShortcut({
+    name: "pr",
+    args: { number: 74, withCi: true },
+    source,
+  }, new GithubUxcClient(fake));
+  const follow = await expandGithubFollowTemplate({
+    template: "pr",
+    args: { number: 74, withCi: true },
+    source,
+  }, new GithubUxcClient(fake));
+  assert.equal(shortcut?.members[1]?.filter?.expr, "contains(metadata.pullRequestNumbers, 74)");
+  assert.equal(follow?.subscriptions[1]?.filter?.expr, "contains(metadata.pullRequestNumbers, 74)");
+});
+
 test("github delivery adapter maps issue comments and review replies to uxc calls", async () => {
   const fake = new FakeUxcClient();
   const adapter = new GithubDeliveryAdapter(new GithubUxcClient(fake));

@@ -659,18 +659,23 @@ async function buildGithubPrCiFilter(
   client: GithubUxcClient,
 ): Promise<SubscriptionFilter> {
   const config = parseGithubSourceConfig(source);
-  const details = await client.getPullRequestDetails({
-    owner: config.owner,
-    repo: config.repo,
-    pullNumber: number,
-    auth: config.uxcAuth,
-  });
-  if (!details.headRefName) {
-    throw new Error(`follow template github.pr could not resolve head branch for PR #${number}`);
+  const baseExpr = `contains(metadata.pullRequestNumbers, ${number})`;
+  try {
+    const details = await client.getPullRequestDetails({
+      owner: config.owner,
+      repo: config.repo,
+      pullNumber: number,
+      auth: config.uxcAuth,
+    });
+    if (!details.headRefName) {
+      throw new Error(`could not resolve head branch for PR #${number}`);
+    }
+    return {
+      expr: buildGithubPrCiFilterExpr(number, details.headRefName, details.headRepositoryFullName),
+    };
+  } catch {
+    return { expr: baseExpr };
   }
-  return {
-    expr: buildGithubPrCiFilterExpr(number, details.headRefName, details.headRepositoryFullName),
-  };
 }
 
 function buildGithubPrCiFilterExpr(
