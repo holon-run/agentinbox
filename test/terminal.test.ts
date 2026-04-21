@@ -98,6 +98,19 @@ test("renderAgentPrompt uses agentId in summary prompts", () => {
   );
 });
 
+test("renderAgentPrompt keeps backward compatibility for inboxId callers", () => {
+  const prompt = renderAgentPrompt({
+    inboxId: "inbox_123",
+    totalUnackedCount: 1,
+    latestEntryId: "ent_abc123",
+  });
+
+  assert.equal(
+    prompt,
+    "AgentInbox: 1 unacked item in inbox inbox_123. Latest entryId: ent_abc123. Please read the inbox, process them, and ack when finished.",
+  );
+});
+
 test("deriveInlineItemPreview truncates short text payloads and skips structured payloads", () => {
   const preview = deriveInlineItemPreview({
     itemId: "itm_1",
