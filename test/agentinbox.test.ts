@@ -4035,7 +4035,7 @@ test("terminal activation prompts use the current unacked inbox total", async ()
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 1);
-    assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 1 unacked item in inbox/);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 1 unacked item for agent agt_/);
 
     await service.appendSourceEventByCaller(source.sourceId, {
       sourceNativeId: "evt-2",
@@ -4055,7 +4055,7 @@ test("terminal activation prompts use the current unacked inbox total", async ()
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 2);
-    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item in inbox/);
+    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item for agent agt_/);
     assert.doesNotMatch(terminalDispatcher.calls[1]!.prompt, /2 new items arrived/);
   } finally {
     await service.stop();
@@ -4643,7 +4643,7 @@ test("dirty terminal reminders re-notify only when the effective prompt changes"
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 2);
-    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 2 unacked items in inbox/);
+    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 2 unacked items for agent agt_/);
     const state = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(state?.lastNotifiedFingerprint);
     assert.equal(state?.pendingNewItemCount, 0);
@@ -4715,7 +4715,7 @@ test("terminal reminder fingerprints use the canonical unacked item set", async 
     const updatedState = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId);
     assert.ok(updatedState?.lastNotifiedFingerprint);
     assert.notEqual(updatedState?.lastNotifiedFingerprint, initialState?.lastNotifiedFingerprint);
-    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item in inbox/);
+    assert.match(terminalDispatcher.calls[1]!.prompt, /AgentInbox: 1 unacked item for agent agt_/);
   } finally {
     await service.stop();
     store.close();
@@ -5003,7 +5003,7 @@ test("busy terminal defer keeps only the latest pending reminder fingerprint", a
     await sleep(40);
 
     assert.equal(terminalDispatcher.calls.length, 1);
-    assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 2 unacked items in inbox/);
+    assert.match(terminalDispatcher.calls[0]!.prompt, /AgentInbox: 2 unacked items for agent agt_/);
     const delivered = store.getActivationDispatchState(registered.agent.agentId, terminalTarget.targetId)!;
     assert.ok(delivered.lastNotifiedFingerprint);
     assert.notEqual(delivered.lastNotifiedFingerprint, firstFingerprint);
