@@ -12,6 +12,17 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.1] - 2026-04-21
+
+### Fixed
+
+- Added webhook-only agent registration convergence in both directions so a
+  later terminal `agent register` call is rejected while an active webhook
+  target exists.
+- Extended CLI, control-plane, and service coverage for webhook-only agent
+  registration, including webhook-specific validation and regression tests for
+  the `webhook -> terminal` conflict path.
+
 ## [1.0.0] - 2026-04-20
 
 ### Added
