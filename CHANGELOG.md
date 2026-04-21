@@ -12,6 +12,16 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.2] - 2026-04-22
+
+### Fixed
+
+- Changed user-facing terminal reminder text to prefer `agentId` over
+  `inboxId` as the primary identifier in reminder messages.
+- Kept `renderAgentPrompt()` backward compatible for legacy callers that still
+  pass `inboxId`, while moving internal reminder generation to the new
+  `agentId`-first wording.
+
 ## [1.0.1] - 2026-04-21
 
 ### Fixed
