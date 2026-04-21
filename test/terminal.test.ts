@@ -45,20 +45,20 @@ test("assignedAgentIdFromContext prefers runtime session ids", () => {
 
 test("renderAgentPrompt renders a single-item prompt without preview text", () => {
   const prompt = renderAgentPrompt({
-    inboxId: "inbox_123",
+    agentId: "agt_copper-fox",
     totalUnackedCount: 1,
     latestEntryId: "ent_abc123",
   });
 
   assert.equal(
     prompt,
-    "AgentInbox: 1 unacked item in inbox inbox_123. Latest entryId: ent_abc123. Please read the inbox, process them, and ack when finished.",
+    "AgentInbox: 1 unacked item for agent agt_copper-fox. Latest entryId: ent_abc123. Please read the inbox, process them, and ack when finished.",
   );
 });
 
 test("renderAgentPrompt includes inline preview for single-item prompts", () => {
   const prompt = renderAgentPrompt({
-    inboxId: "inbox_123",
+    agentId: "agt_copper-fox",
     totalUnackedCount: 1,
     preview: "Review PR #51 CI failure and push a fix",
     latestEntryId: "ent_abc123",
@@ -66,13 +66,13 @@ test("renderAgentPrompt includes inline preview for single-item prompts", () => 
 
   assert.equal(
     prompt,
-    "AgentInbox: 1 unacked item in inbox inbox_123. Latest entryId: ent_abc123. Preview: Review PR #51 CI failure and push a fix. Read the inbox for full details if needed.",
+    "AgentInbox: 1 unacked item for agent agt_copper-fox. Latest entryId: ent_abc123. Preview: Review PR #51 CI failure and push a fix. Read the inbox for full details if needed.",
   );
 });
 
 test("renderAgentPrompt does not add duplicate punctuation after previews", () => {
   const prompt = renderAgentPrompt({
-    inboxId: "inbox_123",
+    agentId: "agt_copper-fox",
     totalUnackedCount: 1,
     preview: "Review PR #51 CI failure and push a fix...",
     latestEntryId: "ent_abc123",
@@ -80,7 +80,21 @@ test("renderAgentPrompt does not add duplicate punctuation after previews", () =
 
   assert.equal(
     prompt,
-    "AgentInbox: 1 unacked item in inbox inbox_123. Latest entryId: ent_abc123. Preview: Review PR #51 CI failure and push a fix... Read the inbox for full details if needed.",
+    "AgentInbox: 1 unacked item for agent agt_copper-fox. Latest entryId: ent_abc123. Preview: Review PR #51 CI failure and push a fix... Read the inbox for full details if needed.",
+  );
+});
+
+test("renderAgentPrompt uses agentId in summary prompts", () => {
+  const prompt = renderAgentPrompt({
+    agentId: "agt_copper-fox",
+    totalUnackedCount: 2,
+    summary: "2 new items for agent agt_copper-fox from github review updates",
+    latestEntryId: "ent_abc123",
+  });
+
+  assert.equal(
+    prompt,
+    "AgentInbox: 2 unacked items for agent agt_copper-fox. Latest entryId: ent_abc123. Summary: 2 new items for agent agt_copper-fox from github review updates. Please read the inbox, process them, and ack when finished.",
   );
 });
 

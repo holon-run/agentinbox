@@ -88,7 +88,7 @@ export function detectTerminalContext(env: NodeJS.ProcessEnv = process.env): Det
 }
 
 export function renderAgentPrompt(input: {
-  inboxId: string;
+  agentId: string;
   totalUnackedCount: number;
   summary?: string | null;
   preview?: string | null;
@@ -96,7 +96,7 @@ export function renderAgentPrompt(input: {
 }): string {
   const totalUnackedCount = input.totalUnackedCount;
   const itemWord = totalUnackedCount === 1 ? "item" : "items";
-  const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} in inbox ${input.inboxId}.`;
+  const base = `AgentInbox: ${totalUnackedCount} unacked ${itemWord} for agent ${input.agentId}.`;
   const latestEntryIdSuffix = input.latestEntryId ? ` Latest entryId: ${input.latestEntryId}.` : "";
   if (totalUnackedCount === 1 && input.preview) {
     const suffix = /(?:[.!?…]|\.{3})$/.test(input.preview) ? "" : ".";

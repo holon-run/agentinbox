@@ -2678,7 +2678,7 @@ export class AgentInboxService {
     }
     const state = this.store.getActivationDispatchState(input.agentId, input.targetId);
     const inbox = this.ensureInboxForAgent(input.agentId);
-    const summary = summarizeActivation(inbox.inboxId, input.newItemCount, input.summary);
+    const summary = summarizeActivation(input.agentId, input.newItemCount, input.summary);
     const totalUnackedCount = input.totalUnackedCount ?? this.store.listInboxEntries(inbox.inboxId, { includeAcked: false }).length;
     const notificationPolicy = notificationPolicyForTarget(target);
     if (!meetsNotificationThreshold(notificationPolicy, totalUnackedCount)) {
@@ -2737,7 +2737,6 @@ export class AgentInboxService {
         }
         const reminder = await this.buildTerminalReminder(
           target,
-          inbox.inboxId,
           totalUnackedCount,
           input.summary,
           input.entries,
@@ -2970,7 +2969,6 @@ export class AgentInboxService {
 
   private async buildTerminalReminder(
     target: TerminalActivationTarget,
-    inboxId: string,
     totalUnackedCount: number,
     summary: string | null,
     entries: InboxEntry[],
@@ -2990,7 +2988,7 @@ export class AgentInboxService {
       preview ??= deriveInlineItemPreview(singleItem, summary);
     }
     const prompt = renderAgentPrompt({
-      inboxId,
+      agentId: target.agentId,
       totalUnackedCount,
       summary,
       preview,
@@ -4029,12 +4027,12 @@ function notificationBufferKey(agentId: string, targetId: string): string {
   return `${agentId}::${targetId}`;
 }
 
-function summarizeActivation(inboxId: string, newItemCount: number, firstSummary: string | null): string {
+function summarizeActivation(agentId: string, newItemCount: number, firstSummary: string | null): string {
   const itemWord = newItemCount === 1 ? "item" : "items";
   if (firstSummary) {
-    return `${newItemCount} new ${itemWord} in ${inboxId} from ${firstSummary}`;
+    return `${newItemCount} new ${itemWord} for agent ${agentId} from ${firstSummary}`;
   }
-  return `${newItemCount} new ${itemWord} in ${inboxId}`;
+  return `${newItemCount} new ${itemWord} for agent ${agentId}`;
 }
 
 function latestEntryIdForNotification(entries: InboxEntry[]): string | null {
