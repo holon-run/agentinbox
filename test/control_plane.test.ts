@@ -296,6 +296,15 @@ test("cli version and help subcommands print text output", () => {
   });
   assert.equal(helpSource.status, 0);
   assert.match(helpSource.stdout, /agentinbox source schema <sourceId>/);
+
+  const followTemplateHelp = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", "follow", "github", "pr", "--help"], {
+    cwd: repoDir,
+    encoding: "utf8",
+  });
+  assert.equal(followTemplateHelp.status, 0, followTemplateHelp.stderr);
+  assert.match(followTemplateHelp.stdout, /agentinbox follow <providerOrKind> <template>/);
+  assert.match(followTemplateHelp.stdout, /agentinbox follow github pr/);
+  assert.equal(followTemplateHelp.stderr, "");
 });
 
 test("cli accepts --json as a no-op compatibility flag on default JSON commands", () => {

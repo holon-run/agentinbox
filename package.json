@@ -1,6 +1,6 @@
 {
   "name": "@holon-run/agentinbox",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Local event subscription and delivery service for agents.",
   "license": "Apache-2.0",
   "repository": {
@@ -20,6 +20,7 @@
   "files": [
     "dist/src/",
     "scripts/",
+    "skills/",
     "drizzle/",
     "README.md",
     "LICENSE"

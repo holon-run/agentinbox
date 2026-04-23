@@ -36,28 +36,13 @@ UXC repository:
 
 - `https://github.com/holon-run/uxc`
 
-Then verify:
-
-```bash
-agentinbox --version
-uxc --version
-```
-
 ## First-Run Onboarding
 
 Recommended first-run sequence:
 
-1. start or verify the local daemon
-2. if GitHub access is needed and `gh` is already authenticated, import that auth into `uxc`
-3. register the current terminal session
-4. add the required sources and subscriptions using the docs examples
-
-Start or verify the daemon:
-
-```bash
-agentinbox daemon start
-agentinbox daemon status
-```
+1. if GitHub access is needed and `gh` is already authenticated, import that auth into `uxc`
+2. register the current terminal session
+3. follow the required sources or resources using the docs examples
 
 If GitHub-backed adapters are needed:
 
@@ -78,22 +63,16 @@ Treat the returned `agentId` as the stable identity for later commands.
 
 ## Usage Discipline
 
-When operating AgentInbox, follow these defaults unless there is a strong reason
-not to:
-
-1. prefer broad reusable sources and narrow subscriptions
-2. remove subscriptions when they are no longer needed
-
-In practice:
+Defaults:
 
 - do not create one GitHub source per PR unless the source itself must be PR-
   scoped
-- prefer one shared repo or repo-CI source and use subscription filters for PR,
-  branch, workflow, or failure-specific routing
-- if a source exposes subscription shortcuts, prefer the shortcut over manually
-  reconstructing the same filter and lifecycle fields
-- treat unused task-specific subscriptions as cleanup debt and remove them when
-  the task is done
+- prefer shared repo/repo-CI sources plus narrow follows or subscriptions
+- prefer `agentinbox follow` over manual `subscription add` when a follow
+  template exists
+- if a source exposes only subscription shortcuts, prefer the shortcut over
+  manually reconstructing the same filter and lifecycle fields
+- treat unused task-specific subscriptions as cleanup debt
 - if GitHub polling volume looks high, inspect old subscriptions and duplicate
   temporary sources before adding more
 
@@ -115,9 +94,6 @@ Typical cases:
   memory
 - reminders that should fire at a specific time or on a recurring schedule
 
-For this kind of work, treat AgentInbox as the durable tracking layer and use a
-consistent lifecycle:
-
 Important boundary:
 
 - inbox items, subscriptions, and timers can outlive the current terminal
@@ -130,52 +106,23 @@ Important boundary:
   explicitly rebind that agent to the current terminal before assuming prompt
   delivery is live again
 
-For example, resuming the same logical agent in a later session may look like:
+Lifecycle:
 
-```bash
-agentinbox agent register --agent-id <agentId> --force-rebind
-```
+1. register once per live terminal/runtime session
+2. reuse broad shared sources
+3. add narrow task-scoped follows, subscriptions, or timers
+4. read inbox items in bounded batches and ack only the reviewed batch
+5. clean up task-scoped subscriptions/timers after merge, closure, or abandonment
 
-1. register the current terminal session and keep the returned `agentId`
-2. reuse broad shared sources when they already exist
-3. add narrow task-scoped subscriptions or timers for the specific PR, issue,
-   branch, or workflow you care about
-4. read inbox items in bounded batches, process them, and ack only the batch
-   you actually reviewed
-5. clean up task-scoped subscriptions or timers after merge, closure,
-   abandonment, or any other terminal state
-
-For PR and review workflows, prefer one shared repo source and one shared
-repo-CI source, then add PR-scoped subscriptions on top:
+For PR and review workflows, prefer `follow` templates. They reuse shared
+sources, expand the source-specific filters, and attach cleanup behavior:
 
 ```bash
 agentinbox agent register
-agentinbox source schema <sourceId>
-agentinbox subscription add <sourceId> --agent-id <agentId> --shortcut pr --shortcut-args-json '{"number":87,"withCi":true}'
+agentinbox follow github pr --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=87 --arg withCi=true
 agentinbox inbox read --agent-id <agentId>
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
-agentinbox subscription list --agent-id <agentId>
-agentinbox subscription remove <subscriptionId>
 ```
-
-That flow should be read as:
-
-- register once per live terminal/runtime session
-- prefer shortcut-driven PR subscriptions when the source exposes them
-- let review comments, review decisions, PR state changes, and CI updates
-  arrive through the inbox
-- after the PR is merged, closed, or abandoned, verify that task-scoped
-  subscriptions are gone and remove any leftovers
-
-Cleanup expectations:
-
-- subscriptions are task assets by default, not permanent infrastructure
-- if a task-specific subscription is no longer serving an active task, remove
-  it
-- if polling-backed GitHub setup starts to accumulate, inspect old
-  subscriptions before creating more
-- auto-retiring cleanup policies reduce cleanup debt, but they do not remove
-  the need to verify the task is fully cleaned up
 
 Ack discipline:
 
@@ -194,56 +141,44 @@ Timer intent:
 
 ## Core Commands
 
-Create or inspect sources:
+Follow high-level templates:
 
 ```bash
-agentinbox host list
-agentinbox host show <hostId>
-agentinbox host add local_event local-demo
-agentinbox host add github uxcAuth:github-default --config-json '{"uxcAuth":"github-default"}'
+agentinbox follow github repo --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox
+agentinbox follow github pr --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=87 --arg withCi=true
+agentinbox follow github issue --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=180
+agentinbox follow github pr --agent-id <agentId> --args-json '{"owner":"holon-run","repo":"agentinbox","number":87,"withCi":true}'
+```
+
+Use `follow` as the default path for GitHub repo, PR, and issue tracking. Drop
+to `source schema` plus `subscription add` only when you need a custom filter or
+the source has no follow template.
+
+Advanced source/subscription commands:
+
+```bash
 agentinbox source list
 agentinbox source show <sourceId>
-agentinbox source add <hostId> events local-demo
+agentinbox source schema <sourceId>
 agentinbox source add <hostId> repo_events <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox"}'
 agentinbox source add <hostId> ci_runs <owner>/<repo> --config-json '{"owner":"holon-run","repo":"agentinbox","pollIntervalSecs":30}'
-```
-
-Append a local event:
-
-```bash
-agentinbox source event <sourceId> --native-id evt_123 --event local.demo --payload-json '{"message":"hello"}'
-```
-
-Add or inspect subscriptions:
-
-```bash
-agentinbox source schema <sourceId>
-agentinbox subscription add <sourceId>
-agentinbox subscription add <sourceId> --agent-id <agentId>
 agentinbox subscription add <sourceId> --shortcut pr --shortcut-args-json '{"number":87}'
 agentinbox subscription add <sourceId> --filter-json '{"metadata":{"headBranch":"main","conclusion":"failure"}}'
 agentinbox subscription list --agent-id <agentId>
-agentinbox subscription show <subscriptionId>
-agentinbox subscription poll <subscriptionId>
 agentinbox subscription remove <subscriptionId>
 ```
 
-Use `source schema` before adding task-scoped subscriptions for remote-backed
-sources. If `subscriptionSchema.shortcuts` is non-empty, prefer those shortcut
-entries first. They are easier to reuse and let the source own any matching
-tracked-resource and cleanup-policy defaults.
+Use manual subscriptions for advanced filters, custom source kinds, or when
+debugging template expansion. If `subscriptionSchema.shortcuts` is non-empty
+but no follow template is available, prefer those shortcut entries first.
 
 Read and ack the inbox:
 
 ```bash
-agentinbox inbox read
 agentinbox inbox read --agent-id <agentId>
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 agentinbox inbox send --agent-id <agentId> --message "Please review PR #87"
-agentinbox inbox send --agent-id <agentId> --message "CI failed on main" --sender operator
-agentinbox inbox watch
 agentinbox inbox watch --agent-id <agentId>
-agentinbox inbox ack --all
 agentinbox inbox ack --agent-id <agentId> --all
 ```
 
@@ -253,14 +188,8 @@ Default to a batch-bounded ack flow:
 2. identify the last item you actually reviewed in that batch
 3. ack with `--through <lastEntryId>`
 
-Use `ack --all` only when you have explicitly verified that every current
-unacked item should be cleared and there is no need to preserve the reviewed
-batch boundary. Otherwise it can clear items that arrived after the read step
-or older pending items you did not intend to acknowledge yet.
-
-Use `inbox send` as the default local operator path for direct text ingress when
-you want to place a human-written or agent-written message into an inbox
-without creating a source event or calling the HTTP control plane directly.
+Use `ack --all` only after explicitly verifying every current item should be
+cleared. Use `inbox send` for local operator/direct text ingress.
 
 Manage timers:
 
@@ -275,11 +204,7 @@ agentinbox timer resume <scheduleId>
 agentinbox timer remove <scheduleId>
 ```
 
-Use timers when the need is time-based rather than source-based. Prefer them
-over local event workarounds for reminders, recurring check-ins, and scheduled
-follow-ups.
-
-Manage activation targets:
+Activation targets:
 
 ```bash
 agentinbox agent target list <agentId>
@@ -289,3 +214,26 @@ agentinbox agent target remove <agentId> <targetId>
 
 For filtering strategy and review workflow setup, follow the docs links above
 instead of re-explaining the full architecture here.
+
+## Troubleshooting
+
+Do not start every task by checking daemon status; normal CLI commands should
+auto-connect or surface actionable errors. Use these checks after the first
+AgentInbox command fails, notifications stop arriving, or you suspect a stale
+terminal binding:
+
+```bash
+agentinbox --version
+agentinbox daemon status
+agentinbox daemon start
+agentinbox agent register --agent-id <agentId> --force-rebind
+```
+
+If GitHub-backed sources fail, verify UXC and imported GitHub auth only after
+the failure points there:
+
+```bash
+uxc --version
+gh auth status
+uxc auth credential import github --from gh
+```

@@ -67,6 +67,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (hasHelpFlag(normalized.slice(1))) {
+    printHelp([command]);
+    return;
+  }
+
   const client = await createClient(normalized);
 
   if (command === "host" && normalized[1] === "add") {
@@ -937,11 +942,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (hasHelpFlag(normalized.slice(1))) {
-    printHelp([command]);
-    return;
-  }
-
   throw new Error(`unknown command: ${normalized.join(" ")}`);
 }
 
@@ -1466,6 +1466,11 @@ Usage:
 
 Usage:
   agentinbox follow <providerOrKind> <template> [--agent-id ID] [--args-json JSON | --arg KEY=VALUE ...] [--config-json JSON] [--config-ref REF] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
+
+Examples:
+  agentinbox follow github repo --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox
+  agentinbox follow github pr --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=87 --arg withCi=true
+  agentinbox follow github issue --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=180
 `,
     source: `agentinbox source
 

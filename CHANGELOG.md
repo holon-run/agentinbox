@@ -12,6 +12,19 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.3] - 2026-04-23
+
+### Fixed
+
+- Fixed `agentinbox follow ... --help` so help is handled locally and does not
+  trigger follow preview or template expansion.
+
+### Changed
+
+- Updated and published the bundled AgentInbox skill to prefer `agentinbox
+  follow`, avoid routine daemon status checks, and move status checks to
+  troubleshooting guidance.
+
 ## [1.0.2] - 2026-04-22
 
 ### Fixed
