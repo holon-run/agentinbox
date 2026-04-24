@@ -827,14 +827,11 @@ function buildFastifyServer(service: AgentInboxService) {
     const query = request.query as { include_targets?: "true" | "false"; limit?: string };
     const agents = service.listAgents(parseOptionalPositiveInteger(query.limit));
     if (query.include_targets === "true") {
-      const activationTargetsByAgentId = service.listActivationTargets().reduce((grouped, target) => {
-        const targets = grouped.get(target.agentId);
-        const summarized = summarizeActivationTarget(target);
-        if (targets) {
-          targets.push(summarized);
-        } else {
-          grouped.set(target.agentId, [summarized]);
-        }
+      const activationTargetsByAgentId = agents.reduce((grouped, agent) => {
+        grouped.set(
+          agent.agentId,
+          service.listActivationTargets(agent.agentId).map((target) => summarizeActivationTarget(target)),
+        );
         return grouped;
       }, new Map<string, ReturnType<typeof summarizeActivationTarget>[]>());
       return {
@@ -1896,9 +1893,12 @@ function parseOptionalPositiveInteger(value: string | undefined): number | undef
   if (value === undefined) {
     return undefined;
   }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 1 || String(parsed) !== value) {
+  if (!/^[1-9]\d*$/.test(value)) {
     throw new Error("expected positive integer");
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("expected positive integer within safe range");
   }
   return parsed;
 }

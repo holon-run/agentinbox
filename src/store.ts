@@ -397,8 +397,8 @@ export class AgentInboxStore {
 
   listSourceHosts(limit?: number): SourceHost[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from source_hosts order by created_at asc limit ?", [limit])
-      : this.getAll("select * from source_hosts order by created_at asc");
+      ? this.getAll("select * from source_hosts order by created_at asc, host_id asc limit ?", [limit])
+      : this.getAll("select * from source_hosts order by created_at asc, host_id asc");
     return rows.map((row) => this.mapSourceHost(row));
   }
 
@@ -497,8 +497,8 @@ export class AgentInboxStore {
 
   listSources(limit?: number): SourceStream[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from sources order by created_at asc limit ?", [limit])
-      : this.getAll("select * from sources order by created_at asc");
+      ? this.getAll("select * from sources order by created_at asc, source_id asc limit ?", [limit])
+      : this.getAll("select * from sources order by created_at asc, source_id asc");
     return rows.map((row) => this.mapSource(row));
   }
 
@@ -687,8 +687,8 @@ export class AgentInboxStore {
 
   listAgents(limit?: number): Agent[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from agents order by created_at asc limit ?", [limit])
-      : this.getAll("select * from agents order by created_at asc");
+      ? this.getAll("select * from agents order by created_at asc, agent_id asc limit ?", [limit])
+      : this.getAll("select * from agents order by created_at asc, agent_id asc");
     return rows.map((row) => this.mapAgent(row));
   }
 
@@ -751,8 +751,8 @@ export class AgentInboxStore {
 
   listInboxes(limit?: number): Inbox[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from inboxes order by created_at asc limit ?", [limit])
-      : this.getAll("select * from inboxes order by created_at asc");
+      ? this.getAll("select * from inboxes order by created_at asc, inbox_id asc limit ?", [limit])
+      : this.getAll("select * from inboxes order by created_at asc, inbox_id asc");
     return rows.map((row) => this.mapInbox(row));
   }
 
@@ -786,8 +786,8 @@ export class AgentInboxStore {
 
   listSubscriptions(limit?: number): Subscription[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from subscriptions order by created_at asc limit ?", [limit])
-      : this.getAll("select * from subscriptions order by created_at asc");
+      ? this.getAll("select * from subscriptions order by created_at asc, subscription_id asc limit ?", [limit])
+      : this.getAll("select * from subscriptions order by created_at asc, subscription_id asc");
     return rows.map((row) => this.mapSubscription(row));
   }
 
@@ -807,18 +807,18 @@ export class AgentInboxStore {
     if (typeof filters?.limit === "number") {
       params.push(filters.limit);
     }
-    const rows = this.getAll(`select * from subscriptions${where} order by created_at asc${limitClause}`, params);
+    const rows = this.getAll(`select * from subscriptions${where} order by created_at asc, subscription_id asc${limitClause}`, params);
     return rows.map((row) => this.mapSubscription(row));
   }
 
   listSubscriptionsForSource(sourceId: string, limit?: number): Subscription[] {
     const rows = typeof limit === "number"
       ? this.getAll(
-        "select * from subscriptions where source_id = ? order by created_at asc limit ?",
+        "select * from subscriptions where source_id = ? order by created_at asc, subscription_id asc limit ?",
         [sourceId, limit],
       )
       : this.getAll(
-        "select * from subscriptions where source_id = ? order by created_at asc",
+        "select * from subscriptions where source_id = ? order by created_at asc, subscription_id asc",
         [sourceId],
       );
     return rows.map((row) => this.mapSubscription(row));
@@ -827,16 +827,15 @@ export class AgentInboxStore {
   listSubscriptionsForAgent(agentId: string, limit?: number): Subscription[] {
     const rows = typeof limit === "number"
       ? this.getAll(
-        "select * from subscriptions where agent_id = ? order by created_at asc limit ?",
+        "select * from subscriptions where agent_id = ? order by created_at asc, subscription_id asc limit ?",
         [agentId, limit],
       )
       : this.getAll(
-        "select * from subscriptions where agent_id = ? order by created_at asc",
+        "select * from subscriptions where agent_id = ? order by created_at asc, subscription_id asc",
         [agentId],
       );
     return rows.map((row) => this.mapSubscription(row));
   }
-
   listSubscriptionsForHostTrackedResourceRef(hostId: string, trackedResourceRef: string): Subscription[] {
     const rows = this.getAll(
       `
@@ -1158,19 +1157,19 @@ export class AgentInboxStore {
 
   listActivationTargets(limit?: number): ActivationTarget[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from activation_targets order by created_at asc limit ?", [limit])
-      : this.getAll("select * from activation_targets order by created_at asc");
+      ? this.getAll("select * from activation_targets order by created_at asc, target_id asc limit ?", [limit])
+      : this.getAll("select * from activation_targets order by created_at asc, target_id asc");
     return rows.map((row) => this.mapActivationTarget(row));
   }
 
   listActivationTargetsForAgent(agentId: string, limit?: number): ActivationTarget[] {
     const rows = typeof limit === "number"
       ? this.getAll(
-        "select * from activation_targets where agent_id = ? order by created_at asc limit ?",
+        "select * from activation_targets where agent_id = ? order by created_at asc, target_id asc limit ?",
         [agentId, limit],
       )
       : this.getAll(
-        "select * from activation_targets where agent_id = ? order by created_at asc",
+        "select * from activation_targets where agent_id = ? order by created_at asc, target_id asc",
         [agentId],
       );
     return rows.map((row) => this.mapActivationTarget(row));
@@ -1271,15 +1270,15 @@ export class AgentInboxStore {
 
   listTimers(limit?: number): AgentTimer[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from timers order by created_at asc limit ?", [limit])
-      : this.getAll("select * from timers order by created_at asc");
+      ? this.getAll("select * from timers order by created_at asc, schedule_id asc limit ?", [limit])
+      : this.getAll("select * from timers order by created_at asc, schedule_id asc");
     return rows.map((row) => this.mapTimer(row));
   }
 
   listTimersForAgent(agentId: string, limit?: number): AgentTimer[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from timers where agent_id = ? order by created_at asc limit ?", [agentId, limit])
-      : this.getAll("select * from timers where agent_id = ? order by created_at asc", [agentId]);
+      ? this.getAll("select * from timers where agent_id = ? order by created_at asc, schedule_id asc limit ?", [agentId, limit])
+      : this.getAll("select * from timers where agent_id = ? order by created_at asc, schedule_id asc", [agentId]);
     return rows.map((row) => this.mapTimer(row));
   }
 
@@ -1963,8 +1962,8 @@ export class AgentInboxStore {
 
   listStreams(limit?: number): StreamRecord[] {
     const rows = typeof limit === "number"
-      ? this.getAll("select * from streams order by created_at asc limit ?", [limit])
-      : this.getAll("select * from streams order by created_at asc");
+      ? this.getAll("select * from streams order by created_at asc, stream_id asc limit ?", [limit])
+      : this.getAll("select * from streams order by created_at asc, stream_id asc");
     return rows.map((row) => this.mapStream(row));
   }
 
