@@ -65,7 +65,7 @@ export class GithubUxcClient {
         issue_number: input.issueNumber,
         body: input.body,
       },
-      options: githubInvokeOptions(input.auth),
+      options: githubAuthOptions(input.auth),
     });
   }
 
@@ -80,7 +80,7 @@ export class GithubUxcClient {
         comment_id: input.commentId,
         body: input.body,
       },
-      options: githubInvokeOptions(input.auth),
+      options: githubAuthOptions(input.auth),
     });
   }
 
@@ -100,7 +100,7 @@ export class GithubUxcClient {
         issue_number: input.issueNumber,
         state: input.state,
       },
-      options: githubInvokeOptions(input.auth),
+      options: githubAuthOptions(input.auth),
     });
   }
 
@@ -124,7 +124,7 @@ export class GithubUxcClient {
         commit_title: input.commitTitle ?? null,
         commit_message: input.commitMessage ?? null,
       },
-      options: githubInvokeOptions(input.auth),
+      options: githubAuthOptions(input.auth),
     });
   }
 
@@ -142,7 +142,7 @@ export class GithubUxcClient {
         repo: input.repo,
         pull_number: input.pullNumber,
       },
-      options: githubInvokeOptions(input.auth),
+      options: githubReadOptions(input.auth),
     });
     const data = asRecord(response.data);
     const head = asRecord(data.head);
@@ -398,7 +398,7 @@ export async function hydrateGithubRepoEventIfNeeded(
           per_page: perPage,
           page,
         },
-        options: githubInvokeOptions(config.uxcAuth),
+        options: githubReadOptions(config.uxcAuth),
       });
     } catch {
       return raw;
@@ -825,7 +825,11 @@ function computeGithubHydrationPerPage(perPage: number | undefined): number {
   return Math.min(GITHUB_EVENT_HYDRATION_MAX_PER_PAGE, Math.max(GITHUB_EVENT_HYDRATION_MIN_PER_PAGE, configured));
 }
 
-function githubInvokeOptions(auth?: string): { auth?: string; artifact_compaction: false } {
+function githubAuthOptions(auth?: string): { auth?: string } {
+  return { auth };
+}
+
+function githubReadOptions(auth?: string): { auth?: string; artifact_compaction: false } {
   return {
     auth,
     artifact_compaction: false,
