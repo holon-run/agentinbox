@@ -497,6 +497,7 @@ export class RemoteSourceRuntime {
           occurredAt: mapped.occurredAt,
           metadata: mapped.metadata,
           rawPayload: mapped.rawPayload,
+          providerRawPayload: mapped.providerRawPayload,
           deliveryHandle: mapped.deliveryHandle ?? null,
         });
         appended += result.appended;

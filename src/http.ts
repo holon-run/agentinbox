@@ -608,6 +608,7 @@ function buildFastifyServer(service: AgentInboxService) {
           occurredAt: { type: "string", minLength: 1 },
           metadata: jsonObjectSchema,
           rawPayload: jsonObjectSchema,
+          providerRawPayload: jsonObjectSchema,
         },
       },
       response: {
@@ -622,6 +623,7 @@ function buildFastifyServer(service: AgentInboxService) {
       occurredAt?: string;
       metadata?: Record<string, unknown>;
       rawPayload?: Record<string, unknown>;
+      providerRawPayload?: Record<string, unknown>;
     };
     return service.appendSourceEvent({
       sourceId: decodeURIComponent(params.streamId),
@@ -630,6 +632,7 @@ function buildFastifyServer(service: AgentInboxService) {
       occurredAt: body.occurredAt,
       metadata: body.metadata ?? {},
       rawPayload: body.rawPayload ?? {},
+      providerRawPayload: body.providerRawPayload,
     });
   });
 
@@ -774,6 +777,7 @@ function buildFastifyServer(service: AgentInboxService) {
           occurredAt: { type: "string", minLength: 1 },
           metadata: jsonObjectSchema,
           rawPayload: jsonObjectSchema,
+          providerRawPayload: jsonObjectSchema,
           deliveryHandle: deliveryHandleSchema,
         },
       },
@@ -790,6 +794,7 @@ function buildFastifyServer(service: AgentInboxService) {
       occurredAt?: string;
       metadata?: Record<string, unknown>;
       rawPayload?: Record<string, unknown>;
+      providerRawPayload?: Record<string, unknown>;
       deliveryHandle?: DeliveryHandle;
     };
     return service.appendSourceEventByCaller(decodeURIComponent(params.sourceId), {
@@ -798,6 +803,7 @@ function buildFastifyServer(service: AgentInboxService) {
       occurredAt: optionalString(body.occurredAt),
       metadata: body.metadata ?? {},
       rawPayload: body.rawPayload ?? {},
+      providerRawPayload: body.providerRawPayload,
       deliveryHandle: body.deliveryHandle ?? null,
     });
   });

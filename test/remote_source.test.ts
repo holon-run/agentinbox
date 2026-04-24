@@ -358,6 +358,28 @@ test("github_repo source uses remote runtime builtin module mapping", async () =
     assert.equal(items.length, 1);
     assert.equal(items[0]?.eventVariant, "IssueCommentEvent.created");
     assert.equal(items[0]?.deliveryHandle?.provider, "github");
+    assert.deepEqual(items[0]?.providerRawPayload, {
+      id: "100",
+      type: "IssueCommentEvent",
+      created_at: "2026-04-04T11:00:00Z",
+      actor: { login: "jolestar" },
+      repo: { name: "holon-run/agentinbox" },
+      payload: {
+        action: "created",
+        issue: {
+          number: 12,
+          title: "hello",
+          body: "body",
+          labels: [{ name: "agent" }],
+          html_url: "https://github.com/holon-run/agentinbox/issues/12",
+        },
+        comment: { id: 9, body: "ping @alpha" },
+      },
+    });
+    assert.deepEqual(
+      (fake as unknown as { streamSpecs: Map<string, ManagedSourceSpec> }).streamSpecs.get("stream:github_repo:holon-run/agentinbox")?.options,
+      { auth: undefined, artifact_compaction: false },
+    );
   } finally {
     await service.stop();
     store.close();

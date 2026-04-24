@@ -87,7 +87,7 @@ The recommended split remains:
 - source registry
 - resolved source identity and resolved schema
 - implementation/module resolution
-- raw event to `eventVariant` / `metadata` / `rawPayload` mapping
+- raw event to `eventVariant` / `metadata` / normalized `rawPayload` mapping, with optional `providerRawPayload` preservation when the original provider event should remain available to agents
 - subscription filters and shortcuts
 - inbox materialization
 - activation and delivery
