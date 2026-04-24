@@ -274,16 +274,16 @@ export class AgentInboxService {
     return source;
   }
 
-  listSources(): SourceStream[] {
-    return this.store.listSources();
+  listSources(limit?: number): SourceStream[] {
+    return this.store.listSources(limit);
   }
 
-  async listSourceViews(): Promise<Array<SourceStream & { runtime: SourceRuntimeState | null }>> {
-    return this.attachSourceRuntimes(this.store.listSources());
+  async listSourceViews(limit?: number): Promise<Array<SourceStream & { runtime: SourceRuntimeState | null }>> {
+    return this.attachSourceRuntimes(this.store.listSources(limit));
   }
 
-  listHosts(): SourceHost[] {
-    return this.store.listSourceHosts();
+  listHosts(limit?: number): SourceHost[] {
+    return this.store.listSourceHosts(limit);
   }
 
   getHost(hostId: string): SourceHost {
@@ -417,8 +417,8 @@ export class AgentInboxService {
       });
   }
 
-  listStreams(): SourceStream[] {
-    return this.listSources();
+  listStreams(limit?: number): SourceStream[] {
+    return this.listSources(limit);
   }
 
   getStream(streamId: string): SourceStream {
@@ -769,8 +769,8 @@ export class AgentInboxService {
     });
   }
 
-  listAgents(): Agent[] {
-    return this.store.listAgents();
+  listAgents(limit?: number): Agent[] {
+    return this.store.listAgents(limit);
   }
 
   getAgent(agentId: string): Agent {
@@ -852,12 +852,12 @@ export class AgentInboxService {
     return timer;
   }
 
-  listTimers(agentId?: string): AgentTimer[] {
+  listTimers(agentId?: string, limit?: number): AgentTimer[] {
     if (agentId) {
       this.getAgent(agentId);
-      return this.store.listTimersForAgent(agentId);
+      return this.store.listTimersForAgent(agentId, limit);
     }
-    return this.store.listTimers();
+    return this.store.listTimers(limit);
   }
 
   getTimer(scheduleId: string): AgentTimer {
@@ -950,12 +950,12 @@ export class AgentInboxService {
     return target;
   }
 
-  listActivationTargets(agentId?: string): ActivationTarget[] {
+  listActivationTargets(agentId?: string, limit?: number): ActivationTarget[] {
     if (agentId) {
       this.getAgent(agentId);
-      return this.store.listActivationTargetsForAgent(agentId);
+      return this.store.listActivationTargetsForAgent(agentId, limit);
     }
-    return this.store.listActivationTargets();
+    return this.store.listActivationTargets(limit);
   }
 
   getActivationTarget(targetId: string): ActivationTarget {
@@ -1250,16 +1250,9 @@ export class AgentInboxService {
   listSubscriptions(filters?: {
     sourceId?: string;
     agentId?: string;
+    limit?: number;
   }): Subscription[] {
-    return this.store.listSubscriptions().filter((subscription) => {
-      if (filters?.sourceId && subscription.sourceId !== filters.sourceId) {
-        return false;
-      }
-      if (filters?.agentId && subscription.agentId !== filters.agentId) {
-        return false;
-      }
-      return true;
-    });
+    return this.store.listSubscriptionsFiltered(filters);
   }
 
   getSubscription(subscriptionId: string): Subscription {
@@ -1337,8 +1330,8 @@ export class AgentInboxService {
     return this.appendSourceEvent({ ...input, sourceId });
   }
 
-  listInboxAgentIds(): string[] {
-    return this.store.listInboxes().map((inbox) => inbox.ownerAgentId);
+  listInboxAgentIds(limit?: number): string[] {
+    return this.store.listInboxes(limit).map((inbox) => inbox.ownerAgentId);
   }
 
   getInboxDetailsByAgent(agentId: string): Record<string, unknown> {

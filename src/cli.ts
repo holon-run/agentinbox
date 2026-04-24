@@ -89,7 +89,10 @@ async function main(): Promise<void> {
   }
 
   if (command === "host" && normalized[1] === "list") {
-    await printRemote(client, "/hosts", undefined, "GET");
+    const query = buildQuery({
+      limit: parseOptionalLimitArg(normalized),
+    });
+    await printRemote(client, `/hosts${query}`, undefined, "GET");
     return;
   }
 
@@ -127,7 +130,10 @@ async function main(): Promise<void> {
   }
 
   if (command === "stream" && normalized[1] === "list") {
-    await printRemote(client, "/streams", undefined, "GET");
+    const query = buildQuery({
+      limit: parseOptionalLimitArg(normalized),
+    });
+    await printRemote(client, `/streams${query}`, undefined, "GET");
     return;
   }
 
@@ -298,7 +304,10 @@ async function main(): Promise<void> {
   }
 
   if (command === "source" && normalized[1] === "list") {
-    await printRemote(client, "/sources", undefined, "GET");
+    const query = buildQuery({
+      limit: parseOptionalLimitArg(normalized),
+    });
+    await printRemote(client, `/sources${query}`, undefined, "GET");
     return;
   }
 
@@ -448,7 +457,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "agent" && normalized[1] === "list") {
-    await printAgentList(client);
+    await printAgentList(client, parseOptionalLimitArg(normalized));
     return;
   }
 
@@ -503,9 +512,12 @@ async function main(): Promise<void> {
   if (command === "agent" && normalized[1] === "target" && normalized[2] === "list") {
     const agentId = normalized[3];
     if (!agentId) {
-      throw new Error("usage: agentinbox agent target list <agentId>");
+      throw new Error("usage: agentinbox agent target list <agentId> [--limit N]");
     }
-    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/targets`, undefined, "GET");
+    const query = buildQuery({
+      limit: parseOptionalLimitArg(normalized),
+    });
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/targets${query}`, undefined, "GET");
     return;
   }
 
@@ -584,6 +596,7 @@ async function main(): Promise<void> {
     const query = buildQuery({
       source_id: takeFlagValue(normalized, "--source-id"),
       agent_id: takeFlagValue(normalized, "--agent-id"),
+      limit: parseOptionalLimitArg(normalized),
     });
     await printRemote(client, `/subscriptions${query}`, undefined, "GET");
     return;
@@ -668,6 +681,7 @@ async function main(): Promise<void> {
   if (command === "timer" && normalized[1] === "list") {
     const query = buildQuery({
       agent_id: takeFlagValue(normalized, "--agent-id"),
+      limit: parseOptionalLimitArg(normalized),
     });
     await printRemote(client, `/timers${query}`, undefined, "GET");
     return;
@@ -701,7 +715,10 @@ async function main(): Promise<void> {
   }
 
   if (command === "inbox" && normalized[1] === "list") {
-    await printRemote(client, "/agents", undefined, "GET");
+    const query = buildQuery({
+      limit: parseOptionalLimitArg(normalized),
+    });
+    await printRemote(client, `/agents${query}`, undefined, "GET");
     return;
   }
 
@@ -716,9 +733,9 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
-    const allowedFlags = ["--agent-id", "--after-entry", "--include-acked"];
-    if (positionalArgs(args, ["--agent-id", "--after-entry"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
-      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked]");
+    const allowedFlags = ["--agent-id", "--after-entry", "--include-acked", "--limit"];
+    if (positionalArgs(args, ["--agent-id", "--after-entry", "--limit"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
+      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -727,6 +744,7 @@ async function main(): Promise<void> {
     const query = buildQuery({
       after_entry_id: takeFlagValue(normalized, "--after-entry"),
       include_acked: hasFlag(normalized, "--include-acked") ? "true" : undefined,
+      limit: parseOptionalLimitArg(normalized),
     });
     const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/entries${query}`, undefined, "GET");
     console.log(jsonResponse(withCommandMetadata(response.data, selection)));
@@ -1042,8 +1060,8 @@ async function createClient(args: string[]): Promise<AgentInboxClient> {
   return new AgentInboxClient(transport);
 }
 
-async function printAgentList(client: AgentInboxClient): Promise<void> {
-  const records = await listAgentsWithTargets(client);
+async function printAgentList(client: AgentInboxClient, limit?: string): Promise<void> {
+  const records = await listAgentsWithTargets(client, limit);
   console.log(jsonResponse(annotateAgents(records, tryDetectTerminalContext())));
 }
 
@@ -1124,8 +1142,12 @@ async function selectAgentForCommand(
   };
 }
 
-async function listAgentsWithTargets(client: AgentInboxClient): Promise<AgentWithTargets[]> {
-  const response = await requestRemote<{ agents: AgentWithTargets[] }>(client, "/agents?include_targets=true", undefined, "GET");
+async function listAgentsWithTargets(client: AgentInboxClient, limit?: string): Promise<AgentWithTargets[]> {
+  const query = buildQuery({
+    include_targets: "true",
+    limit,
+  });
+  const response = await requestRemote<{ agents: AgentWithTargets[] }>(client, `/agents${query}`, undefined, "GET");
   return response.data.agents;
 }
 
@@ -1253,6 +1275,18 @@ function buildQuery(params: Record<string, string | undefined>): string {
   }
   const query = search.toString();
   return query ? `?${query}` : "";
+}
+
+function parseOptionalLimitArg(args: string[]): string | undefined {
+  const raw = takeFlagValue(args, "--limit");
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || String(parsed) !== raw) {
+    throw new Error("`--limit` must be a positive integer");
+  }
+  return String(parsed);
 }
 
 function readSubscriptionFilter(args: string[]): Record<string, unknown> {
@@ -1443,7 +1477,7 @@ Usage:
 
 Usage:
   agentinbox host add <hostType> <hostKey> [--config-json JSON] [--config-ref REF]
-  agentinbox host list
+  agentinbox host list [--limit N]
   agentinbox host show <hostId>
   agentinbox host schema <hostId>
 `,
@@ -1451,7 +1485,7 @@ Usage:
 
 Usage:
   agentinbox stream add <hostId> <streamKind> <streamKey> [--config-json JSON] [--config-ref REF]
-  agentinbox stream list
+  agentinbox stream list [--limit N]
   agentinbox stream show <streamId>
   agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox stream remove <streamId> [--with-subscriptions]
@@ -1476,7 +1510,7 @@ Examples:
 
 Usage:
   agentinbox source add <hostId> <streamKind> <streamKey> [--config-json JSON] [--config-ref REF]
-  agentinbox source list
+  agentinbox source list [--limit N]
   agentinbox source show <sourceId>
   agentinbox source update <sourceId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox source remove <sourceId> [--with-subscriptions]
@@ -1491,13 +1525,13 @@ Usage:
 Usage:
   agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N] [--min-unacked-items N]
   agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N]
-  agentinbox agent list
+  agentinbox agent list [--limit N]
   agentinbox agent current
   agentinbox agent show <agentId>
   agentinbox agent remove <agentId>
   agentinbox agent resume <agentId>
   agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N] [--min-unacked-items N]
-  agentinbox agent target list <agentId>
+  agentinbox agent target list <agentId> [--limit N]
   agentinbox agent target remove <agentId> <targetId>
   agentinbox agent target resume <agentId> <targetId>
 `,
@@ -1505,7 +1539,7 @@ Usage:
 
 Usage:
   agentinbox timer add --agent-id ID (--at ISO8601 | --every DURATION | --cron EXPR) --message TEXT [--timezone TZ] [--sender SENDER]
-  agentinbox timer list [--agent-id ID]
+  agentinbox timer list [--agent-id ID] [--limit N]
   agentinbox timer pause <scheduleId>
   agentinbox timer resume <scheduleId>
   agentinbox timer remove <scheduleId>
@@ -1514,7 +1548,7 @@ Usage:
 
 Usage:
   agentinbox subscription add <sourceId> [--agent-id ID] [--shortcut NAME --shortcut-args-json JSON] [--filter-json JSON | --filter-file PATH | --filter-stdin] [--tracked-resource-ref REF] [--cleanup-policy-json JSON] [--start-policy POLICY] [--start-offset N] [--start-time ISO8601]
-  agentinbox subscription list [--source-id ID] [--agent-id ID]
+  agentinbox subscription list [--source-id ID] [--agent-id ID] [--limit N]
   agentinbox subscription show <subscriptionId>
   agentinbox subscription remove <subscriptionId>
   agentinbox subscription poll <subscriptionId>
@@ -1524,9 +1558,9 @@ Usage:
     inbox: `agentinbox inbox
 
 Usage:
-  agentinbox inbox list
+  agentinbox inbox list [--limit N]
   agentinbox inbox show <agentId>
-  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked]
+  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]
   agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)

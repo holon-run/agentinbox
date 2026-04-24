@@ -601,6 +601,7 @@ export interface SubscriptionPollResult {
 export interface ListInboxItemsOptions {
   afterEntryId?: string;
   includeAcked?: boolean;
+  limit?: number;
 }
 
 export interface WatchInboxOptions extends ListInboxItemsOptions {

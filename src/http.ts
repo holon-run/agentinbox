@@ -144,6 +144,13 @@ function buildFastifyServer(service: AgentInboxService) {
   app.get("/hosts", {
     schema: {
       tags: ["sources"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
+        },
+      },
       response: {
         200: {
           type: "object",
@@ -154,7 +161,10 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
     },
-  }, async () => ({ hosts: service.listHosts() }));
+  }, async (request) => {
+    const query = request.query as { limit?: string };
+    return { hosts: service.listHosts(parseOptionalPositiveInteger(query.limit)) };
+  });
 
   app.post("/hosts", {
     schema: {
@@ -221,6 +231,13 @@ function buildFastifyServer(service: AgentInboxService) {
   app.get("/streams", {
     schema: {
       tags: ["sources"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
+        },
+      },
       response: {
         200: {
           type: "object",
@@ -231,7 +248,10 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
     },
-  }, async () => ({ streams: service.listStreams() }));
+  }, async (request) => {
+    const query = request.query as { limit?: string };
+    return { streams: service.listStreams(parseOptionalPositiveInteger(query.limit)) };
+  });
 
   app.post("/streams", {
     schema: {
@@ -299,6 +319,13 @@ function buildFastifyServer(service: AgentInboxService) {
   app.get("/sources", {
     schema: {
       tags: ["sources"],
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
+        },
+      },
       response: {
         200: {
           type: "object",
@@ -309,7 +336,10 @@ function buildFastifyServer(service: AgentInboxService) {
         },
       },
     },
-  }, async () => ({ sources: await service.listSourceViews() }));
+  }, async (request) => {
+    const query = request.query as { limit?: string };
+    return { sources: await service.listSourceViews(parseOptionalPositiveInteger(query.limit)) };
+  });
 
   app.post("/sources", {
     schema: {
@@ -780,6 +810,7 @@ function buildFastifyServer(service: AgentInboxService) {
         additionalProperties: false,
         properties: {
           include_targets: { type: "string", enum: ["true", "false"] },
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
         },
       },
       response: {
@@ -793,17 +824,14 @@ function buildFastifyServer(service: AgentInboxService) {
       },
     },
   }, async (request) => {
-    const query = request.query as { include_targets?: "true" | "false" };
-    const agents = service.listAgents();
+    const query = request.query as { include_targets?: "true" | "false"; limit?: string };
+    const agents = service.listAgents(parseOptionalPositiveInteger(query.limit));
     if (query.include_targets === "true") {
-      const activationTargetsByAgentId = service.listActivationTargets().reduce((grouped, target) => {
-        const targets = grouped.get(target.agentId);
-        const summarized = summarizeActivationTarget(target);
-        if (targets) {
-          targets.push(summarized);
-        } else {
-          grouped.set(target.agentId, [summarized]);
-        }
+      const activationTargetsByAgentId = agents.reduce((grouped, agent) => {
+        grouped.set(
+          agent.agentId,
+          service.listActivationTargets(agent.agentId).map((target) => summarizeActivationTarget(target)),
+        );
         return grouped;
       }, new Map<string, ReturnType<typeof summarizeActivationTarget>[]>());
       return {
@@ -974,6 +1002,13 @@ function buildFastifyServer(service: AgentInboxService) {
           agentId: { type: "string", minLength: 1 },
         },
       },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
+        },
+      },
       response: {
         200: {
           type: "object",
@@ -986,7 +1021,8 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const params = request.params as { agentId: string };
-    return { targets: service.listActivationTargets(decodeURIComponent(params.agentId)) };
+    const query = request.query as { limit?: string };
+    return { targets: service.listActivationTargets(decodeURIComponent(params.agentId), parseOptionalPositiveInteger(query.limit)) };
   });
 
   app.post("/agents/:agentId/targets", {
@@ -1080,6 +1116,7 @@ function buildFastifyServer(service: AgentInboxService) {
         additionalProperties: false,
         properties: {
           agent_id: { type: "string" },
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
         },
       },
       response: {
@@ -1093,8 +1130,8 @@ function buildFastifyServer(service: AgentInboxService) {
       },
     },
   }, async (request) => {
-    const query = request.query as { agent_id?: string };
-    return { timers: service.listTimers(query.agent_id) };
+    const query = request.query as { agent_id?: string; limit?: string };
+    return { timers: service.listTimers(query.agent_id, parseOptionalPositiveInteger(query.limit)) };
   });
 
   app.post("/timers", {
@@ -1203,6 +1240,7 @@ function buildFastifyServer(service: AgentInboxService) {
         properties: {
           source_id: { type: "string" },
           agent_id: { type: "string" },
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
         },
       },
       response: {
@@ -1210,11 +1248,12 @@ function buildFastifyServer(service: AgentInboxService) {
       },
     },
   }, async (request) => {
-    const query = request.query as { source_id?: string; agent_id?: string };
+    const query = request.query as { source_id?: string; agent_id?: string; limit?: string };
     return {
       subscriptions: service.listSubscriptions({
         sourceId: query.source_id,
         agentId: query.agent_id,
+        limit: parseOptionalPositiveInteger(query.limit),
       }),
     };
   });
@@ -1424,6 +1463,7 @@ function buildFastifyServer(service: AgentInboxService) {
         properties: {
           after_entry_id: { type: "string" },
           include_acked: { type: "string", enum: ["true", "false"] },
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
         },
       },
       response: {
@@ -1438,11 +1478,12 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const params = request.params as { agentId: string };
-    const query = request.query as { after_entry_id?: string; include_acked?: "true" | "false" };
+    const query = request.query as { after_entry_id?: string; include_acked?: "true" | "false"; limit?: string };
     return {
       entries: service.listInboxItems(decodeURIComponent(params.agentId), {
         afterEntryId: query.after_entry_id,
         includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
+        limit: parseOptionalPositiveInteger(query.limit),
       }),
     };
   });
@@ -1846,6 +1887,20 @@ function optionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseOptionalPositiveInteger(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new Error("expected positive integer");
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("expected positive integer within safe range");
+  }
+  return parsed;
 }
 
 function normalizeValidationMessage(message: string): string {
