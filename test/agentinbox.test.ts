@@ -504,6 +504,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
       "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
+      "0004_provider_raw_payload",
     ]);
     assert.equal(state.hasNewIndex, true);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
@@ -535,6 +536,7 @@ test("store reopens an existing v1 database without archiving it", async () => {
       "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
+      "0004_provider_raw_payload",
     ]);
     assert.equal(warnings.length, 0);
     assert.equal(state.hasTrackedResourceIndex, true);
@@ -564,6 +566,7 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
       "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
+      "0004_provider_raw_payload",
     ]);
     assert.equal(state.hasNewIndex, true);
     assert.equal(state.hasTrackedResourceIndex, true);
@@ -591,6 +594,7 @@ test("store upgrades source-scoped lifecycle retirements to host-scoped retireme
       "0001_activation_entry_boundary",
       "0002_host_scoped_lifecycle_retirements",
       "0003_subscription_tracked_resource_indexes",
+      "0004_provider_raw_payload",
     ]);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
     assert.deepEqual(state.retirementColumns.includes("source_id"), false);
