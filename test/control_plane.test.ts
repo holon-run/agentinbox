@@ -838,6 +838,172 @@ test("control plane GET /agents can include activation target summaries", async 
   }
 });
 
+test("control plane list endpoints apply limit server-side", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-limit-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
+    stdout: "",
+    stderr: "",
+  })));
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const futureAtA = new Date(Date.now() + 60_000).toISOString();
+      const futureAtB = new Date(Date.now() + 120_000).toISOString();
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+
+      const hostA = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "limit-host-a",
+      });
+      const hostB = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "local_event",
+        hostKey: "limit-host-b",
+      });
+      assert.equal(hostA.statusCode, 200);
+      assert.equal(hostB.statusCode, 200);
+
+      const sourceA = await client.request<{ sourceId: string }>("/sources", {
+        hostId: hostA.data.hostId,
+        streamKind: "events",
+        streamKey: "limit-source-a",
+        config: {},
+      });
+      const sourceB = await client.request<{ sourceId: string }>("/sources", {
+        hostId: hostB.data.hostId,
+        streamKind: "events",
+        streamKey: "limit-source-b",
+        config: {},
+      });
+      assert.equal(sourceA.statusCode, 200);
+      assert.equal(sourceB.statusCode, 200);
+
+      const agentA = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-limit-a",
+        tmuxPaneId: "%881",
+      });
+      const agentB = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-limit-b",
+        tmuxPaneId: "%882",
+      });
+      assert.equal(agentA.statusCode, 200);
+      assert.equal(agentB.statusCode, 200);
+
+      const agentAId = agentA.data.agent.agentId;
+      const agentBId = agentB.data.agent.agentId;
+
+      await client.request(`/agents/${encodeURIComponent(agentAId)}/targets`, {
+        kind: "webhook",
+        url: "http://127.0.0.1:9901/a",
+      });
+      await client.request(`/agents/${encodeURIComponent(agentAId)}/targets`, {
+        kind: "webhook",
+        url: "http://127.0.0.1:9901/b",
+      });
+
+      await client.request("/timers", {
+        agentId: agentAId,
+        at: futureAtA,
+        message: "timer a",
+      });
+      await client.request("/timers", {
+        agentId: agentAId,
+        at: futureAtB,
+        message: "timer b",
+      });
+
+      const subA = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>("/subscriptions", {
+        agentId: agentAId,
+        sourceId: sourceA.data.sourceId,
+        filter: {},
+      });
+      const subB = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>("/subscriptions", {
+        agentId: agentAId,
+        sourceId: sourceB.data.sourceId,
+        filter: {},
+      });
+      assert.equal(subA.statusCode, 200);
+      assert.equal(subB.statusCode, 200);
+
+      await client.request(`/agents/${encodeURIComponent(agentBId)}/inbox/items`, { message: "one" });
+      await client.request(`/agents/${encodeURIComponent(agentBId)}/inbox/items`, { message: "two" });
+
+      const hosts = await client.request<{ hosts: Array<{ hostId: string }> }>("/hosts?limit=1", undefined, "GET");
+      const streams = await client.request<{ streams: Array<{ sourceId: string }> }>("/streams?limit=1", undefined, "GET");
+      const sources = await client.request<{ sources: Array<{ sourceId: string }> }>("/sources?limit=1", undefined, "GET");
+      const agents = await client.request<{ agents: Array<{ agent: { agentId: string } }> }>("/agents?include_targets=true&limit=1", undefined, "GET");
+      const targets = await client.request<{ targets: Array<{ targetId: string }> }>(
+        `/agents/${encodeURIComponent(agentAId)}/targets?limit=1`,
+        undefined,
+        "GET",
+      );
+      const timers = await client.request<{ timers: Array<{ scheduleId: string }> }>(
+        `/timers?agent_id=${encodeURIComponent(agentAId)}&limit=1`,
+        undefined,
+        "GET",
+      );
+      const subs = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>(
+        `/subscriptions?agent_id=${encodeURIComponent(agentAId)}&limit=1`,
+        undefined,
+        "GET",
+      );
+      const inboxes = await client.request<{ agents: Array<{ agentId?: string; agent?: { agentId: string } }> }>("/agents?limit=1", undefined, "GET");
+      const entries = await client.request<{ entries: Array<{ entryId: string }> }>(
+        `/agents/${encodeURIComponent(agentBId)}/inbox/entries?include_acked=true&limit=1`,
+        undefined,
+        "GET",
+      );
+
+      assert.equal(hosts.statusCode, 200);
+      assert.equal(hosts.data.hosts.length, 1);
+      assert.equal(streams.statusCode, 200);
+      assert.equal(streams.data.streams.length, 1);
+      assert.equal(sources.statusCode, 200);
+      assert.equal(sources.data.sources.length, 1);
+      assert.equal(agents.statusCode, 200);
+      assert.equal(agents.data.agents.length, 1);
+      assert.equal(targets.statusCode, 200);
+      assert.equal(targets.data.targets.length, 1);
+      assert.equal(timers.statusCode, 200);
+      assert.equal(timers.data.timers.length, 1);
+      assert.equal(subs.statusCode, 200);
+      assert.equal(subs.data.subscriptions.length, 1);
+      assert.equal(inboxes.statusCode, 200);
+      assert.equal(inboxes.data.agents.length, 1);
+      assert.equal(entries.statusCode, 200);
+      assert.equal(entries.data.entries.length, 1);
+
+      const limitedAfter = await client.request<{ entries: Array<{ entryId: string }> }>(
+        `/agents/${encodeURIComponent(agentBId)}/inbox/entries?include_acked=true&after_entry_id=${encodeURIComponent(entries.data.entries[0]!.entryId)}&limit=1`,
+        undefined,
+        "GET",
+      );
+      assert.equal(limitedAfter.statusCode, 200);
+      assert.equal(limitedAfter.data.entries.length, 1);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await adapters.stop();
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("control plane source views surface backend managed runtime state", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-source-runtime-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");
@@ -1510,7 +1676,67 @@ test("cli inbox read rejects unsupported flags like --ack", () => {
   try {
     const read = runCli(["inbox", "read", "--ack"], env);
     assert.notEqual(read.status, 0);
-    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-entry ID] \[--include-acked]/);
+    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-entry ID] \[--include-acked] \[--limit N]/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli one-shot list and read commands accept --limit", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-limit-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%983",
+    CODEX_THREAD_ID: "thread-cli-limit",
+  };
+
+  try {
+    const futureAt = new Date(Date.now() + 60_000).toISOString();
+    const register = runCli(["agent", "register"], env);
+    assert.equal(register.status, 0, register.stderr);
+    const registered = JSON.parse(register.stdout) as { agent: { agentId: string } };
+    const agentId = registered.agent.agentId;
+
+    const timer = runCli([
+      "timer",
+      "add",
+      "--agent-id",
+      agentId,
+      "--at",
+      futureAt,
+      "--message",
+      "cap timer results",
+    ], env);
+    assert.equal(timer.status, 0, timer.stderr);
+
+    const sendOne = runCli(["inbox", "send", "--agent-id", agentId, "--message", "first"], env);
+    assert.equal(sendOne.status, 0, sendOne.stderr);
+    const sendTwo = runCli(["inbox", "send", "--agent-id", agentId, "--message", "second"], env);
+    assert.equal(sendTwo.status, 0, sendTwo.stderr);
+
+    for (const args of [
+      ["host", "list", "--limit", "1"],
+      ["stream", "list", "--limit", "1"],
+      ["source", "list", "--limit", "1"],
+      ["agent", "list", "--limit", "1"],
+      ["agent", "target", "list", agentId, "--limit", "1"],
+      ["timer", "list", "--agent-id", agentId, "--limit", "1"],
+      ["subscription", "list", "--agent-id", agentId, "--limit", "1"],
+      ["inbox", "list", "--limit", "1"],
+    ] as string[][]) {
+      const result = runCli(args, env);
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    const read = runCli(["inbox", "read", "--agent-id", agentId, "--include-acked", "--limit", "1"], env);
+    assert.equal(read.status, 0, read.stderr);
+    const payload = JSON.parse(read.stdout) as { entries: Array<unknown> };
+    assert.equal(payload.entries.length, 1);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
