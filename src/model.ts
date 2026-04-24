@@ -205,6 +205,7 @@ export interface InboxItem {
   occurredAt: string;
   metadata: Record<string, unknown>;
   rawPayload: Record<string, unknown>;
+  providerRawPayload?: Record<string, unknown>;
   deliveryHandle?: DeliveryHandle | null;
   ackedAt?: string | null;
 }
@@ -218,6 +219,7 @@ export interface ActivationItem {
   occurredAt: string;
   metadata: Record<string, unknown>;
   rawPayload: Record<string, unknown>;
+  providerRawPayload?: Record<string, unknown>;
   deliveryHandle?: DeliveryHandle | null;
 }
 
@@ -235,6 +237,7 @@ interface InboxEntryBase {
   occurredAt?: string;
   metadata?: Record<string, unknown>;
   rawPayload?: Record<string, unknown>;
+  providerRawPayload?: Record<string, unknown>;
   summary: string;
   count: number;
   itemIds: string[];
@@ -523,6 +526,7 @@ export interface AppendSourceEventInput {
   occurredAt?: string;
   metadata?: Record<string, unknown>;
   rawPayload?: Record<string, unknown>;
+  providerRawPayload?: Record<string, unknown>;
   deliveryHandle?: DeliveryHandle | null;
 }
 

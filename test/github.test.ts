@@ -223,6 +223,26 @@ test("github_repo remote module hydrates truncated review events before mapping"
   assert.equal(mapped.metadata.reviewState, "approved");
   assert.equal(mapped.metadata.url, "https://github.com/holon-run/agentinbox/pull/252#pullrequestreview-9");
   assert.equal(mapped.deliveryHandle?.targetRef, "holon-run/agentinbox#252");
+  assert.deepEqual(mapped.providerRawPayload, {
+    id: "8568075837",
+    type: "PullRequestReviewEvent",
+    created_at: "2026-04-19T09:37:09Z",
+    actor: { login: "jolestar" },
+    repo: { name: "holon-run/agentinbox" },
+    payload: {
+      action: "created",
+      review: {
+        state: "approved",
+        body: "ship it",
+        html_url: "https://github.com/holon-run/agentinbox/pull/252#pullrequestreview-9",
+      },
+      pull_request: {
+        number: 252,
+        title: "feat: hydrate truncated review events",
+        html_url: "https://github.com/holon-run/agentinbox/pull/252",
+      },
+    },
+  });
   assert.equal(fake.calls.length, 1);
   assert.deepEqual(fake.calls[0], {
     endpoint: "https://api.github.com",
@@ -233,7 +253,7 @@ test("github_repo remote module hydrates truncated review events before mapping"
       per_page: 10,
       page: 1,
     },
-    options: { auth: "github-default" },
+    options: { auth: "github-default", artifact_compaction: false },
   });
 });
 

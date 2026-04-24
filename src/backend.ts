@@ -24,6 +24,7 @@ export interface StreamEventRecord {
   occurredAt: string;
   metadata: Record<string, unknown>;
   rawPayload: Record<string, unknown>;
+  providerRawPayload?: Record<string, unknown>;
   deliveryHandle: Record<string, unknown> | null;
   createdAt: string;
 }

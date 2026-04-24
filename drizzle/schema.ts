@@ -173,6 +173,7 @@ export const inboxItems = sqliteTable("inbox_items", {
   occurredAt: text("occurred_at").notNull(),
   metadataJson: text("metadata_json").notNull(),
   rawPayloadJson: text("raw_payload_json").notNull(),
+  providerRawPayloadJson: text("provider_raw_payload_json"),
   deliveryHandleJson: text("delivery_handle_json"),
   ackedAt: text("acked_at"),
 }, (table) => ({
@@ -302,6 +303,7 @@ export const streamEvents = sqliteTable("stream_events", {
   occurredAt: text("occurred_at").notNull(),
   metadataJson: text("metadata_json").notNull(),
   rawPayloadJson: text("raw_payload_json").notNull(),
+  providerRawPayloadJson: text("provider_raw_payload_json"),
   deliveryHandleJson: text("delivery_handle_json"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({

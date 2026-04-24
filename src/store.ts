@@ -1367,8 +1367,8 @@ export class AgentInboxStore {
       `
       insert or ignore into inbox_items (
         item_id, source_id, source_native_id, event_variant, inbox_id, occurred_at,
-        metadata_json, raw_payload_json, delivery_handle_json, acked_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        metadata_json, raw_payload_json, provider_raw_payload_json, delivery_handle_json, acked_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         item.itemId,
@@ -1379,6 +1379,7 @@ export class AgentInboxStore {
         item.occurredAt,
         JSON.stringify(item.metadata),
         JSON.stringify(item.rawPayload),
+        item.providerRawPayload ? JSON.stringify(item.providerRawPayload) : null,
         item.deliveryHandle ? JSON.stringify(item.deliveryHandle) : null,
         item.ackedAt ?? null,
       ],
@@ -1424,6 +1425,7 @@ export class AgentInboxStore {
         occurredAt: item.occurredAt,
         metadata: item.metadata,
         rawPayload: item.rawPayload,
+        providerRawPayload: item.providerRawPayload,
         deliveryHandle: item.deliveryHandle ?? null,
       }),
       count: 1,
@@ -1922,6 +1924,7 @@ export class AgentInboxStore {
     const occurredAt = event.occurredAt ?? nowIso();
     const metadataJson = JSON.stringify(event.metadata ?? {});
     const rawPayloadJson = JSON.stringify(event.rawPayload ?? {});
+    const providerRawPayloadJson = event.providerRawPayload ? JSON.stringify(event.providerRawPayload) : null;
     const deliveryHandleJson = event.deliveryHandle ? JSON.stringify(event.deliveryHandle) : null;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -1930,8 +1933,8 @@ export class AgentInboxStore {
         `
         insert or ignore into stream_events (
           stream_event_id, stream_id, source_id, source_native_id, event_variant,
-          occurred_at, metadata_json, raw_payload_json, delivery_handle_json, created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          occurred_at, metadata_json, raw_payload_json, provider_raw_payload_json, delivery_handle_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
         [
           generateCanonicalId("evt"),
@@ -1942,6 +1945,7 @@ export class AgentInboxStore {
           occurredAt,
           metadataJson,
           rawPayloadJson,
+          providerRawPayloadJson,
           deliveryHandleJson,
           nowIso(),
         ],
@@ -2391,6 +2395,9 @@ export class AgentInboxStore {
       occurredAt: String(row.occurred_at),
       metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
       rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json as string),
+      providerRawPayload: row.provider_raw_payload_json
+        ? parseJson<Record<string, unknown>>(row.provider_raw_payload_json as string)
+        : undefined,
       deliveryHandle: row.delivery_handle_json
         ? parseJson<InboxItem["deliveryHandle"]>(row.delivery_handle_json as string)
         : null,
@@ -2429,6 +2436,7 @@ export class AgentInboxStore {
         occurredAt: item.occurredAt,
         metadata: item.metadata,
         rawPayload: item.rawPayload,
+        providerRawPayload: item.providerRawPayload,
         item,
       } as InboxEntry;
     }
@@ -2766,6 +2774,9 @@ export class AgentInboxStore {
       occurredAt: String(row.occurred_at),
       metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
       rawPayload: parseJson<Record<string, unknown>>(row.raw_payload_json as string),
+      providerRawPayload: row.provider_raw_payload_json
+        ? parseJson<Record<string, unknown>>(row.provider_raw_payload_json as string)
+        : undefined,
       deliveryHandle: row.delivery_handle_json
         ? parseJson<Record<string, unknown>>(row.delivery_handle_json as string)
         : null,

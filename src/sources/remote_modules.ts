@@ -67,6 +67,7 @@ export interface MappedRemoteEvent {
   eventVariant: string;
   metadata: Record<string, unknown>;
   rawPayload: Record<string, unknown>;
+  providerRawPayload?: Record<string, unknown>;
   occurredAt?: string;
   deliveryHandle?: AppendSourceEventInput["deliveryHandle"];
 }
@@ -474,7 +475,10 @@ export function createGithubRepoRemoteModule(options?: { callClient?: GithubCall
             seen_window: 1024,
           },
         },
-        options: { auth: config.uxcAuth },
+        options: {
+          auth: config.uxcAuth,
+          artifact_compaction: false,
+        },
       };
     },
     async mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): Promise<MappedRemoteEvent | null> {
@@ -489,6 +493,7 @@ export function createGithubRepoRemoteModule(options?: { callClient?: GithubCall
         eventVariant: normalized.eventVariant,
         metadata: normalized.metadata ?? {},
         rawPayload: normalized.rawPayload ?? hydratedPayload,
+        providerRawPayload: hydratedPayload,
         occurredAt: normalized.occurredAt,
         deliveryHandle: normalized.deliveryHandle,
       };
@@ -613,7 +618,10 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
           seen_window: 1024,
         },
       },
-      options: { auth: config.uxcAuth },
+      options: {
+        auth: config.uxcAuth,
+        artifact_compaction: false,
+      },
     };
   },
   mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
@@ -627,6 +635,7 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
       eventVariant: normalized.eventVariant,
       metadata: normalized.metadata ?? {},
       rawPayload: normalized.rawPayload ?? rawPayload,
+      providerRawPayload: rawPayload,
       occurredAt: normalized.occurredAt,
       deliveryHandle: normalized.deliveryHandle,
     };
@@ -680,7 +689,10 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
       endpoint: config.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
       mode: "stream",
       transport_hint: "feishu_long_connection",
-      options: { auth: config.uxcAuth },
+      options: {
+        auth: config.uxcAuth,
+        artifact_compaction: false,
+      },
     };
   },
   mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
@@ -694,6 +706,7 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
       eventVariant: normalized.eventVariant,
       metadata: normalized.metadata ?? {},
       rawPayload: normalized.rawPayload ?? rawPayload,
+      providerRawPayload: rawPayload,
       occurredAt: normalized.occurredAt,
       deliveryHandle: normalized.deliveryHandle,
     };

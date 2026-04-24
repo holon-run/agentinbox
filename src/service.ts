@@ -1456,6 +1456,7 @@ export class AgentInboxService {
       occurredAt,
       metadata: {},
       rawPayload: input.rawPayload,
+      providerRawPayload: undefined,
       deliveryHandle: null,
       ackedAt: null,
     };
@@ -1834,6 +1835,7 @@ export class AgentInboxService {
               subscriptionId: subscription.subscriptionId,
             },
             rawPayload: event.rawPayload,
+            providerRawPayload: event.providerRawPayload,
             deliveryHandle: event.deliveryHandle as DeliveryHandle | null,
             ackedAt: null,
           };
@@ -3920,6 +3922,7 @@ function activationItemFromInboxItem(item: InboxItem): ActivationItem {
     occurredAt: item.occurredAt,
     metadata: item.metadata,
     rawPayload: item.rawPayload,
+    providerRawPayload: item.providerRawPayload,
     deliveryHandle: item.deliveryHandle,
   };
 }
