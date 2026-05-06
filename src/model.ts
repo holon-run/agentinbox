@@ -1,5 +1,5 @@
-export type SourceType = "local_event" | "remote_source" | "github_repo" | "github_repo_ci" | "feishu_bot";
-export type HostType = "local_event" | "remote_source" | "github" | "feishu";
+export type SourceType = "local_event" | "remote_source" | "github_repo" | "github_repo_ci" | "feishu_bot" | "telegram_bot";
+export type HostType = "local_event" | "remote_source" | "github" | "feishu" | "telegram";
 
 export type SubscriptionStartPolicy = "latest" | "earliest" | "at_offset" | "at_time";
 export type ActivationMode = "activation_only" | "activation_with_items";

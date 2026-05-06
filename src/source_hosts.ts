@@ -53,6 +53,22 @@ export function resolveSourceRegistration(input: RegisterSourceInput): SourceReg
       sourceType: input.sourceType,
     };
   }
+  if (input.sourceType === "telegram_bot") {
+    return {
+      hostType: "telegram",
+      hostKey: `bot:${stringOrDefault(config.botUsername, input.configRef ?? input.sourceKey)}`,
+      hostConfig: {
+        ...(valueOrUndefined(config.botToken) ? { botToken: config.botToken } : {}),
+        ...(valueOrUndefined(config.tokenEnv) ? { tokenEnv: config.tokenEnv } : {}),
+        ...(valueOrUndefined(config.apiBaseUrl) ? { apiBaseUrl: config.apiBaseUrl } : {}),
+        ...(valueOrUndefined(config.botUsername) ? { botUsername: config.botUsername } : {}),
+      },
+      streamKind: "message_updates",
+      streamKey: input.sourceKey,
+      streamConfig: config,
+      sourceType: input.sourceType,
+    };
+  }
   if (input.sourceType === "local_event") {
     return {
       hostType: "local_event",

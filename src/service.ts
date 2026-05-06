@@ -3595,7 +3595,14 @@ function mergeFollowPreviewConfig(
 }
 
 function sourceTypeForPreviewRef(sourceRef: string): SourceStream["sourceType"] {
-  if (sourceRef === "local_event" || sourceRef === "remote_source" || sourceRef === "github_repo" || sourceRef === "github_repo_ci" || sourceRef === "feishu_bot") {
+  if (
+    sourceRef === "local_event" ||
+    sourceRef === "remote_source" ||
+    sourceRef === "github_repo" ||
+    sourceRef === "github_repo_ci" ||
+    sourceRef === "feishu_bot" ||
+    sourceRef === "telegram_bot"
+  ) {
     return sourceRef;
   }
   if (sourceRef.startsWith("remote:")) {
@@ -3945,6 +3952,9 @@ function providerForSourceType(sourceType: SourceStream["sourceType"]): string |
   }
   if (sourceType === "feishu_bot") {
     return "feishu";
+  }
+  if (sourceType === "telegram_bot") {
+    return "telegram";
   }
   return null;
 }
@@ -4604,6 +4614,8 @@ function listHostStreamKinds(hostType: SourceHost["hostType"]): string[] {
       return ["repo_events", "ci_runs"];
     case "feishu":
       return ["message_events"];
+    case "telegram":
+      return ["message_updates"];
     case "local_event":
       return ["events"];
     case "remote_source":
@@ -4683,6 +4695,12 @@ function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: st
       return [
         { name: "uxcAuth", type: "string", description: "Optional shared Feishu/Lark UXC auth profile.", required: false },
       ];
+    case "telegram":
+      return [
+        { name: "botToken", type: "string", description: "Telegram Bot API token.", required: false },
+        { name: "tokenEnv", type: "string", description: "Environment variable containing the Telegram Bot API token.", required: false },
+        { name: "botUsername", type: "string", description: "Optional bot username used for shared host identity.", required: false },
+      ];
     case "local_event":
       return [];
     case "remote_source":
@@ -4699,6 +4717,9 @@ function sourceTypeForStreamRegistration(hostType: SourceHost["hostType"], strea
   }
   if (hostType === "feishu") {
     return "feishu_bot";
+  }
+  if (hostType === "telegram") {
+    return "telegram_bot";
   }
   if (hostType === "local_event") {
     return "local_event";
