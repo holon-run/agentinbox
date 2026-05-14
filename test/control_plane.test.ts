@@ -1468,6 +1468,48 @@ test("cli agent register supports webhook-only registration without terminal con
   }
 });
 
+test("cli agent target add webhook treats --url as target URL, not daemon URL", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-webhook-target-url-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%904",
+    CODEX_THREAD_ID: "thread-cli-webhook-target-url",
+  };
+
+  try {
+    const register = runCli(["agent", "register", "--agent-id", "agent-cli-webhook-target"], env);
+    assert.equal(register.status, 0, register.stderr);
+
+    const addTarget = runCli([
+      "agent",
+      "target",
+      "add",
+      "webhook",
+      "agent-cli-webhook-target",
+      "--url",
+      "http://127.0.0.1:9999/activate",
+      "--activation-mode",
+      "activation_with_items",
+    ], env);
+    assert.equal(addTarget.status, 0, addTarget.stderr);
+    const payload = JSON.parse(addTarget.stdout) as { kind: string; url: string; mode: string };
+    assert.equal(payload.kind, "webhook");
+    assert.equal(payload.url, "http://127.0.0.1:9999/activate");
+    assert.equal(payload.mode, "activation_with_items");
+
+    const list = runCli(["agent", "target", "list", "agent-cli-webhook-target"], env);
+    assert.equal(list.status, 0, list.stderr);
+    assert.match(list.stdout, /127\.0\.0\.1:9999\/activate/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli agent register requires --agent-id when --webhook-url is used", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-webhook-agent-id-"));
   const env = {
