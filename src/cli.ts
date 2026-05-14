@@ -1181,7 +1181,7 @@ function noCurrentAgentMessage(): string {
 
 function clientArgsForCommand(args: string[]): string[] {
   if (isAgentTargetAddWebhookCommand(args)) {
-    return withoutFlagValue(args, "--url");
+    return withoutFlagValues(args, "--url");
   }
   return args;
 }
@@ -1190,16 +1190,20 @@ function isAgentTargetAddWebhookCommand(args: string[]): boolean {
   return args[0] === "agent" && args[1] === "target" && args[2] === "add" && args[3] === "webhook";
 }
 
-function withoutFlagValue(args: string[], flag: string): string[] {
-  const index = args.indexOf(flag);
-  if (index === -1) {
-    return args;
+function withoutFlagValues(args: string[], flag: string): string[] {
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value !== flag) {
+      filtered.push(value);
+      continue;
+    }
+    const nextIndex = index + 1;
+    if (nextIndex < args.length && !args[nextIndex].startsWith("--")) {
+      index = nextIndex;
+    }
   }
-  const nextIndex = index + 1;
-  if (nextIndex < args.length && !args[nextIndex].startsWith("--")) {
-    return [...args.slice(0, index), ...args.slice(nextIndex + 1)];
-  }
-  return [...args.slice(0, index), ...args.slice(nextIndex)];
+  return filtered;
 }
 
 function takeFlagValue(args: string[], flag: string): string | undefined {

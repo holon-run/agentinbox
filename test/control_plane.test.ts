@@ -1494,6 +1494,8 @@ test("cli agent target add webhook treats --url as target URL, not daemon URL", 
       "http://127.0.0.1:9999/activate",
       "--activation-mode",
       "activation_with_items",
+      "--url",
+      "http://127.0.0.1:9998/duplicate",
     ], env);
     assert.equal(addTarget.status, 0, addTarget.stderr);
     const payload = JSON.parse(addTarget.stdout) as { kind: string; url: string; mode: string };
