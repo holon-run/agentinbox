@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = await createClient(normalized);
+  const client = await createClient(clientArgsForCommand(normalized));
 
   if (command === "host" && normalized[1] === "add") {
     const [hostType, hostKey] = normalized.slice(2, 4);
@@ -1169,13 +1169,41 @@ async function requestRemote<T = unknown>(
 ): Promise<{ data: T }> {
   const response = await client.request<T>(endpoint, body, method);
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(jsonResponse(response.data));
+    const bodyText = jsonResponse(response.data);
+    throw new Error(`request ${method} ${endpoint} failed with HTTP ${response.statusCode}: ${bodyText}`);
   }
   return { data: response.data };
 }
 
 function noCurrentAgentMessage(): string {
   return "no current agent is registered for this terminal/runtime context; run `agentinbox agent list` to inspect offline agents, then `agentinbox agent register` or `agentinbox agent register --force-rebind --agent-id <agentId>` to rebind one";
+}
+
+function clientArgsForCommand(args: string[]): string[] {
+  if (isAgentTargetAddWebhookCommand(args)) {
+    return withoutFlagValues(args, "--url");
+  }
+  return args;
+}
+
+function isAgentTargetAddWebhookCommand(args: string[]): boolean {
+  return args[0] === "agent" && args[1] === "target" && args[2] === "add" && args[3] === "webhook";
+}
+
+function withoutFlagValues(args: string[], flag: string): string[] {
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value !== flag) {
+      filtered.push(value);
+      continue;
+    }
+    const nextIndex = index + 1;
+    if (nextIndex < args.length && !args[nextIndex].startsWith("--")) {
+      index = nextIndex;
+    }
+  }
+  return filtered;
 }
 
 function takeFlagValue(args: string[], flag: string): string | undefined {
