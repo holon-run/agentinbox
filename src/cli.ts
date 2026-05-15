@@ -4,7 +4,16 @@ import path from "node:path";
 import { AdapterRegistry } from "./adapters";
 import { AgentInboxClient } from "./client";
 import { startControlServer } from "./control_server";
-import { AgentWithTargets, annotateAgents, BindingKind, resolveCurrentAgent } from "./current_agent";
+import {
+  AgentWithTargets,
+  annotateAgents,
+  BindingKind,
+  CurrentAgentContext,
+  detectHolonRuntimeContext,
+  isHolonRuntimeContext,
+  isHolonRuntimeEnv,
+  resolveCurrentAgent,
+} from "./current_agent";
 import { daemonStatus, ensureDaemonForClient, removePidFile, resolveDaemonLogLevel, startDaemon, stopDaemon, writeDaemonMetadata, writePidFile } from "./daemon";
 import { createServer } from "./http";
 import { JsonLogger, parseLogLevel } from "./logging";
@@ -413,10 +422,12 @@ async function main(): Promise<void> {
     const notifyLeaseMs = parseOptionalNumber(takeFlagValue(normalized, "--notify-lease-ms")) ?? undefined;
     const minUnackedItems = parseOptionalNumber(takeFlagValue(normalized, "--min-unacked-items")) ?? undefined;
     const webhookUrl = takeFlagValue(normalized, "--webhook-url");
+    const holonContext = detectHolonRuntimeContext(process.env);
     if (webhookUrl) {
-      if (!agentId) {
+      const resolvedAgentId = agentId ?? holonContext?.agentId;
+      if (!resolvedAgentId) {
         throw new Error(
-          "usage: agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N]",
+          "usage: agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N] (or set HOLON_AGENT_ID in Holon)",
         );
       }
       const webhookNotifyLeaseMs = parseOptionalNumber(
@@ -426,10 +437,37 @@ async function main(): Promise<void> {
         takeFlagValue(normalized, "--webhook-min-unacked-items"),
       ) ?? minUnackedItems;
       await printRemote(client, "/agents", {
-        agentId,
+        agentId: resolvedAgentId,
         forceRebind: normalized.includes("--force-rebind"),
         webhook: {
           url: webhookUrl,
+          activationMode: takeFlagValue(normalized, "--webhook-activation-mode") ?? undefined,
+          notifyLeaseMs: webhookNotifyLeaseMs,
+          minUnackedItems: webhookMinUnackedItems,
+        },
+      });
+      return;
+    }
+
+    if (isHolonRuntimeEnv(process.env)) {
+      if (!holonContext) {
+        throw new Error("agent register in Holon requires HOLON_AGENT_ID");
+      }
+      if (!holonContext.externalTriggerUrl) {
+        throw new Error("agent register in Holon requires --webhook-url or HOLON_EXTERNAL_TRIGGER_URL");
+      }
+      const webhookNotifyLeaseMs = parseOptionalNumber(
+        takeFlagValue(normalized, "--webhook-notify-lease-ms"),
+      ) ?? notifyLeaseMs;
+      const webhookMinUnackedItems = parseOptionalNumber(
+        takeFlagValue(normalized, "--webhook-min-unacked-items"),
+      ) ?? minUnackedItems;
+      await printRemote(client, "/agents", {
+        agentId: agentId ?? holonContext.agentId,
+        forceRebind: normalized.includes("--force-rebind"),
+        runtimeKind: holonContext.runtimeKind,
+        webhook: {
+          url: holonContext.externalTriggerUrl,
           activationMode: takeFlagValue(normalized, "--webhook-activation-mode") ?? undefined,
           notifyLeaseMs: webhookNotifyLeaseMs,
           minUnackedItems: webhookMinUnackedItems,
@@ -1062,11 +1100,11 @@ async function createClient(args: string[]): Promise<AgentInboxClient> {
 
 async function printAgentList(client: AgentInboxClient, limit?: string): Promise<void> {
   const records = await listAgentsWithTargets(client, limit);
-  console.log(jsonResponse(annotateAgents(records, tryDetectTerminalContext())));
+  console.log(jsonResponse(annotateAgents(records, tryDetectCurrentAgentContext())));
 }
 
 async function printCurrentAgent(client: AgentInboxClient): Promise<void> {
-  const context = getRequiredTerminalContext();
+  const context = getRequiredCurrentAgentContext();
   const records = await listAgentsWithTargets(client);
   const current = resolveCurrentAgent(records, context);
   if (!current) {
@@ -1083,7 +1121,7 @@ async function selectAgentForCommand(
   },
 ): Promise<AgentSelection> {
   const records = await listAgentsWithTargets(client);
-  const context = tryDetectTerminalContext();
+  const context = tryDetectCurrentAgentContext();
 
   if (options.explicitAgentId) {
     const current = context ? resolveCurrentAgent(records, context) : null;
@@ -1105,7 +1143,7 @@ async function selectAgentForCommand(
     };
   }
 
-  const contextForCurrent = getRequiredTerminalContext();
+  const contextForCurrent = getRequiredCurrentAgentContext();
   const current = resolveCurrentAgent(records, contextForCurrent);
   if (current) {
     return {
@@ -1119,17 +1157,7 @@ async function selectAgentForCommand(
     throw new Error(noCurrentAgentMessage());
   }
 
-  await requestRemote(client, "/agents", {
-    backend: contextForCurrent.backend,
-    runtimeKind: contextForCurrent.runtimeKind,
-    runtimeSessionId: contextForCurrent.runtimeSessionId ?? undefined,
-    runtimePid: contextForCurrent.runtimePid ?? undefined,
-    tmuxPaneId: contextForCurrent.tmuxPaneId ?? undefined,
-    tty: contextForCurrent.tty ?? undefined,
-    termProgram: contextForCurrent.termProgram ?? undefined,
-    itermSessionId: contextForCurrent.itermSessionId ?? undefined,
-    notifyLeaseMs: undefined,
-  });
+  await requestRemote(client, "/agents", registrationInputForCurrentContext(contextForCurrent));
   const refreshed = await listAgentsWithTargets(client);
   const registered = resolveCurrentAgent(refreshed, contextForCurrent);
   if (!registered) {
@@ -1139,6 +1167,34 @@ async function selectAgentForCommand(
     agentId: registered.agentId,
     autoRegistered: true,
     warnings: [],
+  };
+}
+
+function registrationInputForCurrentContext(context: CurrentAgentContext): Record<string, unknown> {
+  if (isHolonRuntimeContext(context)) {
+    if (!context.externalTriggerUrl) {
+      throw new Error("unable to auto-register current Holon agent: HOLON_EXTERNAL_TRIGGER_URL is not set");
+    }
+    return {
+      agentId: context.agentId,
+      runtimeKind: context.runtimeKind,
+      webhook: {
+        url: context.externalTriggerUrl,
+        notifyLeaseMs: undefined,
+      },
+    };
+  }
+
+  return {
+    backend: context.backend,
+    runtimeKind: context.runtimeKind,
+    runtimeSessionId: context.runtimeSessionId ?? undefined,
+    runtimePid: context.runtimePid ?? undefined,
+    tmuxPaneId: context.tmuxPaneId ?? undefined,
+    tty: context.tty ?? undefined,
+    termProgram: context.termProgram ?? undefined,
+    itermSessionId: context.itermSessionId ?? undefined,
+    notifyLeaseMs: undefined,
   };
 }
 
@@ -1418,7 +1474,15 @@ function normalizeSubscriptionAddOutput(data: Record<string, unknown>, shortcutU
   return data;
 }
 
-function getRequiredTerminalContext() {
+function getRequiredCurrentAgentContext(): CurrentAgentContext {
+  const holonContext = detectHolonRuntimeContext(process.env);
+  if (holonContext) {
+    return holonContext;
+  }
+  if (isHolonRuntimeEnv(process.env)) {
+    throw new Error("unable to detect current Holon agent: HOLON_AGENT_ID is not set");
+  }
+
   try {
     return detectTerminalContext(process.env);
   } catch (error) {
@@ -1427,7 +1491,12 @@ function getRequiredTerminalContext() {
   }
 }
 
-function tryDetectTerminalContext() {
+function tryDetectCurrentAgentContext(): CurrentAgentContext | null {
+  const holonContext = detectHolonRuntimeContext(process.env);
+  if (holonContext || isHolonRuntimeEnv(process.env)) {
+    return holonContext;
+  }
+
   try {
     return detectTerminalContext(process.env);
   } catch {

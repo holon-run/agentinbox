@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { annotateAgents, AgentWithTargets, resolveCurrentAgent } from "../src/current_agent";
+import {
+  annotateAgents,
+  AgentWithTargets,
+  detectHolonRuntimeContext,
+  isHolonRuntimeEnv,
+  resolveCurrentAgent,
+} from "../src/current_agent";
+import { RuntimeKind } from "../src/model";
 
 function makeAgentRecord(input: {
   agentId: string;
   status?: "active" | "offline";
-  runtimeKind?: "codex" | "claude_code" | "unknown";
+  runtimeKind?: RuntimeKind;
   runtimeSessionId?: string | null;
   activationTargets?: AgentWithTargets["activationTargets"];
 }): AgentWithTargets {
@@ -222,4 +229,73 @@ test("resolveCurrentAgent ignores offline agents and offline terminal targets", 
   });
 
   assert.equal(current, null);
+});
+
+test("detectHolonRuntimeContext reads Holon env without terminal context", () => {
+  const context = detectHolonRuntimeContext({
+    HOLON_RUNTIME: "1",
+    HOLON_AGENT_ID: " agentinbox-dev ",
+    HOLON_EXTERNAL_TRIGGER_URL: " http://127.0.0.1:7878/callbacks/enqueue/test ",
+  } as NodeJS.ProcessEnv);
+
+  assert.deepEqual(context, {
+    runtimeKind: "holon",
+    agentId: "agentinbox-dev",
+    externalTriggerUrl: "http://127.0.0.1:7878/callbacks/enqueue/test",
+  });
+  assert.equal(isHolonRuntimeEnv({ HOLON_RUNTIME: "1" } as NodeJS.ProcessEnv), true);
+  assert.equal(detectHolonRuntimeContext({ HOLON_AGENT_ID: "agentinbox-dev" } as NodeJS.ProcessEnv), null);
+  assert.equal(detectHolonRuntimeContext({ HOLON_RUNTIME: "1" } as NodeJS.ProcessEnv), null);
+});
+
+test("resolveCurrentAgent uses Holon agent id without terminal identity", () => {
+  const agents: AgentWithTargets[] = [
+    makeAgentRecord({
+      agentId: "agentinbox-dev",
+      runtimeKind: "holon",
+      activationTargets: [
+        {
+          targetId: "webhook-1",
+          kind: "webhook",
+          status: "active",
+        },
+      ],
+    }),
+    makeAgentRecord({
+      agentId: "other",
+      activationTargets: [
+        {
+          targetId: "term-1",
+          kind: "terminal",
+          status: "active",
+          backend: "tmux",
+          tmuxPaneId: "%1",
+        },
+      ],
+    }),
+  ];
+
+  const context = {
+    runtimeKind: "holon",
+    agentId: "agentinbox-dev",
+    externalTriggerUrl: "http://127.0.0.1:7878/callbacks/enqueue/test",
+  } as const;
+  const current = resolveCurrentAgent(agents, context);
+
+  assert.deepEqual(current, {
+    agentId: "agentinbox-dev",
+    bindingKind: "detached",
+    matchesCurrentTerminal: false,
+    matchesCurrentRuntime: true,
+    terminalIdentity: null,
+    notifyCapable: true,
+    activeTargetCount: 1,
+    offlineTargetCount: 0,
+  });
+
+  const annotated = annotateAgents(agents, context);
+  assert.equal(annotated.currentAgentId, "agentinbox-dev");
+  assert.equal(annotated.agents[0]?.isCurrent, true);
+  assert.equal(annotated.agents[0]?.matchesCurrentRuntime, true);
+  assert.equal(annotated.agents[0]?.matchesCurrentTerminal, false);
 });

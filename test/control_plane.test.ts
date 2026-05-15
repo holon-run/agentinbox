@@ -191,11 +191,24 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }
 }
 
+function cliSubprocessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  if (next.AGENTINBOX_TEST_ALLOW_HOLON_ENV !== "1") {
+    delete next.HOLON_RUNTIME;
+    delete next.HOLON_AGENT_ID;
+    delete next.HOLON_AGENT_HOME;
+    delete next.HOLON_EXTERNAL_TRIGGER_URL;
+  }
+  delete next.AGENTINBOX_TEST_ALLOW_HOLON_ENV;
+  return next;
+}
+
 function runCli(args: string[], env: NodeJS.ProcessEnv, timeout = 25_000, input?: string) {
   const repoDir = path.resolve(__dirname, "..");
+  const childEnv = cliSubprocessEnv(env);
   return spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
     cwd: repoDir,
-    env,
+    env: childEnv,
     encoding: "utf8",
     timeout,
     input,
@@ -209,10 +222,11 @@ async function runCliAsync(args: string[], env: NodeJS.ProcessEnv, timeout = 25_
   stderr: string;
 }> {
   const repoDir = path.resolve(__dirname, "..");
+  const childEnv = cliSubprocessEnv(env);
   return new Promise((resolve, reject) => {
     const child = spawn("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
       cwd: repoDir,
-      env,
+      env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
 

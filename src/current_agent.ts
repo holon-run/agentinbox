@@ -3,6 +3,14 @@ import { DetectedTerminalContext } from "./terminal";
 
 export type BindingKind = "session_bound" | "detached";
 
+export interface HolonRuntimeContext {
+  runtimeKind: "holon";
+  agentId: string;
+  externalTriggerUrl?: string | null;
+}
+
+export type CurrentAgentContext = DetectedTerminalContext | HolonRuntimeContext;
+
 export interface TerminalTargetSummary {
   targetId: string;
   kind: "terminal";
@@ -75,9 +83,24 @@ export function summarizeActivationTarget(target: ActivationTarget): ActivationT
   };
 }
 
+export function isHolonRuntimeEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return normalizeOptionalString(env.HOLON_RUNTIME) === "1";
+}
+
+export function detectHolonRuntimeContext(env: NodeJS.ProcessEnv = process.env): HolonRuntimeContext | null {
+  if (!isHolonRuntimeEnv(env)) {
+    return null;
+  }
+  const agentId = normalizeOptionalString(env.HOLON_AGENT_ID);
+  if (!agentId) {
+    return null;
+  }
+  return { runtimeKind: "holon", agentId, externalTriggerUrl: normalizeOptionalString(env.HOLON_EXTERNAL_TRIGGER_URL) };
+}
+
 export function resolveCurrentAgent(
   agents: AgentWithTargets[],
-  context: DetectedTerminalContext | null,
+  context: CurrentAgentContext | null,
 ): CurrentAgentMatch | null {
   if (!context) {
     return null;
@@ -102,7 +125,7 @@ export function resolveCurrentAgent(
 
 export function annotateAgents(
   agents: AgentWithTargets[],
-  context: DetectedTerminalContext | null,
+  context: CurrentAgentContext | null,
 ): { currentAgentId: string | null; agents: AnnotatedAgent[] } {
   const current = resolveCurrentAgent(agents, context);
   return {
@@ -123,8 +146,14 @@ export function annotateAgents(
 
 function resolveAgentRecord(
   agents: AgentWithTargets[],
-  context: DetectedTerminalContext,
+  context: CurrentAgentContext,
 ): AgentWithTargets | null {
+  if (isHolonRuntimeContext(context)) {
+    return agents.find((agent) =>
+      agent.agent.status === "active" && agent.agent.agentId === context.agentId,
+    ) ?? null;
+  }
+
   if (context.tmuxPaneId) {
     const match = agents.find((agent) =>
       terminalTargetsForCurrentMatch(agent).some((target) => target.backend === "tmux" && target.tmuxPaneId === context.tmuxPaneId),
@@ -210,7 +239,10 @@ function terminalIdentityForAgent(agent: AgentWithTargets): string | null {
   return null;
 }
 
-function matchesCurrentTerminal(agent: AgentWithTargets, context: DetectedTerminalContext): boolean {
+function matchesCurrentTerminal(agent: AgentWithTargets, context: CurrentAgentContext): boolean {
+  if (isHolonRuntimeContext(context)) {
+    return false;
+  }
   return terminalTargetsForCurrentMatch(agent).some((target) =>
     (context.tmuxPaneId != null && target.tmuxPaneId === context.tmuxPaneId)
     || (context.itermSessionId != null && target.itermSessionId === context.itermSessionId)
@@ -218,10 +250,14 @@ function matchesCurrentTerminal(agent: AgentWithTargets, context: DetectedTermin
   );
 }
 
-function matchesCurrentRuntime(agent: AgentWithTargets, context: DetectedTerminalContext): boolean {
+function matchesCurrentRuntime(agent: AgentWithTargets, context: CurrentAgentContext): boolean {
   if (agent.agent.status !== "active") {
     return false;
   }
+  if (isHolonRuntimeContext(context)) {
+    return agent.agent.agentId === context.agentId;
+  }
+
   if (!context.runtimeSessionId) {
     return false;
   }
@@ -231,4 +267,12 @@ function matchesCurrentRuntime(agent: AgentWithTargets, context: DetectedTermina
     agent.agent.runtimeKind === context.runtimeKind
     && agent.agent.runtimeSessionId === context.runtimeSessionId
   );
+}
+
+export function isHolonRuntimeContext(context: CurrentAgentContext): context is HolonRuntimeContext {
+  return context.runtimeKind === "holon" && "agentId" in context;
+}
+
+function normalizeOptionalString(value: string | null | undefined): string | null {
+  return value?.trim() || null;
 }
