@@ -12,6 +12,14 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.4] - 2026-05-15
+
+### Fixed
+
+- Preserved `runtimeKind` during webhook registration updates so webhook-only
+  Holon agents continue to be identified as Holon-backed after endpoint or
+  secret changes.
+
 ## [1.0.3] - 2026-04-23
 
 ### Fixed
