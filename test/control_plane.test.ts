@@ -1482,6 +1482,55 @@ test("cli agent register supports webhook-only registration without terminal con
   }
 });
 
+test("cli agent register preserves Holon runtime kind when explicit webhook url is used", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-holon-webhook-reg-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    AGENTINBOX_TEST_ALLOW_HOLON_ENV: "1",
+    HOLON_RUNTIME: "1",
+    HOLON_AGENT_ID: "agent-cli-holon-webhook",
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "",
+    CODEX_THREAD_ID: "",
+  };
+
+  try {
+    const register = runCli([
+      "agent",
+      "register",
+      "--webhook-url",
+      "http://127.0.0.1:9999/activate",
+    ], env);
+    assert.equal(register.status, 0, register.stderr);
+    const payload = JSON.parse(register.stdout) as {
+      agent: { agentId: string; runtimeKind: string };
+      terminalTarget: null;
+      webhookTarget: { url: string };
+      activationChannel: string | null;
+    };
+    assert.equal(payload.agent.agentId, "agent-cli-holon-webhook");
+    assert.equal(payload.agent.runtimeKind, "holon");
+    assert.equal(payload.terminalTarget, null);
+    assert.equal(payload.webhookTarget.url, "http://127.0.0.1:9999/activate");
+    assert.equal(payload.activationChannel, "webhook");
+
+    const show = runCli([
+      "agent",
+      "show",
+      "agent-cli-holon-webhook",
+    ], env);
+    assert.equal(show.status, 0, show.stderr);
+    const shown = JSON.parse(show.stdout) as { agent: { runtimeKind: string } };
+    assert.equal(shown.agent.runtimeKind, "holon");
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli agent target add webhook treats --url as target URL, not daemon URL", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-webhook-target-url-"));
   const env = {

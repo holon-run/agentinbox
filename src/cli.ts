@@ -439,6 +439,7 @@ async function main(): Promise<void> {
       await printRemote(client, "/agents", {
         agentId: resolvedAgentId,
         forceRebind: normalized.includes("--force-rebind"),
+        ...(holonContext ? { runtimeKind: holonContext.runtimeKind } : {}),
         webhook: {
           url: webhookUrl,
           activationMode: takeFlagValue(normalized, "--webhook-activation-mode") ?? undefined,
