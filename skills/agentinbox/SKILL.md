@@ -1,14 +1,14 @@
 ---
 name: agentinbox
-description: Use the local AgentInbox service to onboard the current session, manage shared sources and subscriptions, connect external providers such as GitHub through UXC, and operate the agent inbox.
+description: Use the local AgentInbox service to onboard the current runtime/session, manage shared sources and subscriptions, connect external providers such as GitHub through UXC, and operate the agent inbox.
 metadata:
   short-description: Operate AgentInbox sources and subscriptions
 ---
 
 # AgentInbox Skill
 
-Use this skill when the current agent should set up or use the local
-`agentinbox` daemon.
+Use this skill when a Codex, Claude Code, Holon, or other supported agent
+runtime should set up or use the local `agentinbox` daemon.
 
 Primary docs:
 
@@ -41,7 +41,7 @@ UXC repository:
 Recommended first-run sequence:
 
 1. if GitHub access is needed and `gh` is already authenticated, import that auth into `uxc`
-2. register the current terminal session
+2. register the current runtime/session
 3. follow the required sources or resources using the docs examples
 
 If GitHub-backed adapters are needed:
@@ -53,10 +53,19 @@ uxc auth credential import github --from gh
 
 This `gh` import path requires `uxc` 0.15.3 or newer.
 
-Register the current terminal/runtime session:
+Register the current runtime/session:
 
 ```bash
 agentinbox agent register
+```
+
+In Holon, the no-arg form uses `HOLON_AGENT_ID` and
+`HOLON_EXTERNAL_TRIGGER_URL` when they are available and registers a webhook
+activation target. If the trigger URL is not in the environment, pass it
+explicitly:
+
+```bash
+agentinbox agent register --agent-id <holonAgentId> --webhook-url <externalTriggerUrl>
 ```
 
 Treat the returned `agentId` as the stable identity for later commands.
@@ -96,19 +105,19 @@ Typical cases:
 
 Important boundary:
 
-- inbox items, subscriptions, and timers can outlive the current terminal
+- inbox items, subscriptions, and timers can outlive the current runtime
   session
-- terminal delivery does not automatically survive session boundaries just
-  because the inbox state does
-- if the original runtime/terminal disappears, items may keep accumulating in
-  the inbox while notifications stop reaching you
+- activation delivery does not automatically survive every session boundary
+  just because the inbox state does
+- if the original runtime/terminal or webhook trigger disappears, items may
+  keep accumulating in the inbox while notifications stop reaching you
 - if a later session should resume the same logical agent, re-register or
-  explicitly rebind that agent to the current terminal before assuming prompt
-  delivery is live again
+  explicitly rebind that agent to the current terminal or webhook target
+  before assuming prompt delivery is live again
 
 Lifecycle:
 
-1. register once per live terminal/runtime session
+1. register once per live runtime/session
 2. reuse broad shared sources
 3. add narrow task-scoped follows, subscriptions, or timers
 4. read inbox items in bounded batches and ack only the reviewed batch
@@ -116,6 +125,9 @@ Lifecycle:
 
 For PR and review workflows, prefer `follow` templates. They reuse shared
 sources, expand the source-specific filters, and attach cleanup behavior:
+
+For Holon, ensure `HOLON_EXTERNAL_TRIGGER_URL` is set or use `--webhook-url`
+when registering.
 
 ```bash
 agentinbox agent register
@@ -206,6 +218,11 @@ agentinbox timer remove <scheduleId>
 
 Activation targets:
 
+`agent register` normally creates or refreshes the current runtime activation
+target automatically: a terminal target for terminal-backed runtimes, or a
+webhook target for Holon when a trigger URL is available. Add manual activation
+targets only when needed:
+
 ```bash
 agentinbox agent target list <agentId>
 agentinbox agent target add webhook <agentId> --url http://127.0.0.1:8787/webhook
@@ -220,13 +237,14 @@ instead of re-explaining the full architecture here.
 Do not start every task by checking daemon status; normal CLI commands should
 auto-connect or surface actionable errors. Use these checks after the first
 AgentInbox command fails, notifications stop arriving, or you suspect a stale
-terminal binding:
+terminal or webhook binding:
 
 ```bash
 agentinbox --version
 agentinbox daemon status
 agentinbox daemon start
 agentinbox agent register --agent-id <agentId> --force-rebind
+agentinbox agent register --agent-id <holonAgentId> --webhook-url <externalTriggerUrl> --force-rebind
 ```
 
 If GitHub-backed sources fail, verify UXC and imported GitHub auth only after

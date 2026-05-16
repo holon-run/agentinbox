@@ -1,6 +1,6 @@
 # Onboarding With The AgentInbox Skill
 
-If you are already using Codex or Claude Code, the recommended onboarding path
+If you are already using Codex, Claude Code, or Holon, the recommended onboarding path
 is to hand the bundled `AgentInbox` skill to the agent and let it configure the
 local workflow for you.
 
@@ -11,7 +11,7 @@ agent is ready.
 If you use the community `skills` installer, install the bundled skill with:
 
 ```bash
-npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code -a holon
 ```
 
 ## What The Skill Should Do
@@ -28,8 +28,12 @@ When used for onboarding, the skill should:
 3. verify `uxc` is available
 4. verify GitHub auth is usable
 5. if `gh` is already authenticated, import that token into `uxc`
-6. register the current terminal session as an agent
+6. register the current runtime/session as an agent
 7. use the docs-site examples to add standing GitHub subscriptions
+
+For Holon, registration should use `HOLON_AGENT_ID` plus
+`HOLON_EXTERNAL_TRIGGER_URL`, or pass `--webhook-url` if the trigger URL is not
+in the environment.
 
 ## Recommended Checks
 
@@ -60,7 +64,7 @@ This requires `uxc` 0.15.3 or newer:
 
 ## After Auth
 
-Once `uxc` can access GitHub and the current terminal session is registered, the
+Once `uxc` can access GitHub and the current runtime/session is registered, the
 agent can move directly into real usage:
 
 - add a shared GitHub host plus `repo_events` or `ci_runs` streams

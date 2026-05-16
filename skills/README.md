@@ -7,12 +7,12 @@ For `AgentInbox`, the preferred first-run path is skill-first onboarding:
 
 - hand the bundled `AgentInbox` skill to the agent
 - let the agent verify `agentinbox`, `uxc`, and GitHub auth
-- let the agent register the current session and set up standing subscriptions
+- let the agent register the current runtime/session and set up standing subscriptions
 
 <!-- INDEX:START -->
 
 - [agentinbox](./agentinbox/)
-  Use the local AgentInbox service to onboard the current session, connect GitHub through UXC, and operate sources, subscriptions, and the agent inbox.
+  Use the local AgentInbox service to onboard the current runtime/session, connect GitHub through UXC, and operate sources, subscriptions, and the agent inbox.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

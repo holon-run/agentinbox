@@ -30,12 +30,21 @@ transport, and runtime metadata such as the running `version`, `startedAt`,
 ## Agent
 
 ```bash
-agentinbox agent register [--agent-id ID] [--force-rebind]
+agentinbox agent register [--agent-id ID] [--force-rebind] [--notify-lease-ms N] [--min-unacked-items N]
+agentinbox agent register --agent-id ID --webhook-url URL [--webhook-activation-mode MODE] [--webhook-notify-lease-ms N] [--webhook-min-unacked-items N]
 agentinbox agent list
 agentinbox agent current
 agentinbox agent show <agent_id>
 agentinbox agent remove <agent_id>
+agentinbox agent target list <agent_id>
+agentinbox agent target add webhook <agent_id> --url <url>
+agentinbox agent target remove <agent_id> <target_id>
 ```
+
+`agent register` creates or refreshes the current runtime activation target.
+Terminal-backed runtimes attach a terminal target. In Holon, the CLI can infer
+`agentId` from `HOLON_AGENT_ID` and the webhook URL from
+`HOLON_EXTERNAL_TRIGGER_URL`; otherwise pass `--webhook-url`.
 
 ## Hosts
 

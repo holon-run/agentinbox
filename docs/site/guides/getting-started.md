@@ -3,7 +3,7 @@
 This guide shows the shortest path from install to a working local agent
 session.
 
-If you are using Codex or Claude Code, start with
+If you are using Codex, Claude Code, or Holon, start with
 [Onboarding With The AgentInbox Skill](./onboarding-with-agent-skill.md). That
 is the preferred first-run path.
 
@@ -25,11 +25,11 @@ Or run it directly:
 npx @holon-run/agentinbox --help
 ```
 
-If you are using Codex or Claude Code, you can also install the bundled
+If you are using Codex, Claude Code, or Holon, you can also install the bundled
 `AgentInbox` skill first:
 
 ```bash
-npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code -a holon
 ```
 
 ## Daemon
@@ -57,18 +57,22 @@ Default paths:
 - socket: `~/.agentinbox/agentinbox.sock`
 - log: `~/.agentinbox/agentinbox.log`
 
-## Register The Current Session
+## Register The Current Runtime
 
-Register the current terminal session as an agent:
+Register the current runtime/session as an agent:
 
 ```bash
 agentinbox agent register
 agentinbox agent register --agent-id agent-alpha
+agentinbox agent register --agent-id agent-alpha --webhook-url <external-trigger-url>
 agentinbox agent current
 ```
 
-This detects the current runtime and terminal context, assigns or restores an
-`agentId`, creates the agent inbox, and attaches a terminal activation target.
+This detects the current runtime context, assigns or restores an `agentId`,
+creates the agent inbox, and attaches the appropriate activation target. For
+terminal-backed runtimes this is a terminal target. In Holon, the no-arg form
+uses `HOLON_AGENT_ID` and `HOLON_EXTERNAL_TRIGGER_URL` when present; otherwise
+pass `--webhook-url` explicitly.
 
 If you already use `gh` for GitHub authentication, import it into `uxc` before
 adding GitHub-backed sources:

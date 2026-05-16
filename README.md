@@ -13,8 +13,9 @@ In practice, that means `AgentInbox` can:
 
 - share one GitHub or Feishu source across multiple local agents
 - materialize those events into durable inboxes
-- wake or drive agent sessions running in `tmux` or `iTerm2`, even when the
-  agent runtime does not expose a notification API
+- activate terminal-backed sessions in `tmux` or `iTerm2`, or Holon agents
+  through runtime-provided webhook triggers, without embedding connector logic
+  in the agent runtime
 
 ## Event Flow
 
@@ -111,7 +112,7 @@ node dist/src/cli.js --help
 
 ## Recommended Onboarding
 
-If you are using Codex or Claude Code, start with the bundled AgentInbox skill:
+If you are using Codex, Claude Code, or Holon, start with the bundled AgentInbox skill:
 
 - repo copy: [`skills/agentinbox/SKILL.md`](./skills/agentinbox/SKILL.md)
 - docs site copy: `https://agentinbox.holon.run/skills/agentinbox/SKILL`
@@ -120,7 +121,7 @@ If you use the community `skills` installer, you can install the bundled skill
 directly:
 
 ```bash
-npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code
+npx skills add holon-run/agentinbox --skill agentinbox -a codex -a claude-code -a holon
 ```
 
 That skill is the recommended onboarding path. It can guide the agent through:
@@ -128,7 +129,8 @@ That skill is the recommended onboarding path. It can guide the agent through:
 - checking or installing `agentinbox`
 - checking or installing `uxc`
 - importing GitHub auth from the local `gh` CLI via `uxc auth credential import github --from gh`
-- registering the current terminal session as an agent
+- registering the current runtime/session as an agent, including Holon webhook
+  activation when running in Holon
 - adding GitHub sources and standing subscriptions using the docs-site examples
 
 ## Quick Start
@@ -139,14 +141,19 @@ Start the local daemon:
 agentinbox daemon start
 ```
 
-Register the current terminal session:
+Register the current runtime/session:
 
 ```bash
 agentinbox agent register
 agentinbox agent register --agent-id agent-alpha
+agentinbox agent register --agent-id agent-alpha --webhook-url <external-trigger-url>
 agentinbox agent register --notify-lease-ms 600000 --min-unacked-items 5
 agentinbox agent current
 ```
+
+Terminal-backed runtimes attach a terminal activation target. In Holon, the
+no-arg form uses `HOLON_AGENT_ID` and `HOLON_EXTERNAL_TRIGGER_URL` when present;
+otherwise pass `--webhook-url` explicitly.
 
 `notifyLeaseMs` and `minUnackedItems` are target-facing notification policy:
 they control how often a target may be reminded and how many unacked items must
