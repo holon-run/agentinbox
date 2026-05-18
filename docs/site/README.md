@@ -48,6 +48,9 @@ webhook targets.
 
 <!-- INDEX:START -->
 
+- [assets](./assets/)
+  <!-- mdorigin:index kind=directory -->
+
 - [Concepts](./concepts/)
   <!-- mdorigin:index kind=directory -->
 

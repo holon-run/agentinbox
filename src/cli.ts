@@ -391,6 +391,29 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "source" && normalized[1] === "actions") {
+    const sourceId = normalized[2];
+    if (!sourceId) {
+      throw new Error("usage: agentinbox source actions <sourceId>");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/actions`, undefined, "GET");
+    return;
+  }
+
+  if (command === "source" && normalized[1] === "invoke") {
+    const sourceId = normalized[2];
+    const operation = takeFlagValue(normalized, "--operation");
+    const inputJson = takeFlagValue(normalized, "--input-json");
+    if (!sourceId || !operation || !inputJson) {
+      throw new Error("usage: agentinbox source invoke <sourceId> --operation NAME --input-json JSON");
+    }
+    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/invoke`, {
+      operation,
+      input: parseJsonArg(inputJson, "--input-json"),
+    });
+    return;
+  }
+
   if (command === "source" && normalized[1] === "poll") {
     const sourceId = normalized[2];
     if (!sourceId) {
@@ -1615,6 +1638,8 @@ Usage:
   agentinbox source pause <remoteSourceId>
   agentinbox source resume <remoteSourceId>
   agentinbox source schema <sourceId>
+  agentinbox source actions <sourceId>
+  agentinbox source invoke <sourceId> --operation NAME --input-json JSON
   agentinbox source poll <sourceId>
   agentinbox source event <sourceId> --native-id ID --event EVENT [--occurred-at ISO8601] [--metadata-json JSON] [--payload-json JSON]
 `,

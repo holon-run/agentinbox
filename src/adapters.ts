@@ -9,6 +9,7 @@ import {
   NotificationGrouping,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
+  SourceOperationDescriptor,
   SourcePollResult,
   SourceRuntimeState,
   SourceStream,
@@ -295,6 +296,24 @@ export class AdapterRegistry {
       throw new Error(`delivery operations are not supported for provider ${handle.provider}`);
     }
     return module.invokeDeliveryOperation({ handle, operation, input, attempt, source });
+  }
+
+  async listSourceOperations(source: SourceStream): Promise<SourceOperationDescriptor[]> {
+    if (source.sourceType === "local_event") {
+      return [];
+    }
+    return this.remoteSource.listSourceOperations(source);
+  }
+
+  async invokeSourceOperation(
+    source: SourceStream,
+    operation: string,
+    input: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (source.sourceType === "local_event") {
+      throw new Error(`source operations are not supported for source type ${source.sourceType}`);
+    }
+    return this.remoteSource.invokeSourceOperation(source, operation, input);
   }
 
   status(): Record<string, unknown> {

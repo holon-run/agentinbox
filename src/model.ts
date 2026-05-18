@@ -556,6 +556,25 @@ export interface DeliveryOperationDescriptor {
   canonicalTextAlias?: boolean;
 }
 
+export interface SourceOperationDescriptor {
+  name: string;
+  title: string;
+  inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+}
+
+export interface SourceInvokeRequest {
+  sourceId: string;
+  operation: string;
+  input: Record<string, unknown>;
+}
+
+export interface SourceInvokeResult {
+  sourceId: string;
+  operation: string;
+  data: Record<string, unknown>;
+}
+
 export interface DeliveryActionsRequest {
   sourceId?: string;
   deliveryHandle?: DeliveryHandle | null;

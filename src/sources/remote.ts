@@ -10,6 +10,7 @@ import {
   AppendSourceEventInput,
   FollowTemplateSpec,
   NotificationGrouping,
+  SourceOperationDescriptor,
   SourcePollResult,
   SourceRuntimeState,
   SourceStream,
@@ -403,6 +404,36 @@ export class RemoteSourceRuntime {
       return null;
     }
     return module.summarizeDigestThread(items, moduleInputSource(source), grouping);
+  }
+
+  async listSourceOperations(source: SourceStream): Promise<SourceOperationDescriptor[]> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return [];
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.listSourceOperations !== "function") {
+      return [];
+    }
+    return module.listSourceOperations({ source: moduleInputSource(source) });
+  }
+
+  async invokeSourceOperation(
+    source: SourceStream,
+    operation: string,
+    input: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      throw new Error(`source operations are not supported for source type ${source.sourceType}`);
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.invokeSourceOperation !== "function") {
+      throw new Error(`source operations are not supported for source type ${source.sourceType}`);
+    }
+    return module.invokeSourceOperation({
+      source: moduleInputSource(source),
+      operation,
+      input,
+    });
   }
 
   private async syncAll(): Promise<void> {

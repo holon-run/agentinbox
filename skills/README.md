@@ -12,7 +12,7 @@ For `AgentInbox`, the preferred first-run path is skill-first onboarding:
 <!-- INDEX:START -->
 
 - [agentinbox](./agentinbox/)
-  Use the local AgentInbox service to onboard the current runtime/session, connect GitHub through UXC, and operate sources, subscriptions, and the agent inbox.
+  Use the local AgentInbox service to onboard the current runtime/session, manage shared sources and subscriptions, connect external providers such as GitHub through UXC, and operate the agent inbox.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
