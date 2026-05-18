@@ -16,6 +16,7 @@ export const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
 export const FEISHU_IM_SCHEMA_URL =
   "https://raw.githubusercontent.com/holon-run/uxc/main/skills/feishu-openapi-skill/references/feishu-im.openapi.json";
 export const DEFAULT_FEISHU_EVENT_TYPES = ["im.message.receive_v1"];
+const DEFAULT_CONTEXT_BOUND_SECONDS = 7 * 24 * 60 * 60;
 
 export interface FeishuBotSourceConfig {
   endpoint?: string;
@@ -356,14 +357,14 @@ export async function invokeFeishuSourceOperation(
     const windowBefore = positiveInteger(input.windowBefore) ?? 5;
     const windowAfter = positiveInteger(input.windowAfter) ?? 5;
     try {
-      const windowRaw = await client.listMessages({
-        endpoint: config.endpoint,
-        schemaUrl: config.schemaUrl,
-        auth: config.uxcAuth,
+      chatWindowMessages = await fetchFeishuChatWindow({
+        client,
+        config,
         chatId,
-        pageSize: Math.max(1, Math.min(windowBefore + windowAfter + 1, 50)),
+        anchorMessage,
+        windowBefore,
+        windowAfter,
       });
-      chatWindowMessages = normalizeFeishuMessages(windowRaw);
     } catch (error) {
       warnings.push({
         code: "chat_window_unavailable",
@@ -604,6 +605,93 @@ function normalizeFeishuMessages(raw: unknown): NormalizedFeishuMessage[] {
     .filter((item): item is NormalizedFeishuMessage => item !== null);
 }
 
+async function fetchFeishuChatWindow(input: {
+  client: FeishuUxcClient;
+  config: FeishuBotSourceConfig;
+  chatId: string;
+  anchorMessage: NormalizedFeishuMessage | null;
+  windowBefore: number;
+  windowAfter: number;
+}): Promise<NormalizedFeishuMessage[]> {
+  const anchorSeconds = feishuMessageCreateSeconds(input.anchorMessage);
+  const pageSize = Math.max(1, Math.min(input.windowBefore + input.windowAfter + 1, 50));
+  if (!anchorSeconds) {
+    const fallbackRaw = await input.client.listMessages({
+      endpoint: input.config.endpoint,
+      schemaUrl: input.config.schemaUrl,
+      auth: input.config.uxcAuth,
+      chatId: input.chatId,
+      pageSize,
+    });
+    return normalizeFeishuMessages(fallbackRaw);
+  }
+
+  const beforeRaw = input.windowBefore > 0
+    ? await input.client.listMessages({
+      endpoint: input.config.endpoint,
+      schemaUrl: input.config.schemaUrl,
+      auth: input.config.uxcAuth,
+      chatId: input.chatId,
+      startTime: String(Math.max(0, anchorSeconds - DEFAULT_CONTEXT_BOUND_SECONDS)),
+      endTime: String(anchorSeconds + 1),
+      pageSize: Math.max(1, Math.min(input.windowBefore + 1, 50)),
+      sort: "ByCreateTimeDesc",
+    })
+    : null;
+  const afterRaw = input.windowAfter > 0
+    ? await input.client.listMessages({
+      endpoint: input.config.endpoint,
+      schemaUrl: input.config.schemaUrl,
+      auth: input.config.uxcAuth,
+      chatId: input.chatId,
+      startTime: String(anchorSeconds),
+      endTime: String(anchorSeconds + DEFAULT_CONTEXT_BOUND_SECONDS),
+      pageSize: Math.max(1, Math.min(input.windowAfter + 1, 50)),
+      sort: "ByCreateTimeAsc",
+    })
+    : null;
+
+  return mergeFeishuMessages([
+    ...(beforeRaw ? normalizeFeishuMessages(beforeRaw) : []),
+    ...(input.anchorMessage ? [input.anchorMessage] : []),
+    ...(afterRaw ? normalizeFeishuMessages(afterRaw) : []),
+  ]);
+}
+
+function mergeFeishuMessages(messages: NormalizedFeishuMessage[]): NormalizedFeishuMessage[] {
+  const byId = new Map<string, NormalizedFeishuMessage>();
+  for (const message of messages) {
+    if (message.messageId) {
+      byId.set(message.messageId, message);
+    }
+  }
+  return Array.from(byId.values()).sort((left, right) => {
+    const leftTime = feishuMessageCreateMillis(left) ?? 0;
+    const rightTime = feishuMessageCreateMillis(right) ?? 0;
+    return leftTime - rightTime;
+  });
+}
+
+function feishuMessageCreateSeconds(message: NormalizedFeishuMessage | null): number | null {
+  const millis = feishuMessageCreateMillis(message);
+  return millis == null ? null : Math.floor(millis / 1000);
+}
+
+function feishuMessageCreateMillis(message: NormalizedFeishuMessage | null): number | null {
+  if (!message) {
+    return null;
+  }
+  const rawMillis = Number(asString(message.raw.create_time));
+  if (Number.isFinite(rawMillis)) {
+    return rawMillis;
+  }
+  if (message.createdAt) {
+    const parsed = Date.parse(message.createdAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function firstFeishuMessage(raw: unknown): Record<string, unknown> | null {
   const items = feishuMessageItems(raw);
   if (items[0]) {
@@ -619,13 +707,16 @@ function firstFeishuMessage(raw: unknown): Record<string, unknown> | null {
 function feishuMessageItems(raw: unknown): Record<string, unknown>[] {
   const record = asRecord(raw);
   const data = asRecord(record.data);
-  const items = Array.isArray(data.items)
-    ? data.items
-    : Array.isArray(record.items)
-      ? record.items
-      : Array.isArray(raw)
-        ? raw
-        : [];
+  const nestedData = asRecord(data.data);
+  const items = Array.isArray(nestedData.items)
+    ? nestedData.items
+    : Array.isArray(data.items)
+      ? data.items
+      : Array.isArray(record.items)
+        ? record.items
+        : Array.isArray(raw)
+          ? raw
+          : [];
   return items.map((item) => asRecord(item)).filter((item) => Object.keys(item).length > 0);
 }
 

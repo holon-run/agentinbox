@@ -57,6 +57,70 @@ class ContextFeishuUxcClient implements FeishuCallClient {
   }
 }
 
+class SuccessfulContextFeishuUxcClient implements FeishuCallClient {
+  public calls: Array<Record<string, unknown>> = [];
+
+  async call(args: Record<string, unknown>) {
+    this.calls.push(args);
+    if (args.operation === "get:/im/v1/messages/{message_id}") {
+      return {
+        data: {
+          data: {
+            code: 0,
+            data: {
+              items: [feishuMessage({
+                messageId: "om_anchor",
+                content: "{\"text\":\"anchor\"}",
+                createTime: "1773491924409",
+              })],
+            },
+          },
+        },
+      };
+    }
+    if (args.operation === "get:/im/v1/messages") {
+      const payload = args.payload as Record<string, unknown>;
+      if (payload.sort_type === "ByCreateTimeDesc") {
+        return {
+          data: {
+            code: 0,
+            data: {
+              items: [
+                feishuMessage({ messageId: "om_anchor", content: "{\"text\":\"anchor\"}", createTime: "1773491924409" }),
+                feishuMessage({ messageId: "om_before", content: "{\"text\":\"before\"}", createTime: "1773491922409" }),
+              ],
+            },
+          },
+        };
+      }
+      return {
+        data: {
+          code: 0,
+          data: {
+            items: [
+              feishuMessage({ messageId: "om_anchor", content: "{\"text\":\"anchor\"}", createTime: "1773491924409" }),
+              feishuMessage({ messageId: "om_after", content: "{\"text\":\"after\"}", createTime: "1773491926409" }),
+            ],
+          },
+        },
+      };
+    }
+    return { data: { code: 0 } };
+  }
+}
+
+function feishuMessage(input: { messageId: string; content: string; createTime: string }): Record<string, unknown> {
+  return {
+    message_id: input.messageId,
+    chat_id: "oc_chat",
+    chat_type: "group",
+    msg_type: "text",
+    body: { content: input.content },
+    sender: { id: { open_id: "ou_sender" }, sender_type: "user" },
+    create_time: input.createTime,
+  };
+}
+
 test("normalizeFeishuBotEvent extracts metadata and delivery handle", () => {
   const source: SourceStream = {
     sourceId: "src_feishu",
@@ -255,4 +319,42 @@ test("feishu source operation fetches anchor message context and keeps permissio
     threadRef: null,
     replyMode: "reply",
   });
+});
+
+test("feishu source operation unwraps nested UXC envelopes and anchors chat windows to message time", async () => {
+  const fake = new SuccessfulContextFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const result = await invokeFeishuSourceOperation(source, "get_message_context", {
+    messageId: "om_anchor",
+    windowBefore: 1,
+    windowAfter: 1,
+  }, client);
+
+  assert.equal((result.anchorMessage as Record<string, unknown> | null)?.messageId, "om_anchor");
+  assert.deepEqual((result.chatWindowMessages as Array<Record<string, unknown>>).map((message) => message.messageId), [
+    "om_before",
+    "om_anchor",
+    "om_after",
+  ]);
+  const beforePayload = fake.calls[1]?.payload as Record<string, unknown>;
+  assert.equal(beforePayload.sort_type, "ByCreateTimeDesc");
+  assert.equal(beforePayload.page_size, 2);
+  assert.equal(beforePayload.end_time, "1773491925");
+  const afterPayload = fake.calls[2]?.payload as Record<string, unknown>;
+  assert.equal(afterPayload.sort_type, "ByCreateTimeAsc");
+  assert.equal(afterPayload.page_size, 2);
+  assert.equal(afterPayload.start_time, "1773491924");
+  assert.deepEqual(result.warnings, []);
 });

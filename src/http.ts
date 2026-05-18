@@ -1996,6 +1996,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unknown Feishu delivery operation") ||
     message.startsWith("unknown Feishu source operation") ||
     message.startsWith("invalid GitHub targetRef") ||
+    message.startsWith("get_message_context requires") ||
     message.includes("requires input.text") ||
     message.includes("requires input.body") ||
     message.startsWith("subscriptions/reset requires") ||

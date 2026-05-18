@@ -298,7 +298,7 @@ the normal agent path should consume the normalized shape.
 Low-level operation:
 
 ```bash
-agentinbox source invoke src_xxx get_message_context \
+agentinbox source invoke src_xxx --operation get_message_context \
   --input-json '{"messageId":"om_xxx","chatId":"oc_xxx","windowBefore":20,"windowAfter":5}'
 ```
 
