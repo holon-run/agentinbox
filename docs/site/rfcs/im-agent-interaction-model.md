@@ -191,6 +191,7 @@ Illustrative examples:
 agentinbox follow im chat --arg chatId=oc_xxx
 agentinbox follow im mention --arg chatId=oc_xxx --arg openId=ou_agent
 agentinbox follow feishu mention --arg chatId=oc_xxx --arg openId=ou_agent
+agentinbox follow feishu mentions --arg openId=ou_agent
 ```
 
 The compiled subscription should use normal filter semantics.
@@ -205,6 +206,20 @@ Example mention filter:
   "expr": "contains(metadata.mentionOpenIds, \"ou_agent\")"
 }
 ```
+
+For IM-native onboarding, a provider can also expose a broader mention intent
+that does not require the user or agent to know a group `chatId` up front.
+For Feishu/Lark, `feishu.mentions` follows all chats visible to the app event
+stream and filters only by `mentionOpenIds`:
+
+```json
+{
+  "expr": "contains(metadata.mentionOpenIds, \"ou_agent\")"
+}
+```
+
+This does not mean every tenant chat. It means every chat whose message events
+are delivered to the configured Feishu/Lark app and UXC managed source.
 
 The exact metadata fields are source-specific, but IM source modules should
 prefer a common vocabulary where provider data allows it:
