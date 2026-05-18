@@ -213,6 +213,11 @@ export function feishuDeliveryOperationsForHandle(handle: DeliveryHandle): Deliv
       inputSchema: {
         type: "object",
         additionalProperties: false,
+        anyOf: [
+          { required: ["blocks"] },
+          { required: ["paragraphs"] },
+          { required: ["content"] },
+        ],
         properties: {
           title: { type: "string" },
           locale: { type: "string", minLength: 1 },

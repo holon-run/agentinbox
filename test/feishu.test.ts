@@ -235,14 +235,17 @@ test("feishu delivery adapter maps message replies and chat sends to uxc calls",
 });
 
 test("feishu delivery operations expose canonical text, rich text, and file actions", () => {
-  assert.deepEqual(
-    feishuDeliveryOperationsForHandle({
-      provider: "feishu",
-      surface: "message_reply",
-      targetRef: "om_reply",
-    }).map((operation) => operation.name),
-    ["send_text", "send_post", "send_file", "send_file_from_path"],
-  );
+  const operations = feishuDeliveryOperationsForHandle({
+    provider: "feishu",
+    surface: "message_reply",
+    targetRef: "om_reply",
+  });
+  assert.deepEqual(operations.map((operation) => operation.name), ["send_text", "send_post", "send_file", "send_file_from_path"]);
+  assert.deepEqual((operations.find((operation) => operation.name === "send_post")?.inputSchema as Record<string, unknown>).anyOf, [
+    { required: ["blocks"] },
+    { required: ["paragraphs"] },
+    { required: ["content"] },
+  ]);
 });
 
 test("feishu delivery invoke maps send_text to the canonical outbound path", async () => {
