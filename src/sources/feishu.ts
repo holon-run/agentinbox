@@ -397,32 +397,39 @@ export function feishuFollowTemplateSpec(): FollowTemplateSpec[] {
         { name: "openId", type: "string", required: true, description: "Mentioned user or bot open_id." },
       ],
     },
+    {
+      templateId: "feishu.mentions",
+      providerOrKind: "feishu",
+      label: "Feishu Mentions",
+      description: "Follow messages across visible Feishu/Lark chats that mention a user or bot.",
+      argsSchema: [
+        { name: "openId", type: "string", required: true, description: "Mentioned user or bot open_id." },
+      ],
+    },
   ];
 }
 
 export function expandFeishuFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
-  if (input.template !== "chat" && input.template !== "mention") {
+  if (input.template !== "chat" && input.template !== "mention" && input.template !== "mentions") {
     return null;
   }
   const args = input.args ?? {};
   const chatId = asString(args.chatId);
-  if (!chatId) {
+  if (input.template !== "mentions" && !chatId) {
     throw new Error(`follow template feishu.${input.template} requires argument chatId`);
   }
   const config = parseFeishuSourceConfig(input.source);
   const sourceKey = `feishu:${config.uxcAuth ?? input.source.configRef ?? "default"}:messages`;
-  const filter: SubscriptionFilter = {
-    metadata: { chatId },
-  };
+  const filter: SubscriptionFilter = chatId ? { metadata: { chatId } } : {};
 
-  let trackedResourceRef = `chat:${chatId}`;
-  if (input.template === "mention") {
+  let trackedResourceRef = chatId ? `chat:${chatId}` : "mentions";
+  if (input.template === "mention" || input.template === "mentions") {
     const openId = asString(args.openId);
     if (!openId) {
-      throw new Error("follow template feishu.mention requires argument openId");
+      throw new Error(`follow template feishu.${input.template} requires argument openId`);
     }
     filter.expr = `contains(metadata.mentionOpenIds, ${JSON.stringify(openId)})`;
-    trackedResourceRef = `chat:${chatId}:mention:${openId}`;
+    trackedResourceRef = chatId ? `chat:${chatId}:mention:${openId}` : `mentions:${openId}`;
   }
 
   return {

@@ -166,6 +166,29 @@ Use `follow` as the default path for GitHub repo, PR, and issue tracking. Drop
 to `source schema` plus `subscription add` only when you need a custom filter or
 the source has no follow template.
 
+Feishu/Lark follows require a UXC credential that can host the Feishu app
+connection. For bot mention workflows, prefer the global mention template so
+the user does not need to discover a group `chat_id` first:
+
+```bash
+agentinbox follow feishu mentions --agent-id <agentId> --arg openId=<botOpenId> --config-json '{"uxcAuth":"feishu-default"}'
+```
+
+Use the chat-scoped templates when the task is explicitly limited to one group:
+
+```bash
+agentinbox follow feishu chat --agent-id <agentId> --arg chatId=<chatId> --config-json '{"uxcAuth":"feishu-default"}'
+agentinbox follow feishu mention --agent-id <agentId> --arg chatId=<chatId> --arg openId=<botOpenId> --config-json '{"uxcAuth":"feishu-default"}'
+```
+
+Feishu inbox items include `metadata.chatId`, `metadata.messageId`, and a
+`deliveryHandle`. Use `source invoke` for local context before replying:
+
+```bash
+agentinbox source invoke <sourceId> --operation get_message_context --input-json '{"messageId":"<messageId>","chatId":"<chatId>","windowBefore":5,"windowAfter":5}'
+agentinbox deliver invoke --handle-json '<deliveryHandle-json>' --operation send_text --input-json '{"text":"Acknowledged","uxcAuth":"feishu-default"}'
+```
+
 Advanced source/subscription commands:
 
 ```bash

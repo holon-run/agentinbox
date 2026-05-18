@@ -332,7 +332,11 @@ test("feishu delivery invoke uploads local paths before sending file messages", 
 });
 
 test("feishu follow templates expand chat and mention subscriptions over a shared uxc source", () => {
-  assert.deepEqual(feishuFollowTemplateSpec().map((template) => template.templateId), ["feishu.chat", "feishu.mention"]);
+  assert.deepEqual(feishuFollowTemplateSpec().map((template) => template.templateId), [
+    "feishu.chat",
+    "feishu.mention",
+    "feishu.mentions",
+  ]);
 
   const source: SourceStream = {
     sourceId: "preview",
@@ -362,6 +366,37 @@ test("feishu follow templates expand chat and mention subscriptions over a share
     metadata: { chatId: "oc_chat" },
     expr: "contains(metadata.mentionOpenIds, \"ou_bot\")",
   });
+});
+
+test("feishu mentions follow template does not require a chat id", () => {
+  const source: SourceStream = {
+    sourceId: "preview",
+    sourceType: "feishu_bot",
+    sourceKey: "preview",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: "",
+    updatedAt: "",
+  };
+  const plan = expandFeishuFollowTemplate({
+    template: "mentions",
+    args: { openId: "ou_bot" },
+    source,
+  });
+
+  assert.ok(plan);
+  assert.equal(plan.templateId, "feishu.mentions");
+  assert.equal(plan.sources[0]?.sourceKey, "feishu:feishu-tuptup:messages");
+  assert.deepEqual(plan.sources[0]?.config, {
+    uxcAuth: "feishu-tuptup",
+    eventTypes: ["im.message.receive_v1"],
+  });
+  assert.deepEqual(plan.subscriptions[0]?.filter, {
+    expr: "contains(metadata.mentionOpenIds, \"ou_bot\")",
+  });
+  assert.equal(plan.subscriptions[0]?.trackedResourceRef, "mentions:ou_bot");
 });
 
 test("feishu source operation fetches anchor message context and keeps permission warnings non-fatal", async () => {

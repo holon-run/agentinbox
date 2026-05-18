@@ -1626,6 +1626,7 @@ Examples:
   agentinbox follow github repo --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox
   agentinbox follow github pr --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=87 --arg withCi=true
   agentinbox follow github issue --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=180
+  agentinbox follow feishu mentions --agent-id <agentId> --arg openId=ou_bot --config-json '{"uxcAuth":"feishu-default"}'
 `,
     source: `agentinbox source
 
