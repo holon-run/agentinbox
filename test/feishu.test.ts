@@ -22,6 +22,9 @@ class FakeFeishuUxcClient implements FeishuCallClient {
 
   async call(args: Record<string, unknown>) {
     this.calls.push(args);
+    if (args.operation === "post:/im/v1/files") {
+      return { data: { code: 0, data: { file_key: "file_uploaded" } } };
+    }
     return { data: { ok: true } };
   }
 }
@@ -231,15 +234,18 @@ test("feishu delivery adapter maps message replies and chat sends to uxc calls",
   assert.equal((fake.calls[1]?.options as Record<string, unknown>)?.schema_url, FEISHU_IM_SCHEMA_URL);
 });
 
-test("feishu delivery operations expose a canonical send_text action", () => {
-  assert.deepEqual(
-    feishuDeliveryOperationsForHandle({
-      provider: "feishu",
-      surface: "message_reply",
-      targetRef: "om_reply",
-    }).map((operation) => operation.name),
-    ["send_text"],
-  );
+test("feishu delivery operations expose canonical text, rich text, and file actions", () => {
+  const operations = feishuDeliveryOperationsForHandle({
+    provider: "feishu",
+    surface: "message_reply",
+    targetRef: "om_reply",
+  });
+  assert.deepEqual(operations.map((operation) => operation.name), ["send_text", "send_post", "send_file", "send_file_from_path"]);
+  assert.deepEqual((operations.find((operation) => operation.name === "send_post")?.inputSchema as Record<string, unknown>).anyOf, [
+    { required: ["blocks"] },
+    { required: ["paragraphs"] },
+    { required: ["content"] },
+  ]);
 });
 
 test("feishu delivery invoke maps send_text to the canonical outbound path", async () => {
@@ -251,6 +257,78 @@ test("feishu delivery invoke maps send_text to the canonical outbound path", asy
     targetRef: "oc_chat",
   }, "send_text", { text: "team update" }, client);
   assert.equal(fake.calls[0]?.operation, "post:/im/v1/messages");
+});
+
+test("feishu delivery invoke maps send_post blocks to Feishu post payloads", async () => {
+  const fake = new FakeFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  await invokeFeishuDeliveryOperation({
+    provider: "feishu",
+    surface: "message_reply",
+    targetRef: "om_reply",
+  }, "send_post", {
+    title: "Update",
+    blocks: [
+      { type: "text", text: "See " },
+      { type: "link", text: "PR", url: "https://example.com/pr/1" },
+      { type: "mention", openId: "ou_user", name: "Alice" },
+    ],
+  }, client);
+
+  assert.equal(fake.calls[0]?.operation, "post:/im/v1/messages/{message_id}/reply");
+  const payload = fake.calls[0]?.payload as Record<string, unknown>;
+  assert.equal(payload.msg_type, "post");
+  assert.deepEqual(JSON.parse(String(payload.content)), {
+    zh_cn: {
+      title: "Update",
+      content: [[
+        { tag: "text", text: "See " },
+        { tag: "a", text: "PR", href: "https://example.com/pr/1" },
+        { tag: "at", user_id: "ou_user", user_name: "Alice" },
+      ]],
+    },
+  });
+});
+
+test("feishu delivery invoke sends files by existing file key", async () => {
+  const fake = new FakeFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  await invokeFeishuDeliveryOperation({
+    provider: "feishu",
+    surface: "chat_message",
+    targetRef: "oc_chat",
+  }, "send_file", { fileKey: "file_123" }, client);
+
+  assert.equal(fake.calls[0]?.operation, "post:/im/v1/messages");
+  const payload = fake.calls[0]?.payload as Record<string, unknown>;
+  assert.equal(payload.msg_type, "file");
+  assert.equal(payload.receive_id, "oc_chat");
+  assert.deepEqual(JSON.parse(String(payload.content)), { file_key: "file_123" });
+});
+
+test("feishu delivery invoke uploads local paths before sending file messages", async () => {
+  const fake = new FakeFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  await invokeFeishuDeliveryOperation({
+    provider: "feishu",
+    surface: "message_reply",
+    targetRef: "om_reply",
+  }, "send_file_from_path", {
+    filePath: "/tmp/report.txt",
+    uxcAuth: "feishu-tuptup",
+  }, client);
+
+  assert.equal(fake.calls[0]?.operation, "post:/im/v1/files");
+  assert.deepEqual(fake.calls[0]?.payload, {
+    file_type: "stream",
+    file_name: "report.txt",
+    file: "/tmp/report.txt",
+  });
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.auth, "feishu-tuptup");
+  assert.equal(fake.calls[1]?.operation, "post:/im/v1/messages/{message_id}/reply");
+  const replyPayload = fake.calls[1]?.payload as Record<string, unknown>;
+  assert.equal(replyPayload.msg_type, "file");
+  assert.deepEqual(JSON.parse(String(replyPayload.content)), { file_key: "file_uploaded" });
 });
 
 test("feishu follow templates expand chat and mention subscriptions over a shared uxc source", () => {

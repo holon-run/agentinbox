@@ -91,6 +91,34 @@ export class FeishuUxcClient {
     });
   }
 
+  async uploadFile(input: {
+    endpoint?: string;
+    schemaUrl?: string;
+    auth?: string;
+    filePath: string;
+    fileName: string;
+    fileType?: string;
+  }): Promise<string> {
+    const response = await this.client.call({
+      endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
+      operation: "post:/im/v1/files",
+      payload: {
+        file_type: input.fileType ?? "stream",
+        file_name: input.fileName,
+        file: input.filePath,
+      },
+      options: {
+        auth: input.auth,
+        schema_url: input.schemaUrl ?? FEISHU_IM_SCHEMA_URL,
+      },
+    });
+    const fileKey = findStringField(response.data, "file_key");
+    if (!fileKey) {
+      throw new Error("Feishu file upload response did not include file_key");
+    }
+    return fileKey;
+  }
+
   async getMessage(input: {
     endpoint?: string;
     schemaUrl?: string;
@@ -163,27 +191,96 @@ export function feishuDeliveryOperationsForHandle(handle: DeliveryHandle): Deliv
   if (handle.surface !== "message_reply" && handle.surface !== "chat_message") {
     return [];
   }
-  return [{
-    name: "send_text",
-    title: handle.surface === "message_reply" ? "Reply With Text" : "Send Text Message",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["text"],
-      properties: {
-        text: { type: "string", minLength: 1 },
-        endpoint: { type: "string", minLength: 1 },
-        schemaUrl: { type: "string", minLength: 1 },
-        schema_url: { type: "string", minLength: 1 },
-        uxcAuth: { type: "string", minLength: 1 },
-        auth: { type: "string", minLength: 1 },
-        replyInThread: { type: "boolean" },
-        reply_in_thread: { type: "boolean" },
-        uuid: { type: "string", minLength: 1 },
+  const commonProperties = commonDeliveryInputSchemaProperties();
+  return [
+    {
+      name: "send_text",
+      title: handle.surface === "message_reply" ? "Reply With Text" : "Send Text Message",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1 },
+          ...commonProperties,
+        },
+      },
+      canonicalTextAlias: true,
+    },
+    {
+      name: "send_post",
+      title: handle.surface === "message_reply" ? "Reply With Rich Text" : "Send Rich Text Message",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        anyOf: [
+          { required: ["blocks"] },
+          { required: ["paragraphs"] },
+          { required: ["content"] },
+        ],
+        properties: {
+          title: { type: "string" },
+          locale: { type: "string", minLength: 1 },
+          blocks: {
+            type: "array",
+            items: { type: "object", additionalProperties: true },
+          },
+          paragraphs: {
+            type: "array",
+            items: {
+              type: "array",
+              items: { type: "object", additionalProperties: true },
+            },
+          },
+          content: {
+            anyOf: [
+              { type: "string", minLength: 1 },
+              { type: "object", additionalProperties: true },
+            ],
+          },
+          ...commonProperties,
+        },
       },
     },
-    canonicalTextAlias: true,
-  }];
+    {
+      name: "send_file",
+      title: handle.surface === "message_reply" ? "Reply With File" : "Send File Message",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        anyOf: [
+          { required: ["fileKey"] },
+          { required: ["file_key"] },
+        ],
+        properties: {
+          fileKey: { type: "string", minLength: 1 },
+          file_key: { type: "string", minLength: 1 },
+          ...commonProperties,
+        },
+      },
+    },
+    {
+      name: "send_file_from_path",
+      title: handle.surface === "message_reply" ? "Upload And Reply With File" : "Upload And Send File",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        anyOf: [
+          { required: ["filePath"] },
+          { required: ["file_path"] },
+        ],
+        properties: {
+          filePath: { type: "string", minLength: 1 },
+          file_path: { type: "string", minLength: 1 },
+          fileName: { type: "string", minLength: 1 },
+          file_name: { type: "string", minLength: 1 },
+          fileType: { type: "string", minLength: 1 },
+          file_type: { type: "string", minLength: 1 },
+          ...commonProperties,
+        },
+      },
+    },
+  ];
 }
 
 export async function invokeFeishuDeliveryOperation(
@@ -192,16 +289,58 @@ export async function invokeFeishuDeliveryOperation(
   input: Record<string, unknown>,
   client: FeishuUxcClient = new FeishuUxcClient(),
 ): Promise<{ status: "sent"; note: string }> {
-  if (operation !== "send_text") {
-    throw new Error(`unknown Feishu delivery operation: ${operation}`);
-  }
-  const text = asString(input.text);
-  if (!text || text.trim().length === 0) {
-    throw new Error("send_text requires input.text");
-  }
   const config = parseDeliveryConfig(input);
-  const message = normalizeDeliveryMessage({ text });
+  if (operation === "send_text") {
+    const text = asString(input.text);
+    if (!text || text.trim().length === 0) {
+      throw new Error("send_text requires input.text");
+    }
+    await sendFeishuMessage(handle, normalizeDeliveryMessage({ text }), config, client);
+    return { status: "sent", note: sentNote(handle, "text") };
+  }
 
+  if (operation === "send_post") {
+    const message = normalizeFeishuPostMessage(input);
+    await sendFeishuMessage(handle, message, config, client);
+    return { status: "sent", note: sentNote(handle, "rich text") };
+  }
+
+  if (operation === "send_file") {
+    const fileKey = asString(input.fileKey) ?? asString(input.file_key);
+    if (!fileKey) {
+      throw new Error("send_file requires input.fileKey");
+    }
+    await sendFeishuMessage(handle, normalizeFeishuFileMessage(fileKey), config, client);
+    return { status: "sent", note: sentNote(handle, "file") };
+  }
+
+  if (operation === "send_file_from_path") {
+    const filePath = asString(input.filePath) ?? asString(input.file_path);
+    if (!filePath) {
+      throw new Error("send_file_from_path requires input.filePath");
+    }
+    const fileName = asString(input.fileName) ?? asString(input.file_name) ?? basename(filePath);
+    const fileKey = await client.uploadFile({
+      endpoint: config.endpoint,
+      schemaUrl: config.schemaUrl,
+      auth: config.auth,
+      filePath,
+      fileName,
+      fileType: asString(input.fileType) ?? asString(input.file_type) ?? "stream",
+    });
+    await sendFeishuMessage(handle, normalizeFeishuFileMessage(fileKey), config, client);
+    return { status: "sent", note: `${sentNote(handle, "file")} after upload` };
+  }
+
+  throw new Error(`unknown Feishu delivery operation: ${operation}`);
+}
+
+async function sendFeishuMessage(
+  handle: DeliveryHandle,
+  message: { msgType: string; content: string },
+  config: ReturnType<typeof parseDeliveryConfig>,
+  client: FeishuUxcClient,
+): Promise<void> {
   if (handle.surface === "message_reply") {
     await client.replyToMessage({
       endpoint: config.endpoint,
@@ -213,7 +352,7 @@ export async function invokeFeishuDeliveryOperation(
       replyInThread: config.replyInThread,
       uuid: config.uuid,
     });
-    return { status: "sent", note: "sent Feishu message reply" };
+    return;
   }
 
   if (handle.surface === "chat_message") {
@@ -226,10 +365,15 @@ export async function invokeFeishuDeliveryOperation(
       content: message.content,
       uuid: config.uuid,
     });
-    return { status: "sent", note: "sent Feishu chat message" };
+    return;
   }
-
   throw new Error(`deliver send only supports canonical Feishu text surfaces; use deliver invoke for ${handle.surface}`);
+}
+
+function sentNote(handle: DeliveryHandle, kind: string): string {
+  return handle.surface === "message_reply"
+    ? `sent Feishu ${kind} message reply`
+    : `sent Feishu ${kind} chat message`;
 }
 
 export function feishuFollowTemplateSpec(): FollowTemplateSpec[] {
@@ -536,6 +680,123 @@ function normalizeDeliveryMessage(payload: Record<string, unknown>): { msgType: 
     msgType: "text",
     content: JSON.stringify({ text: JSON.stringify(payload) }),
   };
+}
+
+function commonDeliveryInputSchemaProperties(): Record<string, unknown> {
+  return {
+    endpoint: { type: "string", minLength: 1 },
+    schemaUrl: { type: "string", minLength: 1 },
+    schema_url: { type: "string", minLength: 1 },
+    uxcAuth: { type: "string", minLength: 1 },
+    auth: { type: "string", minLength: 1 },
+    replyInThread: { type: "boolean" },
+    reply_in_thread: { type: "boolean" },
+    uuid: { type: "string", minLength: 1 },
+  };
+}
+
+function normalizeFeishuFileMessage(fileKey: string): { msgType: string; content: string } {
+  return {
+    msgType: "file",
+    content: JSON.stringify({ file_key: fileKey }),
+  };
+}
+
+function normalizeFeishuPostMessage(input: Record<string, unknown>): { msgType: string; content: string } {
+  const rawContent = input.content;
+  if (typeof rawContent === "string" && rawContent.trim().length > 0) {
+    return { msgType: "post", content: rawContent };
+  }
+  if (rawContent && typeof rawContent === "object" && !Array.isArray(rawContent)) {
+    return { msgType: "post", content: JSON.stringify(rawContent) };
+  }
+
+  const paragraphs = normalizePostParagraphs(input);
+  if (paragraphs.length === 0) {
+    throw new Error("send_post requires input.blocks, input.paragraphs, or input.content");
+  }
+  const locale = asString(input.locale) ?? "zh_cn";
+  return {
+    msgType: "post",
+    content: JSON.stringify({
+      [locale]: {
+        title: asString(input.title) ?? "",
+        content: paragraphs,
+      },
+    }),
+  };
+}
+
+function normalizePostParagraphs(input: Record<string, unknown>): Array<Array<Record<string, unknown>>> {
+  if (Array.isArray(input.paragraphs)) {
+    return input.paragraphs
+      .map((paragraph) => Array.isArray(paragraph) ? normalizePostBlocks(paragraph) : [])
+      .filter((paragraph) => paragraph.length > 0);
+  }
+  if (Array.isArray(input.blocks)) {
+    const paragraph = normalizePostBlocks(input.blocks);
+    return paragraph.length > 0 ? [paragraph] : [];
+  }
+  return [];
+}
+
+function normalizePostBlocks(blocks: unknown[]): Array<Record<string, unknown>> {
+  return blocks.map((block) => normalizePostBlock(asRecord(block))).filter((block): block is Record<string, unknown> => block !== null);
+}
+
+function normalizePostBlock(block: Record<string, unknown>): Record<string, unknown> | null {
+  const type = asString(block.type) ?? "text";
+  if (type === "text") {
+    const text = asString(block.text);
+    if (!text) {
+      return null;
+    }
+    return { tag: "text", text };
+  }
+  if (type === "link") {
+    const text = asString(block.text);
+    const url = asString(block.url) ?? asString(block.href);
+    if (!text || !url) {
+      return null;
+    }
+    return { tag: "a", text, href: url };
+  }
+  if (type === "mention") {
+    const openId = asString(block.openId) ?? asString(block.open_id) ?? asString(block.userId) ?? asString(block.user_id);
+    if (!openId) {
+      return null;
+    }
+    return {
+      tag: "at",
+      user_id: openId,
+      ...(asString(block.name) ? { user_name: asString(block.name) } : {}),
+    };
+  }
+  return null;
+}
+
+function basename(filePath: string): string {
+  const trimmed = filePath.replace(/\/+$/, "");
+  const parts = trimmed.split("/");
+  return parts[parts.length - 1] || "upload.bin";
+}
+
+function findStringField(value: unknown, field: string): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const direct = asString(record[field]);
+  if (direct) {
+    return direct;
+  }
+  for (const child of Object.values(record)) {
+    const found = findStringField(child, field);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
 }
 
 interface NormalizedFeishuMessage {
