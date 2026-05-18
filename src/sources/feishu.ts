@@ -429,7 +429,7 @@ export function expandFeishuFollowTemplate(input: ExpandFollowTemplateInput): Ex
       throw new Error(`follow template feishu.${input.template} requires argument openId`);
     }
     filter.expr = `contains(metadata.mentionOpenIds, ${JSON.stringify(openId)})`;
-    trackedResourceRef = chatId ? `chat:${chatId}:mention:${openId}` : `mentions:${openId}`;
+    trackedResourceRef = chatId ? `chat:${chatId}:mention:${openId}` : `mention:${openId}`;
   }
 
   return {

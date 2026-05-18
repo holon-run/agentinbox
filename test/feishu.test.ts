@@ -396,7 +396,7 @@ test("feishu mentions follow template does not require a chat id", () => {
   assert.deepEqual(plan.subscriptions[0]?.filter, {
     expr: "contains(metadata.mentionOpenIds, \"ou_bot\")",
   });
-  assert.equal(plan.subscriptions[0]?.trackedResourceRef, "mentions:ou_bot");
+  assert.equal(plan.subscriptions[0]?.trackedResourceRef, "mention:ou_bot");
 });
 
 test("feishu source operation fetches anchor message context and keeps permission warnings non-fatal", async () => {
