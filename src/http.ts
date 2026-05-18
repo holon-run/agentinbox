@@ -1997,7 +1997,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("unknown Feishu source operation") ||
     message.startsWith("invalid GitHub targetRef") ||
     message.startsWith("get_message_context requires") ||
-    message.includes("requires input.text") ||
+    message.includes("requires input.") ||
     message.includes("requires input.body") ||
     message.startsWith("subscriptions/reset requires") ||
     message.startsWith("agents requires") ||
