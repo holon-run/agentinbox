@@ -814,6 +814,84 @@ export default {
   }
 });
 
+test("user-defined remote_source modules can expose source actions and invoke them", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const moduleDir = path.join(dir, "source-modules");
+    fs.mkdirSync(moduleDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(moduleDir, "source-action-hook.mjs"),
+      `export default {
+  id: "demo.source-action-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  listSourceOperations() {
+    return [{
+      name: "get_context",
+      title: "Get Context",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["id"],
+        properties: { id: { type: "string" } }
+      }
+    }];
+  },
+  async invokeSourceOperation(input) {
+    return {
+      sourceId: input.source.sourceId,
+      operation: input.operation,
+      id: input.input.id
+    };
+  }
+};`,
+      "utf8",
+    );
+
+    const source = await service.registerSource({
+      sourceType: "remote_source",
+      sourceKey: "demo-source-action",
+      config: {
+        modulePath: "source-action-hook.mjs",
+        moduleConfig: {},
+      },
+    });
+
+    const listed = await service.listSourceOperations(source.sourceId);
+    assert.deepEqual(listed.operations.map((operation) => operation.name), ["get_context"]);
+
+    const invoked = await service.invokeSourceOperation({
+      sourceId: source.sourceId,
+      operation: "get_context",
+      input: { id: "evt-1" },
+    });
+    assert.equal(invoked.operation, "get_context");
+    assert.deepEqual(invoked.data, {
+      sourceId: source.sourceId,
+      operation: "get_context",
+      id: "evt-1",
+    });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function checkpointKeyForPayload(
   payload: unknown,
   strategy: NonNullable<ManagedSourceSpec["poll_config"]>["checkpoint_strategy"],

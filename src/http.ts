@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import swagger from "@fastify/swagger";
 import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
-import { ActivationMode, DeliveryHandle, FollowInput, PreviewSourceSchemaInput, WatchInboxOptions } from "./model";
+import { ActivationMode, DeliveryHandle, FollowInput, PreviewSourceSchemaInput, SourceInvokeRequest, WatchInboxOptions } from "./model";
 import { jsonResponse } from "./util";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
@@ -402,6 +402,62 @@ function buildFastifyServer(service: AgentInboxService) {
   }, async (request) => {
     const params = request.params as { sourceId: string };
     return service.getResolvedSourceSchema(decodeURIComponent(params.sourceId));
+  });
+
+  app.get("/sources/:sourceId/actions", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    return service.listSourceOperations(decodeURIComponent(params.sourceId));
+  });
+
+  app.post("/sources/:sourceId/invoke", {
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object",
+        required: ["sourceId"],
+        properties: {
+          sourceId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["operation", "input"],
+        properties: {
+          operation: { type: "string", minLength: 1 },
+          input: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { sourceId: string };
+    const body = request.body as Omit<SourceInvokeRequest, "sourceId">;
+    return service.invokeSourceOperation({
+      sourceId: decodeURIComponent(params.sourceId),
+      operation: body.operation,
+      input: body.input,
+    });
   });
 
   app.patch("/streams/:streamId", {
@@ -1935,8 +1991,10 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("deliver send is not supported") ||
     message.startsWith("deliveryHandle requires") ||
     message.startsWith("delivery operations are not supported") ||
+    message.startsWith("source operations are not supported") ||
     message.startsWith("unknown GitHub delivery operation") ||
     message.startsWith("unknown Feishu delivery operation") ||
+    message.startsWith("unknown Feishu source operation") ||
     message.startsWith("invalid GitHub targetRef") ||
     message.includes("requires input.text") ||
     message.includes("requires input.body") ||

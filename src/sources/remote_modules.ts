@@ -13,6 +13,7 @@ import {
   NotificationGrouping,
   RegisterSourceInput,
   SourceSchemaField,
+  SourceOperationDescriptor,
   SourceStream,
   SubscriptionFilter,
   SubscriptionStartPolicy,
@@ -42,8 +43,12 @@ import {
 } from "./github_ci";
 import {
   FEISHU_OPENAPI_ENDPOINT,
+  expandFeishuFollowTemplate,
   feishuDeliveryOperationsForHandle,
+  feishuFollowTemplateSpec,
+  feishuSourceOperations,
   invokeFeishuDeliveryOperation,
+  invokeFeishuSourceOperation,
   normalizeFeishuBotEvent,
   parseFeishuSourceConfig,
 } from "./feishu";
@@ -154,6 +159,16 @@ export interface InvokeDeliveryOperationInput {
   source?: SourceStream | null;
 }
 
+export interface ListSourceOperationsInput {
+  source: SourceStream;
+}
+
+export interface InvokeSourceOperationInput {
+  source: SourceStream;
+  operation: string;
+  input: Record<string, unknown>;
+}
+
 export interface RemoteSourceModule {
   id: string;
   validateConfig(source: SourceStream): void;
@@ -174,6 +189,8 @@ export interface RemoteSourceModule {
   deriveNotificationGrouping?(item: ActivationItem, source: SourceStream): NotificationGrouping | null;
   listDeliveryOperations?(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[];
   invokeDeliveryOperation?(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }>;
+  listSourceOperations?(input: ListSourceOperationsInput): SourceOperationDescriptor[];
+  invokeSourceOperation?(input: InvokeSourceOperationInput): Promise<Record<string, unknown>>;
   summarizeDigestThread?(items: ActivationItem[], source: SourceStream, grouping: NotificationGrouping): string | null;
 }
 
@@ -283,6 +300,8 @@ function validateModuleContract(module: RemoteSourceModule, sourcePath: string):
   validateOptionalHook(module.deriveNotificationGrouping, "deriveNotificationGrouping", sourcePath);
   validateOptionalHook(module.listDeliveryOperations, "listDeliveryOperations", sourcePath);
   validateOptionalHook(module.invokeDeliveryOperation, "invokeDeliveryOperation", sourcePath);
+  validateOptionalHook(module.listSourceOperations, "listSourceOperations", sourcePath);
+  validateOptionalHook(module.invokeSourceOperation, "invokeSourceOperation", sourcePath);
   validateOptionalHook(module.summarizeDigestThread, "summarizeDigestThread", sourcePath);
 }
 
@@ -650,18 +669,22 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
   async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
     return invokeFeishuDeliveryOperation(input.handle, input.operation, input.input);
   },
+  listSourceOperations(): SourceOperationDescriptor[] {
+    return feishuSourceOperations();
+  },
+  async invokeSourceOperation(input: InvokeSourceOperationInput): Promise<Record<string, unknown>> {
+    return invokeFeishuSourceOperation(input.source, input.operation, input.input);
+  },
   describeCapabilities(): RemoteSourceCapabilityDescription {
     return {
       sourceKind: "feishu_bot",
       aliases: ["feishu_bot"],
       configSchema: [
-        { name: "appId", type: "string", required: true, description: "Feishu app ID." },
-        { name: "appSecret", type: "string", required: true, description: "Feishu app secret." },
+        { name: "uxcAuth", type: "string", required: false, description: "Optional UXC auth profile for the Feishu/Lark app." },
         { name: "eventTypes", type: "string[]", required: false, description: "Optional Feishu event type allowlist." },
         { name: "chatIds", type: "string[]", required: false, description: "Optional Feishu chat allowlist." },
         { name: "schemaUrl", type: "string", required: false, description: "Optional Feishu OpenAPI schema URL." },
         { name: "replyInThread", type: "boolean", required: false, description: "Reply in thread when sending outbound messages." },
-        { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
       ],
       metadataFields: [
         { name: "eventType", type: "string", description: "Feishu event type." },
@@ -682,6 +705,12 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
   },
   validateConfig(source: SourceStream): void {
     parseFeishuSourceConfig(source);
+  },
+  listFollowTemplates(): FollowTemplateSpec[] {
+    return feishuFollowTemplateSpec();
+  },
+  expandFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
+    return expandFeishuFollowTemplate(input);
   },
   buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
     const config = parseFeishuSourceConfig(source);

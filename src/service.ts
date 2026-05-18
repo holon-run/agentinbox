@@ -34,6 +34,9 @@ import {
   RegisterTimerInput,
   ResolvedSourceIdentity,
   ResolvedSourceSchema,
+  SourceInvokeRequest,
+  SourceInvokeResult,
+  SourceOperationDescriptor,
   SourceHost,
   SourceRuntimeState,
   SourceSchema,
@@ -432,6 +435,24 @@ export class AgentInboxService {
   async getResolvedSourceSchema(sourceId: string): Promise<ResolvedSourceSchema> {
     const source = this.getSource(sourceId);
     return this.adapters.resolveSourceSchema(source);
+  }
+
+  async listSourceOperations(sourceId: string): Promise<{ sourceId: string; operations: SourceOperationDescriptor[] }> {
+    const source = this.getSource(sourceId);
+    return {
+      sourceId: source.sourceId,
+      operations: await this.adapters.listSourceOperations(source),
+    };
+  }
+
+  async invokeSourceOperation(request: SourceInvokeRequest): Promise<SourceInvokeResult> {
+    const source = this.getSource(request.sourceId);
+    const data = await this.adapters.invokeSourceOperation(source, request.operation, request.input);
+    return {
+      sourceId: source.sourceId,
+      operation: request.operation,
+      data,
+    };
   }
 
   async previewSourceSchema(input: PreviewSourceSchemaInput): Promise<SourceSchemaPreview> {
@@ -4475,9 +4496,7 @@ function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: st
       ];
     case "feishu":
       return [
-        { name: "appId", type: "string", description: "Feishu app ID.", required: true },
-        { name: "appSecret", type: "string", description: "Feishu app secret.", required: true },
-        { name: "uxcAuth", type: "string", description: "Optional shared Feishu auth/runtime profile.", required: false },
+        { name: "uxcAuth", type: "string", description: "Optional shared Feishu/Lark UXC auth profile.", required: false },
       ];
     case "local_event":
       return [];

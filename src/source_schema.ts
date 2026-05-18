@@ -144,13 +144,11 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
     ],
     eventVariantExamples: ["im.message.receive_v1.text"],
     configFields: [
-      { name: "appId", type: "string", required: true, description: "Feishu app ID." },
-      { name: "appSecret", type: "string", required: true, description: "Feishu app secret." },
+      { name: "uxcAuth", type: "string", required: false, description: "Optional UXC auth profile for the Feishu/Lark app." },
       { name: "eventTypes", type: "string[]", required: false, description: "Optional Feishu event type allowlist." },
       { name: "chatIds", type: "string[]", required: false, description: "Optional Feishu chat allowlist." },
       { name: "schemaUrl", type: "string", required: false, description: "Optional Feishu OpenAPI schema URL." },
       { name: "replyInThread", type: "boolean", required: false, description: "Reply in thread when sending outbound messages." },
-      { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
     ],
   },
 };

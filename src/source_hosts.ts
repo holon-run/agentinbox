@@ -41,13 +41,11 @@ export function resolveSourceRegistration(input: RegisterSourceInput): SourceReg
   if (input.sourceType === "feishu_bot") {
     return {
       hostType: "feishu",
-      hostKey: `app:${stringOrDefault(config.appId, input.configRef ?? input.sourceKey)}`,
+      hostKey: `uxcAuth:${stringOrDefault(config.uxcAuth, input.configRef ?? input.sourceKey)}`,
       hostConfig: {
-        ...(valueOrUndefined(config.appId) ? { appId: config.appId } : {}),
-        ...(valueOrUndefined(config.appSecret) ? { appSecret: config.appSecret } : {}),
+        ...(valueOrUndefined(config.uxcAuth) ? { uxcAuth: config.uxcAuth } : {}),
         ...(valueOrUndefined(config.schemaUrl) ? { schemaUrl: config.schemaUrl } : {}),
         ...(valueOrUndefined(config.replyInThread) ? { replyInThread: config.replyInThread } : {}),
-        ...(valueOrUndefined(config.uxcAuth) ? { uxcAuth: config.uxcAuth } : {}),
       },
       streamKind: "message_events",
       streamKey: input.sourceKey,

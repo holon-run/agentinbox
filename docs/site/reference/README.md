@@ -15,7 +15,7 @@
   <!-- mdorigin:index kind=article -->
 
 - [Source Types](./source-types.md)
-  `AgentInbox` currently supports a mix of local and provider-specific source adapters.
+  `AgentInbox` v1 uses a host + stream model.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

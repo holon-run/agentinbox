@@ -11,7 +11,7 @@
   <!-- mdorigin:index kind=article -->
 
 - [Onboarding With The AgentInbox Skill](./onboarding-with-agent-skill.md)
-  If you are already using Codex or Claude Code, the recommended onboarding path is to hand the bundled `AgentInbox` skill to the agent and let it configure the local workflow for you.
+  If you are already using Codex, Claude Code, or Holon, the recommended onboarding path is to hand the bundled `AgentInbox` skill to the agent and let it configure the local workflow for you.
   <!-- mdorigin:index kind=article -->
 
 - [Review Workflows](./review-workflows.md)

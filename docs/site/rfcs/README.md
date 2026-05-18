@@ -8,6 +8,10 @@
 
 <!-- INDEX:START -->
 
+- [IM Agent Interaction Model](./im-agent-interaction-model.md)
+  2026-05-18 · Define how AgentInbox should model IM reminders, on-demand context fetching, and feedback operations, with Feishu/Lark as the first implementation case.
+  <!-- mdorigin:index kind=article -->
+
 - [Follow Command And Template Expansion](./follow-command-and-template-expansion.md)
   2026-04-19 · Add a high-level `follow` command that expands module-defined templates into reusable host, stream, and subscription ensures without hardcoding providers into the AgentInbox core.
   <!-- mdorigin:index kind=article -->
@@ -16,32 +20,32 @@
   2026-04-19 · Evaluate X pay-per-use API as an AgentInbox source host, define viable stream kinds, and recommend a staged rollout.
   <!-- mdorigin:index kind=article -->
 
-- [Current Agent Resolution And Safe Agent-Scoped CLI Behavior](./current-agent-resolution.md)
-  2026-04-09 · Define how AgentInbox CLI should resolve the current agent, warn on cross-session targeting, and auto-register session-bound agents.
-  <!-- mdorigin:index kind=article -->
-
-- [Delivery Handles And Source-Specific Operations](./delivery-handles-and-operations.md)
-  2026-04-16 · Keep outbound delivery in AgentInbox, but standardize handle routing and source-specific operations instead of forcing all providers into one generic send action.
+- [Public And Internal Identifier Strategy](./public-and-internal-identifier-strategy.md)
+  2026-04-18 · Replace long prefix_uuid identifiers with canonical short IDs, keep only sequence and revision as numeric ordering fields, and align fresh v1 databases on one identifier scheme before release.
   <!-- mdorigin:index kind=article -->
 
 - [Inbox Digests And Threaded Notification Entries](./inbox-digests-and-threaded-notification-entries.md)
   2026-04-17 · Reduce bursty notification noise by keeping raw inbox items immutable, while materializing agent-facing digest threads and immutable digest snapshots for read, activation, and ack.
   <!-- mdorigin:index kind=article -->
 
-- [Public And Internal Identifier Strategy](./public-and-internal-identifier-strategy.md)
-  2026-04-18 · Replace long prefix_uuid identifiers with canonical short IDs, move entry/thread to stored string IDs, and standardize how AgentInbox creates and persists durable identifiers before v1 release.
+- [Delivery Handles And Source-Specific Operations](./delivery-handles-and-operations.md)
+  2026-04-16 · Keep outbound delivery automation in AgentInbox, but stop forcing all providers into one generic send action. Standardize handle routing and source-specific operations instead.
   <!-- mdorigin:index kind=article -->
 
 - [Source Hosts And Streams](./source-hosts-and-streams.md)
-  2026-04-16 · Split provider/account hosting from concrete feeds so AgentInbox can support many provider streams without exploding top-level source kinds.
+  2026-04-16 · Split provider/account hosting from concrete feeds so AgentInbox can support many provider streams without exploding top-level source types.
   <!-- mdorigin:index kind=article -->
 
 - [Source Kinds And Resolved Schemas](./source-kinds-and-resolved-schemas.md)
-  2026-04-13 · Separate runtime host types from user-facing source kinds, make source capability discovery implementation-backed through resolved per-source schemas, and define the UXC/AgentInbox boundary for remote-hosted sources.
+  2026-04-13 · Separate runtime host types from user-facing source kinds, and make source capability discovery implementation-backed through resolved per-source schemas.
   <!-- mdorigin:index kind=article -->
 
 - [Subscription Lifecycle And Terminal Auto-Retire](./subscription-lifecycle-and-terminal-retire.md)
   2026-04-13 · Replace temporary-subscription semantics with explicit cleanup policies, source-scoped tracked resources, deadline cleanup, and terminal-state auto-retire for task-scoped subscriptions.
+  <!-- mdorigin:index kind=article -->
+
+- [Current Agent Resolution And Safe Agent-Scoped CLI Behavior](./current-agent-resolution.md)
+  2026-04-09 · Define how AgentInbox CLI should resolve the current agent, warn on cross-session targeting, and auto-register session-bound agents.
   <!-- mdorigin:index kind=article -->
 
 - [RFC: Agent-First Event Filtering](./event-filtering.md)
