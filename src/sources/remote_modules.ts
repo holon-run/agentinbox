@@ -709,7 +709,7 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
   listFollowTemplates(): FollowTemplateSpec[] {
     return feishuFollowTemplateSpec();
   },
-  expandFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
+  async expandFollowTemplate(input: ExpandFollowTemplateInput): Promise<ExpandedFollowPlan | null> {
     return expandFeishuFollowTemplate(input);
   },
   buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
