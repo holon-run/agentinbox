@@ -115,6 +115,30 @@ class SuccessfulContextFeishuUxcClient implements FeishuCallClient {
   }
 }
 
+class RecentMessagesFeishuUxcClient implements FeishuCallClient {
+  public calls: Array<Record<string, unknown>> = [];
+
+  async call(args: Record<string, unknown>) {
+    this.calls.push(args);
+    if (args.operation === "get:/im/v1/messages") {
+      return {
+        data: {
+          code: 0,
+          data: {
+            items: [
+              feishuMessage({ messageId: "om_latest", content: "{\"text\":\"latest\"}", createTime: "1773491928409" }),
+              feishuMessage({ messageId: "om_previous", content: "{\"text\":\"previous\"}", createTime: "1773491926409" }),
+            ],
+            page_token: "next_page",
+            has_more: true,
+          },
+        },
+      };
+    }
+    return { data: { code: 0 } };
+  }
+}
+
 function feishuMessage(input: { messageId: string; content: string; createTime: string }): Record<string, unknown> {
   return {
     message_id: input.messageId,
@@ -519,4 +543,67 @@ test("feishu source operation unwraps nested UXC envelopes and anchors chat wind
   assert.equal(afterPayload.page_size, 2);
   assert.equal(afterPayload.start_time, "1773491924");
   assert.deepEqual(result.warnings, []);
+});
+
+test("feishu source operation lists recent chat messages with default limit", async () => {
+  const fake = new RecentMessagesFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  assert.ok(feishuSourceOperations().some((operation) => operation.name === "list_recent_messages"));
+  const result = await invokeFeishuSourceOperation(source, "list_recent_messages", { chatId: "oc_chat" }, client);
+
+  assert.equal(fake.calls[0]?.operation, "get:/im/v1/messages");
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.auth, "feishu-tuptup");
+  const payload = fake.calls[0]?.payload as Record<string, unknown>;
+  assert.equal(payload.container_id, "oc_chat");
+  assert.equal(payload.page_size, 20);
+  assert.equal(payload.sort_type, "ByCreateTimeDesc");
+  assert.equal(Object.hasOwn(payload, "start_time"), false);
+  assert.equal(Object.hasOwn(payload, "end_time"), false);
+  assert.deepEqual((result.messages as Array<Record<string, unknown>>).map((message) => message.messageId), [
+    "om_latest",
+    "om_previous",
+  ]);
+  assert.equal(result.pageToken, "next_page");
+  assert.equal(result.hasMore, true);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("feishu source operation lists recent chat messages with explicit limit and before cursor", async () => {
+  const fake = new RecentMessagesFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await invokeFeishuSourceOperation(source, "list_recent_messages", {
+    chatId: "oc_chat",
+    limit: 3,
+    before: "1773491930",
+    pageToken: "page_1",
+  }, client);
+
+  const payload = fake.calls[0]?.payload as Record<string, unknown>;
+  assert.equal(payload.page_size, 3);
+  assert.equal(payload.end_time, "1773491930");
+  assert.equal(payload.page_token, "page_1");
 });
