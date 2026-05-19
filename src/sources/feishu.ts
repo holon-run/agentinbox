@@ -150,6 +150,7 @@ export class FeishuUxcClient {
     chatId: string;
     startTime?: string;
     endTime?: string;
+    pageToken?: string;
     pageSize?: number;
     sort?: "ByCreateTimeAsc" | "ByCreateTimeDesc";
   }): Promise<unknown> {
@@ -165,6 +166,9 @@ export class FeishuUxcClient {
     }
     if (input.endTime) {
       payload.end_time = input.endTime;
+    }
+    if (input.pageToken) {
+      payload.page_token = input.pageToken;
     }
     const response = await this.client.call({
       endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
@@ -519,6 +523,26 @@ export function feishuSourceOperations(): SourceOperationDescriptor[] {
         required: ["anchorMessage", "chatWindowMessages", "threadMessages", "warnings", "deliveryHandle"],
       },
     },
+    {
+      name: "list_recent_messages",
+      title: "List Recent Messages",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["chatId"],
+        properties: {
+          chatId: { type: "string", minLength: 1 },
+          limit: { type: "number", minimum: 1, maximum: 50 },
+          before: { type: "string", minLength: 1 },
+          pageToken: { type: "string", minLength: 1 },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["chatId", "messages", "warnings"],
+      },
+    },
   ];
 }
 
@@ -528,6 +552,9 @@ export async function invokeFeishuSourceOperation(
   input: Record<string, unknown>,
   client: FeishuUxcClient = new FeishuUxcClient(),
 ): Promise<Record<string, unknown>> {
+  if (operation === "list_recent_messages") {
+    return listRecentFeishuMessages(source, input, client);
+  }
   if (operation !== "get_message_context") {
     throw new Error(`unknown Feishu source operation: ${operation}`);
   }
@@ -579,6 +606,36 @@ export async function invokeFeishuSourceOperation(
       threadRef: anchorMessage?.threadId ?? anchorMessage?.parentId ?? null,
       replyMode: "reply",
     },
+  };
+}
+
+async function listRecentFeishuMessages(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<Record<string, unknown>> {
+  const chatId = asString(input.chatId);
+  if (!chatId) {
+    throw new Error("list_recent_messages requires input.chatId");
+  }
+  const config = parseFeishuSourceConfig(source);
+  const limit = boundedPositiveInteger(input.limit, 20, 50);
+  const raw = await client.listMessages({
+    endpoint: config.endpoint,
+    schemaUrl: config.schemaUrl,
+    auth: config.uxcAuth,
+    chatId,
+    endTime: asString(input.before) ?? undefined,
+    pageToken: asString(input.pageToken) ?? undefined,
+    pageSize: limit,
+    sort: "ByCreateTimeDesc",
+  });
+  return {
+    chatId,
+    messages: normalizeFeishuMessages(raw),
+    warnings: [],
+    ...(feishuResponsePageToken(raw) ? { pageToken: feishuResponsePageToken(raw) } : {}),
+    ...(feishuResponseHasMore(raw) != null ? { hasMore: feishuResponseHasMore(raw) } : {}),
   };
 }
 
@@ -1041,6 +1098,35 @@ function positiveInteger(value: unknown): number | null {
     return null;
   }
   return value;
+}
+
+function boundedPositiveInteger(value: unknown, fallback: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    return fallback;
+  }
+  return Math.min(value, max);
+}
+
+function feishuResponsePageToken(raw: unknown): string | null {
+  const record = asRecord(raw);
+  const data = asRecord(record.data);
+  const nestedData = asRecord(data.data);
+  return asString(nestedData.page_token)
+    ?? asString(data.page_token)
+    ?? asString(record.page_token);
+}
+
+function feishuResponseHasMore(raw: unknown): boolean | null {
+  const record = asRecord(raw);
+  const data = asRecord(record.data);
+  const nestedData = asRecord(data.data);
+  if (typeof nestedData.has_more === "boolean") {
+    return nestedData.has_more;
+  }
+  if (typeof data.has_more === "boolean") {
+    return data.has_more;
+  }
+  return typeof record.has_more === "boolean" ? record.has_more : null;
 }
 
 function extractMentionNames(raw: unknown): string[] {

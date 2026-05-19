@@ -89,6 +89,18 @@ agentinbox source invoke <sourceId> \
   --input-json '{"messageId":"<messageId>","chatId":"<chatId>","windowBefore":5,"windowAfter":5}'
 ```
 
+`get_message_context` is anchored to a specific inbox message. Keep passing the
+triggering `messageId` when an agent is adding context for a notification; this
+avoids racing against newer messages in the same group.
+
+For unanchored browsing, list the latest messages in a chat instead:
+
+```bash
+agentinbox source invoke <sourceId> \
+  --operation list_recent_messages \
+  --input-json '{"chatId":"<chatId>","limit":20}'
+```
+
 Reply with text:
 
 ```bash
