@@ -319,6 +319,16 @@ test("cli version and help subcommands print text output", () => {
   assert.match(followTemplateHelp.stdout, /agentinbox follow <providerOrKind> <template>/);
   assert.match(followTemplateHelp.stdout, /agentinbox follow github pr/);
   assert.equal(followTemplateHelp.stderr, "");
+
+  for (const group of ["agent", "source", "inbox", "deliver"]) {
+    const bareGroup = spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", group], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
+    assert.equal(bareGroup.status, 0, bareGroup.stderr);
+    assert.match(bareGroup.stdout, new RegExp(`agentinbox ${group}`));
+    assert.equal(bareGroup.stderr, "");
+  }
 });
 
 test("cli accepts --json as a no-op compatibility flag on default JSON commands", () => {

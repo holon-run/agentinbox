@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { Command } from "commander";
 import { AdapterRegistry } from "./adapters";
 import { AgentInboxClient } from "./client";
 import { startControlServer } from "./control_server";
@@ -42,10 +43,16 @@ async function main(): Promise<void> {
   const normalized = shouldTreatJsonFlagAsNoop(detectedArgs)
     ? stripNoopJsonFlag(detectedArgs)
     : detectedArgs;
+  const shell = parseCommanderShell(normalized);
   const command = normalized[0];
 
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp(normalized.slice(1));
+    return;
+  }
+
+  if (shell.isBareGroup) {
+    printHelp([command]);
     return;
   }
 
@@ -1025,6 +1032,64 @@ async function main(): Promise<void> {
   throw new Error(`unknown command: ${normalized.join(" ")}`);
 }
 
+interface CommanderShellParse {
+  isBareGroup: boolean;
+}
+
+const COMMAND_SHELL_SPECS: Array<{ name: string; group: boolean; summary: string }> = [
+  { name: "serve", group: false, summary: "Run the AgentInbox control server." },
+  { name: "daemon", group: true, summary: "Manage the local AgentInbox daemon." },
+  { name: "host", group: true, summary: "Manage source hosts." },
+  { name: "stream", group: true, summary: "Manage source streams." },
+  { name: "follow", group: true, summary: "Create high-level source subscriptions." },
+  { name: "source", group: true, summary: "Manage source streams through the source alias." },
+  { name: "agent", group: true, summary: "Manage local agent registrations and activation targets." },
+  { name: "timer", group: true, summary: "Manage agent reminder timers." },
+  { name: "subscription", group: true, summary: "Manage source subscriptions." },
+  { name: "inbox", group: true, summary: "Read and manage agent inboxes." },
+  { name: "gc", group: false, summary: "Run garbage collection." },
+  { name: "deliver", group: true, summary: "Send outbound delivery actions." },
+  { name: "status", group: false, summary: "Show daemon status." },
+  { name: "version", group: false, summary: "Show CLI version." },
+];
+
+const COMMANDER_SHELL = createCommanderShell();
+
+function createCommanderShell(): Command {
+  const program = new Command();
+  program
+    .name("agentinbox")
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .exitOverride()
+    .configureOutput({
+      writeOut: () => {},
+      writeErr: () => {},
+    });
+
+  for (const spec of COMMAND_SHELL_SPECS) {
+    program
+      .command(`${spec.name} [args...]`)
+      .description(spec.summary)
+      .allowUnknownOption(true)
+      .allowExcessArguments(true);
+  }
+
+  return program;
+}
+
+function parseCommanderShell(args: string[]): CommanderShellParse {
+  const command = args[0] ?? null;
+  if (!command || command === "help" || command === "--help" || command === "-h") {
+    return { isBareGroup: false };
+  }
+
+  const spec = COMMANDER_SHELL.commands.find((item) => item.name() === command);
+  return {
+    isBareGroup: Boolean(COMMAND_SHELL_SPECS.find((item) => item.name === spec?.name())?.group && args.length === 1),
+  };
+}
+
 async function runServe(args: string[]): Promise<void> {
   const port = parseOptionalNumber(takeFlagValue(args, "--port"));
   const homeOverride = takeFlagValue(args, "--home");
@@ -1556,10 +1621,9 @@ function unexpectedFlags(args: string[], allowedFlags: string[]): string[] {
   return args.filter((token) => token.startsWith("--") && !allowed.has(token));
 }
 
-function printHelp(path: string[] = []): void {
-  const key = path[0] ?? "root";
-  const helpByKey: Record<string, string> = {
-    root: `agentinbox
+function renderRootHelp(): string {
+  const commands = COMMAND_SHELL_SPECS.map((spec) => `  ${spec.name}`).join("\n");
+  return `agentinbox
 
 Usage:
   agentinbox <command> [options]
@@ -1568,19 +1632,14 @@ Usage:
   agentinbox --version, -v
 
 Commands:
-  serve
-  daemon
-  follow
-  source
-  agent
-  timer
-  subscription
-  inbox
-  gc
-  deliver
-  status
-  version
-`,
+${commands}
+`;
+}
+
+function printHelp(path: string[] = []): void {
+  const key = path[0] ?? "root";
+  const helpByKey: Record<string, string> = {
+    root: renderRootHelp(),
     serve: `agentinbox serve
 
 Usage:
