@@ -139,6 +139,48 @@ class RecentMessagesFeishuUxcClient implements FeishuCallClient {
   }
 }
 
+class ChatDiscoveryFeishuUxcClient implements FeishuCallClient {
+  public calls: Array<Record<string, unknown>> = [];
+
+  async call(args: Record<string, unknown>) {
+    this.calls.push(args);
+    if (args.operation === "get:/im/v1/chats/{chat_id}") {
+      return {
+        data: {
+          code: 0,
+          data: {
+            chat_id: "oc_bottest",
+            name: "bottest",
+            description: "bot test group",
+            chat_type: "group",
+            member_count: 3,
+            is_bot_member: true,
+          },
+        },
+      };
+    }
+    return {
+      data: {
+        code: 0,
+        data: {
+          items: [
+            {
+              chat_id: "oc_bottest",
+              name: "bottest",
+              description: "bot test group",
+              chat_type: "group",
+              member_count: 3,
+              is_bot_member: true,
+            },
+          ],
+          page_token: "next_chat_page",
+          has_more: true,
+        },
+      },
+    };
+  }
+}
+
 function feishuMessage(input: { messageId: string; content: string; createTime: string }): Record<string, unknown> {
   return {
     message_id: input.messageId,
@@ -606,4 +648,73 @@ test("feishu source operation lists recent chat messages with explicit limit and
   assert.equal(payload.page_size, 3);
   assert.equal(payload.end_time, "1773491930");
   assert.equal(payload.page_token, "page_1");
+});
+
+test("feishu source operations discover visible chats", async () => {
+  const fake = new ChatDiscoveryFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const operationNames = feishuSourceOperations().map((operation) => operation.name);
+  assert.ok(operationNames.includes("list_chats"));
+  assert.ok(operationNames.includes("search_chats"));
+  assert.ok(operationNames.includes("get_chat"));
+
+  const listed = await invokeFeishuSourceOperation(source, "list_chats", { limit: 5, pageToken: "page_1" }, client);
+  assert.equal(fake.calls[0]?.operation, "get:/im/v1/chats");
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.auth, "feishu-tuptup");
+  assert.deepEqual(fake.calls[0]?.payload, {
+    page_size: 5,
+    page_token: "page_1",
+  });
+  assert.equal((listed.chats as Array<Record<string, unknown>>)[0]?.chatId, "oc_bottest");
+  assert.equal((listed.chats as Array<Record<string, unknown>>)[0]?.name, "bottest");
+  assert.equal((listed.chats as Array<Record<string, unknown>>)[0]?.memberCount, 3);
+  assert.equal((listed.chats as Array<Record<string, unknown>>)[0]?.isBotMember, true);
+  assert.equal(listed.pageToken, "next_chat_page");
+  assert.equal(listed.hasMore, true);
+
+  const searched = await invokeFeishuSourceOperation(source, "search_chats", { query: "bottest", limit: 10 }, client);
+  assert.equal(fake.calls[1]?.operation, "get:/im/v1/chats");
+  assert.deepEqual(fake.calls[1]?.payload, {
+    page_size: 50,
+  });
+  assert.equal((searched.chats as Array<Record<string, unknown>>)[0]?.chatId, "oc_bottest");
+
+  const fetched = await invokeFeishuSourceOperation(source, "get_chat", { chatId: "oc_bottest" }, client);
+  assert.equal(fake.calls[2]?.operation, "get:/im/v1/chats/{chat_id}");
+  assert.deepEqual(fake.calls[2]?.payload, {
+    chat_id: "oc_bottest",
+  });
+  assert.equal((fetched.chat as Record<string, unknown> | null)?.chatId, "oc_bottest");
+});
+
+test("feishu search_chats rejects blank queries after trimming", async () => {
+  const client = new FeishuUxcClient(new ChatDiscoveryFeishuUxcClient());
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await assert.rejects(
+    () => invokeFeishuSourceOperation(source, "search_chats", { query: "   " }, client),
+    /search_chats requires input.query/,
+  );
 });
