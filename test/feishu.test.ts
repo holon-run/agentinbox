@@ -223,6 +223,8 @@ test("feishu delivery adapter maps message replies and chat sends to uxc calls",
   await adapter.send({ kind: "reply", payload: { text: "hello" } } as never, replyAttempt);
   assert.equal(fake.calls[0]?.operation, "post:/im/v1/messages/{message_id}/reply");
   assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.schema_url, FEISHU_IM_SCHEMA_URL);
+  assert.equal(Object.hasOwn(fake.calls[0]?.payload as Record<string, unknown>, "uuid"), false);
+  assert.equal(Object.hasOwn(fake.calls[0]?.payload as Record<string, unknown>, "reply_in_thread"), false);
 
   const chatAttempt: DeliveryAttempt = {
     ...replyAttempt,
@@ -235,6 +237,7 @@ test("feishu delivery adapter maps message replies and chat sends to uxc calls",
   assert.equal(fake.calls[1]?.operation, "post:/im/v1/messages");
   assert.equal((fake.calls[1]?.payload as Record<string, unknown>)?.receive_id_type, "chat_id");
   assert.equal((fake.calls[1]?.options as Record<string, unknown>)?.schema_url, FEISHU_IM_SCHEMA_URL);
+  assert.equal(Object.hasOwn(fake.calls[1]?.payload as Record<string, unknown>, "uuid"), false);
 });
 
 test("feishu delivery operations expose canonical text, rich text, and file actions", () => {
@@ -260,6 +263,18 @@ test("feishu delivery invoke maps send_text to the canonical outbound path", asy
     targetRef: "oc_chat",
   }, "send_text", { text: "team update" }, client);
   assert.equal(fake.calls[0]?.operation, "post:/im/v1/messages");
+});
+
+test("feishu delivery includes optional uuid only when provided", async () => {
+  const fake = new FakeFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  await invokeFeishuDeliveryOperation({
+    provider: "feishu",
+    surface: "chat_message",
+    targetRef: "oc_chat",
+  }, "send_text", { text: "team update", uuid: "msg-1" }, client);
+
+  assert.equal((fake.calls[0]?.payload as Record<string, unknown>)?.uuid, "msg-1");
 });
 
 test("feishu delivery invoke maps send_post blocks to Feishu post payloads", async () => {

@@ -54,13 +54,13 @@ export class FeishuUxcClient {
     await this.client.call({
       endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
       operation: "post:/im/v1/messages",
-      payload: {
+      payload: compactPayload({
         receive_id_type: "chat_id",
         receive_id: input.chatId,
         msg_type: input.msgType,
         content: input.content,
-        uuid: input.uuid ?? null,
-      },
+        uuid: input.uuid,
+      }),
       options: {
         auth: input.auth,
         schema_url: input.schemaUrl ?? FEISHU_IM_SCHEMA_URL,
@@ -81,13 +81,13 @@ export class FeishuUxcClient {
     await this.client.call({
       endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
       operation: "post:/im/v1/messages/{message_id}/reply",
-      payload: {
+      payload: compactPayload({
         message_id: input.messageId,
         msg_type: input.msgType,
         content: input.content,
-        reply_in_thread: input.replyInThread ?? null,
-        uuid: input.uuid ?? null,
-      },
+        reply_in_thread: input.replyInThread,
+        uuid: input.uuid,
+      }),
       options: {
         auth: input.auth,
         schema_url: input.schemaUrl ?? FEISHU_IM_SCHEMA_URL,
@@ -1206,6 +1206,10 @@ function asRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return value as Record<string, unknown>;
+}
+
+function compactPayload(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
 function asString(value: unknown): string | null {
