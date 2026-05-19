@@ -203,6 +203,48 @@ export class FeishuUxcClient {
     }
     return openId;
   }
+
+  async listChats(input: {
+    endpoint?: string;
+    schemaUrl?: string;
+    auth?: string;
+    pageSize?: number;
+    pageToken?: string;
+  }): Promise<unknown> {
+    const response = await this.client.call({
+      endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
+      operation: "get:/im/v1/chats",
+      payload: compactPayload({
+        page_size: input.pageSize ?? 20,
+        page_token: input.pageToken,
+      }),
+      options: {
+        auth: input.auth,
+        schema_url: input.schemaUrl ?? FEISHU_IM_SCHEMA_URL,
+      },
+    });
+    return response.data;
+  }
+
+  async getChat(input: {
+    endpoint?: string;
+    schemaUrl?: string;
+    auth?: string;
+    chatId: string;
+  }): Promise<unknown> {
+    const response = await this.client.call({
+      endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
+      operation: "get:/im/v1/chats/{chat_id}",
+      payload: {
+        chat_id: input.chatId,
+      },
+      options: {
+        auth: input.auth,
+        schema_url: input.schemaUrl ?? FEISHU_IM_SCHEMA_URL,
+      },
+    });
+    return response.data;
+  }
 }
 
 export class FeishuDeliveryAdapter {
@@ -543,6 +585,59 @@ export function feishuSourceOperations(): SourceOperationDescriptor[] {
         required: ["chatId", "messages", "warnings"],
       },
     },
+    {
+      name: "list_chats",
+      title: "List Chats",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          limit: { type: "number", minimum: 1, maximum: 50 },
+          pageToken: { type: "string", minLength: 1 },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["chats", "warnings"],
+      },
+    },
+    {
+      name: "search_chats",
+      title: "Search Chats",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["query"],
+        properties: {
+          query: { type: "string", minLength: 1 },
+          limit: { type: "number", minimum: 1, maximum: 50 },
+          pageToken: { type: "string", minLength: 1 },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["chats", "warnings"],
+      },
+    },
+    {
+      name: "get_chat",
+      title: "Get Chat",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["chatId"],
+        properties: {
+          chatId: { type: "string", minLength: 1 },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["chat", "warnings"],
+      },
+    },
   ];
 }
 
@@ -554,6 +649,15 @@ export async function invokeFeishuSourceOperation(
 ): Promise<Record<string, unknown>> {
   if (operation === "list_recent_messages") {
     return listRecentFeishuMessages(source, input, client);
+  }
+  if (operation === "list_chats") {
+    return listFeishuChats(source, input, client);
+  }
+  if (operation === "search_chats") {
+    return searchFeishuChats(source, input, client);
+  }
+  if (operation === "get_chat") {
+    return getFeishuChat(source, input, client);
   }
   if (operation !== "get_message_context") {
     throw new Error(`unknown Feishu source operation: ${operation}`);
@@ -607,6 +711,98 @@ export async function invokeFeishuSourceOperation(
       replyMode: "reply",
     },
   };
+}
+
+async function listFeishuChats(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<Record<string, unknown>> {
+  const config = parseFeishuSourceConfig(source);
+  const raw = await withFeishuChatDiscoveryError("list_chats", () => client.listChats({
+    endpoint: config.endpoint,
+    schemaUrl: config.schemaUrl,
+    auth: config.uxcAuth,
+    pageSize: boundedPositiveInteger(input.limit, 20, 50),
+    pageToken: asString(input.pageToken) ?? undefined,
+  }));
+  return feishuChatsResult(raw);
+}
+
+async function searchFeishuChats(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<Record<string, unknown>> {
+  const query = asString(input.query)?.trim();
+  if (!query) {
+    throw new Error("search_chats requires input.query");
+  }
+  const config = parseFeishuSourceConfig(source);
+  const limit = boundedPositiveInteger(input.limit, 20, 50);
+  const raw = await withFeishuChatDiscoveryError("search_chats", () => client.listChats({
+    endpoint: config.endpoint,
+    schemaUrl: config.schemaUrl,
+    auth: config.uxcAuth,
+    pageSize: 50,
+    pageToken: asString(input.pageToken) ?? undefined,
+  }));
+  return feishuChatsResult(raw, searchFeishuChatResults(normalizeFeishuChats(raw), query).slice(0, limit));
+}
+
+async function getFeishuChat(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<Record<string, unknown>> {
+  const chatId = asString(input.chatId);
+  if (!chatId) {
+    throw new Error("get_chat requires input.chatId");
+  }
+  const config = parseFeishuSourceConfig(source);
+  const raw = await withFeishuChatDiscoveryError("get_chat", () => client.getChat({
+    endpoint: config.endpoint,
+    schemaUrl: config.schemaUrl,
+    auth: config.uxcAuth,
+    chatId,
+  }));
+  return {
+    chat: normalizeFeishuChat(raw),
+    warnings: [],
+  };
+}
+
+async function withFeishuChatDiscoveryError<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${operation} failed; ensure the configured Feishu UXC auth can read visible chats: ${message}`, { cause: error });
+  }
+}
+
+function feishuChatsResult(raw: unknown, chats: NormalizedFeishuChat[] = normalizeFeishuChats(raw)): Record<string, unknown> {
+  const pageToken = feishuResponsePageToken(raw);
+  const hasMore = feishuResponseHasMore(raw);
+  return {
+    chats,
+    warnings: [],
+    ...(pageToken ? { pageToken } : {}),
+    ...(hasMore != null ? { hasMore } : {}),
+  };
+}
+
+function searchFeishuChatResults(chats: NormalizedFeishuChat[], query: string): NormalizedFeishuChat[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return [];
+  }
+  return chats.filter((chat) => {
+    const fields = [chat.chatId, chat.name, chat.description, chat.type]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase());
+    return fields.some((value) => value.includes(needle));
+  });
 }
 
 async function listRecentFeishuMessages(
@@ -922,6 +1118,16 @@ interface NormalizedFeishuMessage {
   raw: Record<string, unknown>;
 }
 
+interface NormalizedFeishuChat {
+  chatId: string;
+  name: string | null;
+  description: string | null;
+  type: string | null;
+  memberCount: number | null;
+  isBotMember: boolean | null;
+  raw: Record<string, unknown>;
+}
+
 function feishuFollowSourceConfig(source: SourceStream): Record<string, unknown> {
   const config = parseFeishuSourceConfig(source);
   return {
@@ -971,6 +1177,28 @@ function normalizeFeishuMessages(raw: unknown): NormalizedFeishuMessage[] {
   return items
     .map((item) => normalizeFeishuMessage(item))
     .filter((item): item is NormalizedFeishuMessage => item !== null);
+}
+
+function normalizeFeishuChat(raw: unknown): NormalizedFeishuChat | null {
+  const chat = firstFeishuChat(raw);
+  if (!chat) {
+    return null;
+  }
+  return {
+    chatId: asString(chat.chat_id) ?? "",
+    name: asString(chat.name) ?? asString(chat.chat_name),
+    description: asString(chat.description),
+    type: asString(chat.chat_type) ?? asString(chat.chat_mode) ?? asString(chat.type),
+    memberCount: asNumber(chat.member_count) ?? asNumber(chat.members_count) ?? asNumber(chat.user_count),
+    isBotMember: asBoolean(chat.is_bot_member) ?? asBoolean(chat.bot_member) ?? asBoolean(chat.is_member),
+    raw: chat,
+  };
+}
+
+function normalizeFeishuChats(raw: unknown): NormalizedFeishuChat[] {
+  return feishuChatItems(raw)
+    .map((item) => normalizeFeishuChat(item))
+    .filter((item): item is NormalizedFeishuChat => item !== null);
 }
 
 async function fetchFeishuChatWindow(input: {
@@ -1086,6 +1314,42 @@ function feishuMessageItems(raw: unknown): Record<string, unknown>[] {
           ? raw
           : [];
   return items.map((item) => asRecord(item)).filter((item) => Object.keys(item).length > 0);
+}
+
+function firstFeishuChat(raw: unknown): Record<string, unknown> | null {
+  const items = feishuChatItems(raw);
+  if (items[0]) {
+    return items[0];
+  }
+  const record = asRecord(raw);
+  const data = asRecord(record.data);
+  const nestedData = asRecord(data.data);
+  if (asString(nestedData.chat_id)) {
+    return nestedData;
+  }
+  if (asString(data.chat_id)) {
+    return data;
+  }
+  if (asString(record.chat_id)) {
+    return record;
+  }
+  return null;
+}
+
+function feishuChatItems(raw: unknown): Record<string, unknown>[] {
+  const record = asRecord(raw);
+  const data = asRecord(record.data);
+  const nestedData = asRecord(data.data);
+  const items = Array.isArray(nestedData.items)
+    ? nestedData.items
+    : Array.isArray(data.items)
+      ? data.items
+      : Array.isArray(record.items)
+        ? record.items
+        : Array.isArray(raw)
+          ? raw
+          : [];
+  return items.map((item) => asRecord(item)).filter((item) => asString(item.chat_id));
 }
 
 function messageContentString(message: Record<string, unknown>): string | null {
@@ -1300,6 +1564,14 @@ function compactPayload(input: Record<string, unknown>): Record<string, unknown>
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
 }
 
 function asStringArray(value: unknown): string[] | null {

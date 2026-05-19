@@ -44,6 +44,23 @@ agentinbox follow feishu mentions \
 
 ## Follow One Chat
 
+Feishu/Lark `chat_id` values are API identifiers. Users normally see group
+names in the app UI, not `oc_xxx` ids. If the source is already configured, use
+chat discovery operations to resolve a group name before creating a
+chat-scoped follow:
+
+```bash
+agentinbox source invoke <sourceId> \
+  --operation search_chats \
+  --input-json '{"query":"bottest","limit":10}'
+```
+
+Use `list_chats` to browse visible chats and `get_chat` to inspect a known
+`chatId`. Results only include chats visible to the configured UXC
+Feishu/Lark credential. `search_chats` filters the visible chat page by name or
+identifier; pass the returned `pageToken` to continue searching later pages
+when necessary.
+
 If the workflow is intentionally limited to one group, use the chat-scoped
 templates:
 
@@ -62,9 +79,9 @@ agentinbox follow feishu mention \
   --config-json '{"uxcAuth":"feishu-default"}'
 ```
 
-Feishu/Lark `chat_id` values are API identifiers. Users normally see group
-names in the app UI, not `oc_xxx` ids. Resolve them with Feishu/Lark IM tools
-before using a chat-scoped follow, or prefer `feishu.mentions`.
+If you do not need a chat-scoped workflow, prefer `feishu.mentions`; it follows
+bot mentions across chats visible to the app event stream without requiring a
+specific `chatId`.
 
 ## Read, Add Context, And Reply
 
