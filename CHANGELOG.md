@@ -12,6 +12,17 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.0.5] - 2026-05-19
+
+### Added
+
+- Added Feishu IM source operations for recent message context lookup and chat
+  discovery, including `list_recent_messages`, `list_chats`, `search_chats`,
+  and `get_chat`.
+- Added a Commander-backed CLI command shell so bare command groups such as
+  `agentinbox agent` print group help while dynamic provider/template/action
+  commands remain runtime-discovered.
+
 ## [1.0.4] - 2026-05-15
 
 ### Fixed
