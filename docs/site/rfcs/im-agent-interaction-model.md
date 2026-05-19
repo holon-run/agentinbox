@@ -191,7 +191,7 @@ Illustrative examples:
 agentinbox follow im chat --arg chatId=oc_xxx
 agentinbox follow im mention --arg chatId=oc_xxx --arg openId=ou_agent
 agentinbox follow feishu mention --arg chatId=oc_xxx --arg openId=ou_agent
-agentinbox follow feishu mentions --arg openId=ou_agent
+agentinbox follow feishu mentions
 ```
 
 The compiled subscription should use normal filter semantics.
@@ -210,7 +210,9 @@ Example mention filter:
 For IM-native onboarding, a provider can also expose a broader mention intent
 that does not require the user or agent to know a group `chatId` up front.
 For Feishu/Lark, `feishu.mentions` follows all chats visible to the app event
-stream and filters only by `mentionOpenIds`:
+stream and filters only by `mentionOpenIds`. If the caller does not pass an
+explicit `openId`, the Feishu/Lark module should resolve the configured app
+bot's `open_id` through the provider credential before compiling the filter:
 
 ```json
 {

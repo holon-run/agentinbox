@@ -24,14 +24,23 @@ For most agent bot workflows, use the global mention template:
 ```bash
 agentinbox follow feishu mentions \
   --agent-id <agentId> \
-  --arg openId=<botOpenId> \
   --config-json '{"uxcAuth":"feishu-default"}'
 ```
 
-This follows messages that mention `<botOpenId>` across chats visible to the
-configured Feishu/Lark app event stream. It does not mean every chat in the
-tenant. The app must be allowed to receive those events, and the bot normally
-needs to be in the chat.
+By default, `AgentInbox` resolves the configured app bot's `open_id` from the
+Feishu/Lark credential and follows messages that mention that bot across chats
+visible to the app event stream. It does not mean every chat in the tenant. The
+app must be allowed to receive those events, and the bot normally needs to be
+in the chat.
+
+To follow mentions for another user or bot explicitly, pass `openId`:
+
+```bash
+agentinbox follow feishu mentions \
+  --agent-id <agentId> \
+  --arg openId=<openId> \
+  --config-json '{"uxcAuth":"feishu-default"}'
+```
 
 ## Follow One Chat
 

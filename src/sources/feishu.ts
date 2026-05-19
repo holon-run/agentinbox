@@ -1,4 +1,7 @@
 import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   AppendSourceEventInput,
   DeliveryAttempt,
@@ -15,6 +18,7 @@ import type { ExpandFollowTemplateInput, ExpandedFollowPlan } from "./remote_mod
 export const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
 export const FEISHU_IM_SCHEMA_URL =
   "https://raw.githubusercontent.com/holon-run/uxc/main/skills/feishu-openapi-skill/references/feishu-im.openapi.json";
+const FEISHU_BOT_SCHEMA_FILE = join(tmpdir(), "agentinbox-feishu-bot.openapi.json");
 export const DEFAULT_FEISHU_EVENT_TYPES = ["im.message.receive_v1"];
 const DEFAULT_CONTEXT_BOUND_SECONDS = 7 * 24 * 60 * 60;
 
@@ -31,7 +35,7 @@ export interface FeishuCallClient {
     endpoint: string;
     operation: string;
     payload?: Record<string, unknown>;
-    options?: { auth?: string; schema_url?: string };
+    options?: { auth?: string; schema_url?: string; refresh_schema?: boolean; no_cache?: boolean };
   }): Promise<{ data: unknown }>;
 }
 
@@ -172,6 +176,28 @@ export class FeishuUxcClient {
       },
     });
     return response.data;
+  }
+
+  async getBotOpenId(input: {
+    endpoint?: string;
+    auth?: string;
+  }): Promise<string> {
+    const response = await this.client.call({
+      endpoint: input.endpoint ?? FEISHU_OPENAPI_ENDPOINT,
+      operation: "get:/bot/v3/info",
+      payload: {},
+      options: {
+        auth: input.auth,
+        schema_url: ensureFeishuBotSchemaFile(),
+        refresh_schema: true,
+        no_cache: true,
+      },
+    });
+    const openId = findStringField(response.data, "open_id");
+    if (!openId) {
+      throw new Error("Feishu bot info response did not include bot.open_id");
+    }
+    return openId;
   }
 }
 
@@ -403,13 +429,16 @@ export function feishuFollowTemplateSpec(): FollowTemplateSpec[] {
       label: "Feishu Mentions",
       description: "Follow messages across visible Feishu/Lark chats that mention a user or bot.",
       argsSchema: [
-        { name: "openId", type: "string", required: true, description: "Mentioned user or bot open_id." },
+        { name: "openId", type: "string", required: false, description: "Mentioned user or bot open_id. Defaults to the configured app bot open_id." },
       ],
     },
   ];
 }
 
-export function expandFeishuFollowTemplate(input: ExpandFollowTemplateInput): ExpandedFollowPlan | null {
+export async function expandFeishuFollowTemplate(
+  input: ExpandFollowTemplateInput,
+  client: FeishuUxcClient = new FeishuUxcClient(),
+): Promise<ExpandedFollowPlan | null> {
   if (input.template !== "chat" && input.template !== "mention" && input.template !== "mentions") {
     return null;
   }
@@ -424,7 +453,7 @@ export function expandFeishuFollowTemplate(input: ExpandFollowTemplateInput): Ex
 
   let trackedResourceRef = chatId ? `chat:${chatId}` : "mentions";
   if (input.template === "mention" || input.template === "mentions") {
-    const openId = asString(args.openId);
+    const openId = asString(args.openId) ?? await resolveFeishuMentionOpenId(input, config, client);
     if (!openId) {
       throw new Error(`follow template feishu.${input.template} requires argument openId`);
     }
@@ -452,6 +481,20 @@ export function expandFeishuFollowTemplate(input: ExpandFollowTemplateInput): Ex
       },
     ],
   };
+}
+
+async function resolveFeishuMentionOpenId(
+  input: ExpandFollowTemplateInput,
+  config: FeishuBotSourceConfig,
+  client: FeishuUxcClient,
+): Promise<string | null> {
+  if (input.template !== "mentions") {
+    return null;
+  }
+  return client.getBotOpenId({
+    endpoint: config.endpoint,
+    auth: config.uxcAuth ?? input.source.configRef ?? undefined,
+  });
 }
 
 export function feishuSourceOperations(): SourceOperationDescriptor[] {
@@ -1177,3 +1220,52 @@ function asStringArray(value: unknown): string[] | null {
     .map((item) => asString(item))
     .filter((item): item is string => Boolean(item));
 }
+
+function ensureFeishuBotSchemaFile(): string {
+  const body = JSON.stringify(FEISHU_BOT_OPENAPI_SCHEMA);
+  writeFileSync(FEISHU_BOT_SCHEMA_FILE, body, "utf8");
+  return FEISHU_BOT_SCHEMA_FILE;
+}
+
+const FEISHU_BOT_OPENAPI_SCHEMA = {
+  openapi: "3.0.3",
+  info: {
+    title: "Feishu Bot Info",
+    version: "1.0.0",
+  },
+  servers: [
+    {
+      url: FEISHU_OPENAPI_ENDPOINT,
+    },
+  ],
+  // Feishu's docs site does not currently expose this as a stable
+  // machine-readable OpenAPI document to UXC, so keep the tiny operation
+  // schema needed for bot self-identification close to the adapter.
+  paths: {
+    "/bot/v3/info": {
+      get: {
+        operationId: "get:/bot/v3/info",
+        summary: "Get bot information for the current app",
+        responses: {
+          "200": {
+            description: "OK",
+          },
+        },
+        security: [
+          {
+            bearerAuth: [],
+          },
+        ],
+      },
+    },
+  },
+  components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: "http",
+        scheme: "bearer",
+        bearerFormat: "tenant_access_token",
+      },
+    },
+  },
+} as const;

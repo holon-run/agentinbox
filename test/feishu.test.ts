@@ -22,6 +22,9 @@ class FakeFeishuUxcClient implements FeishuCallClient {
 
   async call(args: Record<string, unknown>) {
     this.calls.push(args);
+    if (args.operation === "get:/bot/v3/info") {
+      return { data: { code: 0, bot: { open_id: "ou_resolved_bot" } } };
+    }
     if (args.operation === "post:/im/v1/files") {
       return { data: { code: 0, data: { file_key: "file_uploaded" } } };
     }
@@ -331,7 +334,7 @@ test("feishu delivery invoke uploads local paths before sending file messages", 
   assert.deepEqual(JSON.parse(String(replyPayload.content)), { file_key: "file_uploaded" });
 });
 
-test("feishu follow templates expand chat and mention subscriptions over a shared uxc source", () => {
+test("feishu follow templates expand chat and mention subscriptions over a shared uxc source", async () => {
   assert.deepEqual(feishuFollowTemplateSpec().map((template) => template.templateId), [
     "feishu.chat",
     "feishu.mention",
@@ -349,7 +352,7 @@ test("feishu follow templates expand chat and mention subscriptions over a share
     createdAt: "",
     updatedAt: "",
   };
-  const plan = expandFeishuFollowTemplate({
+  const plan = await expandFeishuFollowTemplate({
     template: "mention",
     args: { chatId: "oc_chat", openId: "ou_bot" },
     source,
@@ -368,7 +371,7 @@ test("feishu follow templates expand chat and mention subscriptions over a share
   });
 });
 
-test("feishu mentions follow template does not require a chat id", () => {
+test("feishu mentions follow template does not require a chat id", async () => {
   const source: SourceStream = {
     sourceId: "preview",
     sourceType: "feishu_bot",
@@ -380,7 +383,7 @@ test("feishu mentions follow template does not require a chat id", () => {
     createdAt: "",
     updatedAt: "",
   };
-  const plan = expandFeishuFollowTemplate({
+  const plan = await expandFeishuFollowTemplate({
     template: "mentions",
     args: { openId: "ou_bot" },
     source,
@@ -397,6 +400,37 @@ test("feishu mentions follow template does not require a chat id", () => {
     expr: "contains(metadata.mentionOpenIds, \"ou_bot\")",
   });
   assert.equal(plan.subscriptions[0]?.trackedResourceRef, "mention:ou_bot");
+});
+
+test("feishu mentions follow template resolves the configured bot open id by default", async () => {
+  const fake = new FakeFeishuUxcClient();
+  const client = new FeishuUxcClient(fake);
+  const source: SourceStream = {
+    sourceId: "preview",
+    sourceType: "feishu_bot",
+    sourceKey: "preview",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: "",
+    updatedAt: "",
+  };
+  const plan = await expandFeishuFollowTemplate({
+    template: "mentions",
+    args: {},
+    source,
+  }, client);
+
+  assert.ok(plan);
+  assert.deepEqual(plan.subscriptions[0]?.filter, {
+    expr: "contains(metadata.mentionOpenIds, \"ou_resolved_bot\")",
+  });
+  assert.equal(plan.subscriptions[0]?.trackedResourceRef, "mention:ou_resolved_bot");
+  assert.equal(fake.calls[0]?.operation, "get:/bot/v3/info");
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.auth, "feishu-tuptup");
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.refresh_schema, true);
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.no_cache, true);
 });
 
 test("feishu source operation fetches anchor message context and keeps permission warnings non-fatal", async () => {

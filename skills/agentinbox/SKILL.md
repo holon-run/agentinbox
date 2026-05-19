@@ -168,11 +168,15 @@ the source has no follow template.
 
 Feishu/Lark follows require a UXC credential that can host the Feishu app
 connection. For bot mention workflows, prefer the global mention template so
-the user does not need to discover a group `chat_id` first:
+the user does not need to discover a group `chat_id` or bot `open_id` first:
 
 ```bash
-agentinbox follow feishu mentions --agent-id <agentId> --arg openId=<botOpenId> --config-json '{"uxcAuth":"feishu-default"}'
+agentinbox follow feishu mentions --agent-id <agentId> --config-json '{"uxcAuth":"feishu-default"}'
 ```
+
+When `openId` is omitted, `AgentInbox` resolves the configured app bot's
+`open_id` through UXC before creating the subscription. Pass `--arg
+openId=<openId>` only when following mentions for a different user or bot.
 
 Use the chat-scoped templates when the task is explicitly limited to one group:
 
