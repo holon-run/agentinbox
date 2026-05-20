@@ -1991,6 +1991,8 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("deliver send is not supported") ||
     message.startsWith("deliveryHandle requires") ||
     message.startsWith("delivery operations are not supported") ||
+    message.startsWith("unsupported delivery surface") ||
+    message.startsWith("unsupported delivery operation") ||
     message.startsWith("source operations are not supported") ||
     message.startsWith("unknown GitHub delivery operation") ||
     message.startsWith("unknown Feishu delivery operation") ||

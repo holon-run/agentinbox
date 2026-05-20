@@ -1948,6 +1948,12 @@ export class AgentInboxService {
     const handle = resolveDeliveryHandle(request);
     const source = resolveDeliverySource(this.store, request.sourceId, handle);
     const operations = await this.adapters.listDeliveryOperations(source, handle);
+    if (operations === null) {
+      throw new Error(`delivery operations are not supported for provider ${handle.provider}`);
+    }
+    if (operations.length === 0) {
+      throw new Error(noDeliveryOperationsMessage(handle));
+    }
     return {
       sourceId: source?.sourceId ?? null,
       handle,
@@ -1960,6 +1966,15 @@ export class AgentInboxService {
   ): Promise<DeliveryAttempt & { note: string; operation: string }> {
     const handle = resolveDeliveryHandle(request);
     const source = resolveDeliverySource(this.store, request.sourceId, handle);
+    const operations = await this.adapters.listDeliveryOperations(source, handle);
+    if (operations !== null) {
+      if (operations.length === 0) {
+        throw new Error(noDeliveryOperationsMessage(handle));
+      }
+      if (!operations.some((operation) => operation.name === request.operation)) {
+        throw new Error(unsupportedDeliveryOperationMessage(handle, request.operation, operations));
+      }
+    }
     const attempt: DeliveryAttempt = {
       deliveryId: generateCanonicalId("dlv"),
       provider: handle.provider,
@@ -1985,9 +2000,9 @@ export class AgentInboxService {
     attempt: DeliveryAttempt,
   ): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
     const operations = await this.adapters.listDeliveryOperations(source, handle);
-    const canonicalOperation = operations.find((operation) => operation.canonicalTextAlias);
+    const canonicalOperation = operations?.find((operation) => operation.canonicalTextAlias);
     if (!canonicalOperation) {
-      throw new Error(`deliver send is not supported for ${handle.provider}/${handle.surface}; use deliver invoke`);
+      throw new Error(deliverSendUnsupportedMessage(handle, operations));
     }
     const input = payload.text != null ? { ...payload, body: String(payload.text) } : payload;
     return this.adapters.invokeDeliveryOperation(source, handle, canonicalOperation.name, input, attempt);
@@ -4486,6 +4501,54 @@ function listHostStreamKinds(hostType: SourceHost["hostType"]): string[] {
     case "remote_source":
       return ["default"];
   }
+}
+
+const KNOWN_DELIVERY_SURFACES: Record<string, string[]> = {
+  feishu: ["message_reply", "chat_message"],
+  github: ["issue_comment", "pull_request_comment", "review_comment"],
+};
+
+function unsupportedDeliverySurfaceMessage(handle: DeliveryHandle): string {
+  const supported = KNOWN_DELIVERY_SURFACES[handle.provider];
+  const supportedHint = supported?.length
+    ? ` Supported surfaces for ${handle.provider}: ${supported.join(", ")}.`
+    : "";
+  return `unsupported delivery surface for ${handle.provider}: ${handle.surface}.${supportedHint} ${deliveryActionsHelp(handle)}`;
+}
+
+function noDeliveryOperationsMessage(handle: DeliveryHandle): string {
+  if (!isKnownDeliverySurface(handle)) {
+    return unsupportedDeliverySurfaceMessage(handle);
+  }
+  return `delivery operations are not supported for ${handle.provider}/${handle.surface}. ${deliveryActionsHelp(handle)}`;
+}
+
+function unsupportedDeliveryOperationMessage(
+  handle: DeliveryHandle,
+  operation: string,
+  operations: DeliveryOperationDescriptor[],
+): string {
+  const names = operations.map((item) => item.name).join(", ");
+  return `unsupported delivery operation for ${handle.provider}/${handle.surface}: ${operation}. Available operations: ${names}. ${deliveryActionsHelp(handle)}`;
+}
+
+function deliverSendUnsupportedMessage(handle: DeliveryHandle, operations: DeliveryOperationDescriptor[] | null): string {
+  if (!operations || operations.length === 0) {
+    if (!isKnownDeliverySurface(handle)) {
+      return unsupportedDeliverySurfaceMessage(handle);
+    }
+    return `deliver send is not supported for ${handle.provider}/${handle.surface}. ${deliveryActionsHelp(handle)}`;
+  }
+  const names = operations.map((item) => item.name).join(", ");
+  return `deliver send is not supported for ${handle.provider}/${handle.surface}; use deliver invoke with one of: ${names}. ${deliveryActionsHelp(handle)}`;
+}
+
+function deliveryActionsHelp(handle: DeliveryHandle): string {
+  return `Run \`agentinbox deliver actions --provider ${handle.provider} --surface ${handle.surface} --target ${handle.targetRef}\` to inspect supported operations and input schemas.`;
+}
+
+function isKnownDeliverySurface(handle: DeliveryHandle): boolean {
+  return KNOWN_DELIVERY_SURFACES[handle.provider]?.includes(handle.surface) === true;
 }
 
 function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: string; type: string; description: string; required?: boolean }> {
