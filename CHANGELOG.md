@@ -12,6 +12,17 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.1.0] - 2026-05-20
+
+### Changed
+
+- Improved dynamic delivery command failures so unsupported surfaces and
+  operations return HTTP 400 with actionable `agentinbox deliver actions`
+  guidance instead of unhelpful 500 responses.
+- Documented `chat_message` as the Feishu surface for sending new messages to a
+  chat, while keeping unsupported names such as `group_message` rejected with a
+  clear supported-surface hint.
+
 ## [1.0.5] - 2026-05-19
 
 ### Added
