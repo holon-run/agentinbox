@@ -129,3 +129,27 @@ agentinbox deliver invoke \
 
 Rich text and files are available through delivery operations such as
 `send_post`, `send_file`, and `send_file_from_path`.
+
+Send a new message to a chat by using the `chat_message` surface and the chat
+ID as the target:
+
+```bash
+agentinbox deliver invoke \
+  --provider feishu \
+  --surface chat_message \
+  --target '<chatId>' \
+  --operation send_text \
+  --input-json '{"text":"Daily report","uxcAuth":"feishu-default"}'
+```
+
+Use `deliver actions` to inspect available operations and input schemas:
+
+```bash
+agentinbox deliver actions \
+  --provider feishu \
+  --surface chat_message \
+  --target '<chatId>'
+```
+
+The Feishu adapter currently supports `message_reply` and `chat_message`
+surfaces.

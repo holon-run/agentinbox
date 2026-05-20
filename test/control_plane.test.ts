@@ -664,6 +664,28 @@ test("control plane validates sources/events occurredAt and deliveries/send requ
       });
       assert.equal(mismatchedSend.statusCode, 400);
       assert.match(mismatchedSend.data.error, /deliver send is not supported/);
+
+      const unsupportedFeishuSurface = await client.request<{ error: string }>("/deliveries/actions", {
+        provider: "feishu",
+        surface: "group_message",
+        targetRef: "oc_chat",
+      });
+      assert.equal(unsupportedFeishuSurface.statusCode, 400);
+      assert.match(unsupportedFeishuSurface.data.error, /unsupported delivery surface for feishu: group_message/);
+      assert.match(unsupportedFeishuSurface.data.error, /Supported surfaces for feishu: message_reply, chat_message/);
+      assert.match(unsupportedFeishuSurface.data.error, /agentinbox deliver actions --provider feishu --surface group_message --target oc_chat/);
+
+      const unknownFeishuOperation = await client.request<{ error: string }>("/deliveries/invoke", {
+        provider: "feishu",
+        surface: "chat_message",
+        targetRef: "oc_chat",
+        operation: "send_group_message",
+        input: {},
+      });
+      assert.equal(unknownFeishuOperation.statusCode, 400);
+      assert.match(unknownFeishuOperation.data.error, /unsupported delivery operation for feishu\/chat_message: send_group_message/);
+      assert.match(unknownFeishuOperation.data.error, /Available operations: send_text, send_post, send_file, send_file_from_path/);
+      assert.match(unknownFeishuOperation.data.error, /agentinbox deliver actions --provider feishu --surface chat_message --target oc_chat/);
     } finally {
       await started.close();
     }
@@ -714,6 +736,31 @@ test("control plane exposes delivery actions and invoke for remote modules", asy
   },
   async invokeDeliveryOperation(input) {
     return { status: "sent", note: "invoked " + input.operation + " for " + input.handle.targetRef };
+  }
+};`,
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(moduleDir, "invoke-only-delivery-hook.mjs"),
+    `export default {
+  id: "demo.invoke-only-delivery-hook",
+  validateConfig() {},
+  buildManagedSourceSpec() {
+    return {
+      endpoint: "https://example.com",
+      mode: "poll",
+      poll_config: {
+        interval_secs: 30,
+        extract_items_pointer: "",
+        checkpoint_strategy: { type: "item_key", item_key_pointer: "/id", seen_window: 32 }
+      }
+    };
+  },
+  mapRawEvent() {
+    return null;
+  },
+  async invokeDeliveryOperation(input) {
+    return { status: "sent", note: "invoke-only " + input.operation + " for " + input.handle.targetRef };
   }
 };`,
     "utf8",
@@ -776,6 +823,45 @@ test("control plane exposes delivery actions and invoke for remote modules", asy
       assert.equal(invoke.data.status, "sent");
       assert.equal(invoke.data.operation, "ack_remote_event");
       assert.match(invoke.data.note, /invoked ack_remote_event/);
+
+      const invokeOnlyHost = await client.request<{ hostId: string }>("/hosts", {
+        hostType: "remote_source",
+        hostKey: "demo-invoke-only-delivery",
+        config: {},
+      });
+      assert.equal(invokeOnlyHost.statusCode, 200);
+      const invokeOnlySource = await client.request<{ sourceId: string }>("/sources", {
+        hostId: invokeOnlyHost.data.hostId,
+        streamKind: "default",
+        streamKey: "demo-invoke-only-delivery",
+        config: {
+          modulePath: "invoke-only-delivery-hook.mjs",
+          moduleConfig: {},
+        },
+      });
+      assert.equal(invokeOnlySource.statusCode, 200);
+
+      const invokeOnlyActions = await client.request<{ error: string }>("/deliveries/actions", {
+        sourceId: invokeOnlySource.data.sourceId,
+        provider: "demo",
+        surface: "ticket",
+        targetRef: "ticket:43",
+      });
+      assert.equal(invokeOnlyActions.statusCode, 400);
+      assert.match(invokeOnlyActions.data.error, /delivery operations are not supported/);
+
+      const invokeOnlyResult = await client.request<{ status: string; note: string; operation: string }>("/deliveries/invoke", {
+        sourceId: invokeOnlySource.data.sourceId,
+        provider: "demo",
+        surface: "ticket",
+        targetRef: "ticket:43",
+        operation: "custom_dynamic_operation",
+        input: { body: "acked" },
+      });
+      assert.equal(invokeOnlyResult.statusCode, 200);
+      assert.equal(invokeOnlyResult.data.status, "sent");
+      assert.equal(invokeOnlyResult.data.operation, "custom_dynamic_operation");
+      assert.match(invokeOnlyResult.data.note, /invoke-only custom_dynamic_operation/);
     } finally {
       await started.close();
     }
@@ -1972,6 +2058,40 @@ test("cli deliver invoke requires input-json", () => {
       result.stderr,
       /usage: agentinbox deliver invoke \(\-\-handle-json JSON \| \-\-provider PROVIDER \-\-surface SURFACE \-\-target TARGET\) \-\-operation NAME \-\-input-json JSON \[\-\-source-id SOURCE_ID\]/,
     );
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli deliver reports unsupported dynamic surfaces with actions help", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-deliver-help-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%9633",
+    CODEX_THREAD_ID: "thread-deliver-help",
+  };
+
+  try {
+    const result = runCli([
+      "deliver",
+      "actions",
+      "--provider",
+      "feishu",
+      "--surface",
+      "group_message",
+      "--target",
+      "oc_chat",
+    ], env);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /HTTP 400/);
+    assert.match(result.stderr, /unsupported delivery surface for feishu: group_message/);
+    assert.match(result.stderr, /Supported surfaces for feishu: message_reply, chat_message/);
+    assert.match(result.stderr, /agentinbox deliver actions --provider feishu --surface group_message --target oc_chat/);
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

@@ -276,10 +276,10 @@ export class AdapterRegistry {
   async listDeliveryOperations(
     source: SourceStream | null,
     handle: DeliveryHandle,
-  ): Promise<DeliveryOperationDescriptor[]> {
+  ): Promise<DeliveryOperationDescriptor[] | null> {
     const module = await this.resolveDeliveryModule(source, handle);
     if (!module?.listDeliveryOperations) {
-      return [];
+      return null;
     }
     return module.listDeliveryOperations({ handle, source });
   }
