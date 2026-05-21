@@ -1,7 +1,10 @@
 import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename as pathBasename, dirname, extname, isAbsolute, join } from "node:path";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import {
   AppendSourceEventInput,
   DeliveryAttempt,
@@ -21,6 +24,7 @@ export const FEISHU_IM_SCHEMA_URL =
 const FEISHU_BOT_SCHEMA_FILE = join(tmpdir(), "agentinbox-feishu-bot.openapi.json");
 export const DEFAULT_FEISHU_EVENT_TYPES = ["im.message.receive_v1"];
 const DEFAULT_CONTEXT_BOUND_SECONDS = 7 * 24 * 60 * 60;
+const execFileAsync = promisify(execFile);
 
 export interface FeishuBotSourceConfig {
   endpoint?: string;
@@ -39,8 +43,17 @@ export interface FeishuCallClient {
   }): Promise<{ data: unknown }>;
 }
 
+export type FeishuCommandRunner = (
+  command: string,
+  args: string[],
+  options?: { cwd?: string },
+) => Promise<{ stdout: string; stderr: string }>;
+
 export class FeishuUxcClient {
-  constructor(private readonly client: FeishuCallClient = new UxcDaemonClient({ env: process.env })) {}
+  constructor(
+    private readonly client: FeishuCallClient = new UxcDaemonClient({ env: process.env }),
+    private readonly commandRunner: FeishuCommandRunner = defaultFeishuCommandRunner,
+  ) {}
 
   async sendChatMessage(input: {
     endpoint?: string;
@@ -245,6 +258,126 @@ export class FeishuUxcClient {
     });
     return response.data;
   }
+
+  async fetchDocumentMarkdown(input: {
+    document: string;
+    identity?: string;
+  }): Promise<string> {
+    const result = await this.commandRunner("lark-cli", [
+      "docs",
+      "+fetch",
+      "--api-version",
+      "v2",
+      "--doc",
+      input.document,
+      "--doc-format",
+      "markdown",
+      "--format",
+      "json",
+      ...(input.identity ? ["--as", input.identity] : []),
+    ]);
+    const parsed = JSON.parse(result.stdout) as unknown;
+    const content = findStringField(parsed, "content");
+    if (content == null) {
+      throw new Error("lark-cli docs +fetch response did not include document.content");
+    }
+    return content;
+  }
+
+  async downloadMessageResource(input: {
+    messageId: string;
+    fileKey: string;
+    resourceType: "image" | "file";
+    outputPath: string;
+    identity?: string;
+  }): Promise<void> {
+    if (!isAbsolute(input.outputPath)) {
+      throw new Error("downloadMessageResource requires an absolute outputPath");
+    }
+    mkdirSync(dirname(input.outputPath), { recursive: true });
+    await this.commandRunner("lark-cli", [
+      "im",
+      "+messages-resources-download",
+      "--message-id",
+      input.messageId,
+      "--file-key",
+      input.fileKey,
+      "--type",
+      input.resourceType,
+      "--output",
+      pathBasename(input.outputPath),
+      ...(input.identity ? ["--as", input.identity] : []),
+    ], { cwd: dirname(input.outputPath) });
+  }
+
+  async downloadDriveFile(input: {
+    fileToken: string;
+    outputPath: string;
+    identity?: string;
+    overwrite?: boolean;
+  }): Promise<void> {
+    if (!isAbsolute(input.outputPath)) {
+      throw new Error("downloadDriveFile requires an absolute outputPath");
+    }
+    mkdirSync(dirname(input.outputPath), { recursive: true });
+    await this.commandRunner("lark-cli", [
+      "drive",
+      "+download",
+      "--file-token",
+      input.fileToken,
+      "--output",
+      input.outputPath,
+      ...(input.overwrite ? ["--overwrite"] : []),
+      ...(input.identity ? ["--as", input.identity] : []),
+    ]);
+  }
+
+  async exportDriveResource(input: {
+    token: string;
+    docType: "doc" | "docx" | "sheet" | "bitable";
+    fileExtension: string;
+    outputPath: string;
+    subId?: string;
+    identity?: string;
+    overwrite?: boolean;
+  }): Promise<void> {
+    if (!isAbsolute(input.outputPath)) {
+      throw new Error("exportDriveResource requires an absolute outputPath");
+    }
+    mkdirSync(dirname(input.outputPath), { recursive: true });
+    await this.commandRunner("lark-cli", [
+      "drive",
+      "+export",
+      "--token",
+      input.token,
+      "--doc-type",
+      input.docType,
+      "--file-extension",
+      input.fileExtension,
+      "--output-dir",
+      dirname(input.outputPath),
+      "--file-name",
+      pathBasename(input.outputPath),
+      ...(input.subId ? ["--sub-id", input.subId] : []),
+      ...(input.overwrite ? ["--overwrite"] : []),
+      ...(input.identity ? ["--as", input.identity] : []),
+    ]);
+  }
+}
+
+async function defaultFeishuCommandRunner(
+  command: string,
+  args: string[],
+  options?: { cwd?: string },
+): Promise<{ stdout: string; stderr: string }> {
+  const result = await execFileAsync(command, args, {
+    cwd: options?.cwd,
+    maxBuffer: 50 * 1024 * 1024,
+  });
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
 }
 
 export class FeishuDeliveryAdapter {
@@ -638,6 +771,54 @@ export function feishuSourceOperations(): SourceOperationDescriptor[] {
         required: ["chat", "warnings"],
       },
     },
+    {
+      name: "list_message_attachments",
+      title: "List Message Attachments",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["messageId"],
+        properties: {
+          messageId: { type: "string", minLength: 1 },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["messageId", "attachments", "warnings"],
+      },
+    },
+    {
+      name: "save_attachment",
+      title: "Save Attachment",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        anyOf: [
+          { required: ["attachment", "outputPath"] },
+          { required: ["attachment", "outputDir"] },
+          { required: ["messageId", "attachmentId", "outputPath"] },
+          { required: ["messageId", "attachmentId", "outputDir"] },
+        ],
+        properties: {
+          attachment: { type: "object", additionalProperties: true },
+          messageId: { type: "string", minLength: 1 },
+          attachmentId: { type: "string", minLength: 1 },
+          outputPath: { type: "string", minLength: 1 },
+          outputDir: { type: "string", minLength: 1 },
+          fileName: { type: "string", minLength: 1 },
+          format: { type: "string", minLength: 1 },
+          subId: { type: "string", minLength: 1 },
+          identity: { type: "string", enum: ["user", "bot"] },
+          overwrite: { type: "boolean" },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        additionalProperties: true,
+        required: ["attachmentId", "kind", "path", "format"],
+      },
+    },
   ];
 }
 
@@ -658,6 +839,12 @@ export async function invokeFeishuSourceOperation(
   }
   if (operation === "get_chat") {
     return getFeishuChat(source, input, client);
+  }
+  if (operation === "list_message_attachments") {
+    return listFeishuMessageAttachments(source, input, client);
+  }
+  if (operation === "save_attachment") {
+    return saveFeishuAttachment(source, input, client);
   }
   if (operation !== "get_message_context") {
     throw new Error(`unknown Feishu source operation: ${operation}`);
@@ -709,6 +896,282 @@ export async function invokeFeishuSourceOperation(
       targetRef: messageId,
       threadRef: anchorMessage?.threadId ?? anchorMessage?.parentId ?? null,
       replyMode: "reply",
+    },
+  };
+}
+
+async function listFeishuMessageAttachments(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<Record<string, unknown>> {
+  const messageId = asString(input.messageId);
+  if (!messageId) {
+    throw new Error("list_message_attachments requires input.messageId");
+  }
+  const config = parseFeishuSourceConfig(source);
+  const raw = await client.getMessage({
+    endpoint: config.endpoint,
+    schemaUrl: config.schemaUrl,
+    auth: config.uxcAuth,
+    messageId,
+  });
+  const message = normalizeFeishuMessage(raw);
+  return {
+    messageId,
+    attachments: message?.attachments ?? [],
+    warnings: message ? [] : [{ code: "message_not_found", message: "Feishu message was not found or could not be normalized" }],
+  };
+}
+
+async function saveFeishuAttachment(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<Record<string, unknown>> {
+  const attachment = await resolveFeishuAttachment(source, input, client);
+  const outputPath = resolveAttachmentOutputPath(attachment, input);
+  const identity = asString(input.identity) as "user" | "bot" | null;
+  const overwrite = asBoolean(input.overwrite) ?? false;
+  const requestedFormat = asString(input.format)?.toLowerCase();
+  const subId = asString(input.subId);
+
+  if (attachment.kind === "image" || attachment.resourceType === "image") {
+    rejectConvertedOriginalDownload(requestedFormat, attachment.kind);
+    const fileKey = attachment.fileKey;
+    const messageId = attachment.messageId ?? asString(input.messageId);
+    if (!fileKey || !messageId) {
+      throw new Error("save_attachment requires messageId and fileKey for Feishu image resources");
+    }
+    await client.downloadMessageResource({
+      messageId,
+      fileKey,
+      resourceType: "image",
+      outputPath,
+      identity: identity ?? undefined,
+    });
+    return savedAttachmentResult(attachment, outputPath, requestedFormat ?? "original");
+  }
+
+  if (attachment.fileKey) {
+    rejectConvertedOriginalDownload(requestedFormat, attachment.kind);
+    const messageId = attachment.messageId ?? asString(input.messageId);
+    if (!messageId) {
+      throw new Error("save_attachment requires messageId for Feishu message file resources");
+    }
+    await client.downloadMessageResource({
+      messageId,
+      fileKey: attachment.fileKey,
+      resourceType: "file",
+      outputPath,
+      identity: identity ?? undefined,
+    });
+    return savedAttachmentResult(attachment, outputPath, requestedFormat ?? "original");
+  }
+
+  if (attachment.kind === "doc" || attachment.kind === "docx" || attachment.kind === "wiki") {
+    const document = attachment.url ?? attachment.token;
+    if (!document) {
+      throw new Error("save_attachment requires url or token for Feishu doc/docx/wiki attachments");
+    }
+    const markdown = await client.fetchDocumentMarkdown({
+      document,
+      identity: identity ?? undefined,
+    });
+    mkdirSync(dirname(outputPath), { recursive: true });
+    writeFileSync(outputPath, markdown, {
+      encoding: "utf8",
+      flag: overwrite ? "w" : "wx",
+    });
+    return savedAttachmentResult(attachment, outputPath, "markdown");
+  }
+
+  if (attachment.kind === "sheet") {
+    const extension = requestedFormat ?? "xlsx";
+    if (extension === "csv" && !subId) {
+      throw new Error("save_attachment requires input.subId when exporting a Feishu sheet as csv");
+    }
+    if (!attachment.token) {
+      throw new Error("save_attachment requires token for Feishu sheet attachments");
+    }
+    await client.exportDriveResource({
+      token: attachment.token,
+      docType: "sheet",
+      fileExtension: extension,
+      outputPath,
+      subId: extension === "csv" ? subId ?? undefined : undefined,
+      identity: identity ?? undefined,
+      overwrite,
+    });
+    return savedAttachmentResult(attachment, outputPath, extension);
+  }
+
+  if (attachment.kind === "bitable" || attachment.kind === "base") {
+    const extension = requestedFormat ?? "base";
+    if (extension === "csv" && !subId) {
+      throw new Error("save_attachment requires input.subId when exporting a Feishu base as csv");
+    }
+    if (!attachment.token) {
+      throw new Error("save_attachment requires token for Feishu base attachments");
+    }
+    await client.exportDriveResource({
+      token: attachment.token,
+      docType: "bitable",
+      fileExtension: extension,
+      outputPath,
+      subId: extension === "csv" ? subId ?? undefined : undefined,
+      identity: identity ?? undefined,
+      overwrite,
+    });
+    return savedAttachmentResult(attachment, outputPath, extension);
+  }
+
+  if (attachment.token && attachment.kind === "drive_file") {
+    rejectConvertedOriginalDownload(requestedFormat, attachment.kind);
+    await client.downloadDriveFile({
+      fileToken: attachment.token,
+      outputPath,
+      identity: identity ?? undefined,
+      overwrite,
+    });
+    return savedAttachmentResult(attachment, outputPath, requestedFormat ?? "original");
+  }
+
+  throw new Error(`save_attachment does not support Feishu attachment kind: ${attachment.kind}`);
+}
+
+function rejectConvertedOriginalDownload(
+  requestedFormat: string | undefined,
+  kind: FeishuMessageAttachment["kind"],
+): void {
+  if (requestedFormat && requestedFormat !== "original") {
+    throw new Error(`save_attachment cannot convert Feishu ${kind} attachments; omit input.format or use "original"`);
+  }
+}
+
+async function resolveFeishuAttachment(
+  source: SourceStream,
+  input: Record<string, unknown>,
+  client: FeishuUxcClient,
+): Promise<FeishuMessageAttachment> {
+  const direct = normalizeAttachmentInput(input.attachment);
+  if (direct) {
+    return direct;
+  }
+
+  const messageId = asString(input.messageId);
+  const attachmentId = asString(input.attachmentId);
+  if (!messageId || !attachmentId) {
+    throw new Error("save_attachment requires either input.attachment or input.messageId and input.attachmentId");
+  }
+  const listed = await listFeishuMessageAttachments(source, { messageId }, client);
+  const attachments = Array.isArray(listed.attachments) ? listed.attachments : [];
+  const found = attachments
+    .map((item) => normalizeAttachmentInput(item))
+    .find((item): item is FeishuMessageAttachment => item?.attachmentId === attachmentId);
+  if (!found) {
+    throw new Error(`save_attachment could not find attachmentId ${attachmentId} on message ${messageId}`);
+  }
+  return found;
+}
+
+function normalizeAttachmentInput(value: unknown): FeishuMessageAttachment | null {
+  const raw = asRecord(value);
+  const kind = asString(raw.kind) as FeishuMessageAttachment["kind"] | null;
+  if (!kind) {
+    return null;
+  }
+  const messageId = asString(raw.messageId) ?? asString(raw.message_id);
+  const fileKey = asString(raw.fileKey) ?? asString(raw.file_key);
+  const token = asString(raw.token);
+  const url = asString(raw.url);
+  const attachment = makeFeishuAttachment({
+    kind,
+    messageId,
+    fileKey,
+    resourceType: asString(raw.resourceType) === "image" ? "image" : asString(raw.resourceType) === "file" ? "file" : null,
+    token,
+    url,
+    name: asString(raw.name) ?? asString(raw.fileName) ?? asString(raw.file_name),
+    mimeType: asString(raw.mimeType) ?? asString(raw.mime_type),
+    size: asNumber(raw.size),
+    raw,
+  });
+  return {
+    ...attachment,
+    attachmentId: asString(raw.attachmentId) ?? asString(raw.attachment_id) ?? attachment.attachmentId,
+  };
+}
+
+function resolveAttachmentOutputPath(
+  attachment: FeishuMessageAttachment,
+  input: Record<string, unknown>,
+): string {
+  const outputPath = asString(input.outputPath);
+  if (outputPath) {
+    if (!isAbsolute(outputPath)) {
+      throw new Error("save_attachment requires input.outputPath to be absolute");
+    }
+    return outputPath;
+  }
+  const outputDir = asString(input.outputDir);
+  if (!outputDir) {
+    throw new Error("save_attachment requires input.outputPath or input.outputDir");
+  }
+  if (!isAbsolute(outputDir)) {
+    throw new Error("save_attachment requires input.outputDir to be absolute");
+  }
+  return join(outputDir, safeAttachmentFileName(attachment, input));
+}
+
+function safeAttachmentFileName(attachment: FeishuMessageAttachment, input: Record<string, unknown>): string {
+  const explicit = asString(input.fileName);
+  const format = asString(input.format)?.toLowerCase();
+  const baseName = explicit
+    ?? attachment.name
+    ?? attachment.token
+    ?? attachment.fileKey
+    ?? attachment.attachmentId;
+  const safe = baseName.replace(/[\/\\:\0]/g, "_").trim() || attachment.attachmentId;
+  if (extname(safe)) {
+    return safe;
+  }
+  const extension = attachmentExtension(attachment, format);
+  return extension ? `${safe}.${extension}` : safe;
+}
+
+function attachmentExtension(attachment: FeishuMessageAttachment, format: string | null | undefined): string | null {
+  if (format && format !== "original") {
+    return format === "markdown" ? "md" : format;
+  }
+  if (attachment.kind === "doc" || attachment.kind === "docx" || attachment.kind === "wiki") {
+    return "md";
+  }
+  if (attachment.kind === "sheet") {
+    return "xlsx";
+  }
+  if (attachment.kind === "bitable" || attachment.kind === "base") {
+    return "base";
+  }
+  return null;
+}
+
+function savedAttachmentResult(
+  attachment: FeishuMessageAttachment,
+  outputPath: string,
+  format: string,
+): Record<string, unknown> {
+  return {
+    attachmentId: attachment.attachmentId,
+    kind: attachment.kind,
+    path: outputPath,
+    format,
+    provider: "feishu",
+    source: {
+      messageId: attachment.messageId,
+      fileKey: attachment.fileKey,
+      token: attachment.token,
+      url: attachment.url,
     },
   };
 }
@@ -872,6 +1335,12 @@ export function normalizeFeishuBotEvent(
   const senderId = asString(asRecord(sender.sender_id).open_id) ?? asString(sender.sender_id);
   const senderType = asString(sender.sender_type);
   const content = stringifyFeishuMessageContent(messageType, asString(message.content), message.mentions);
+  const attachments = extractFeishuMessageAttachments({
+    messageId,
+    messageType,
+    rawContent: asString(message.content),
+    rawMessage: message,
+  });
   const threadId = asString(message.thread_id) ?? asString(message.root_id);
   const parentId = asString(message.parent_id);
 
@@ -894,6 +1363,7 @@ export function normalizeFeishuBotEvent(
       mentions,
       mentionOpenIds,
       content,
+      attachments,
       threadId,
       parentId,
     },
@@ -1115,6 +1585,22 @@ interface NormalizedFeishuMessage {
   createdAt: string | null;
   threadId: string | null;
   parentId: string | null;
+  attachments: FeishuMessageAttachment[];
+  raw: Record<string, unknown>;
+}
+
+interface FeishuMessageAttachment {
+  attachmentId: string;
+  provider: "feishu";
+  kind: "image" | "file" | "audio" | "video" | "media" | "doc" | "docx" | "wiki" | "sheet" | "bitable" | "base" | "drive_file" | "link";
+  messageId: string | null;
+  fileKey: string | null;
+  resourceType: "image" | "file" | null;
+  token: string | null;
+  url: string | null;
+  name: string | null;
+  mimeType: string | null;
+  size: number | null;
   raw: Record<string, unknown>;
 }
 
@@ -1145,8 +1631,10 @@ function normalizeFeishuMessage(raw: unknown): NormalizedFeishuMessage | null {
   }
   const sender = asRecord(message.sender);
   const messageType = asString(message.msg_type) ?? asString(message.message_type) ?? "unknown";
+  const messageId = asString(message.message_id) ?? "";
+  const rawContent = messageContentString(message);
   return {
-    messageId: asString(message.message_id) ?? "",
+    messageId,
     chatId: asString(message.chat_id),
     chatType: asString(message.chat_type),
     messageType,
@@ -1154,10 +1642,16 @@ function normalizeFeishuMessage(raw: unknown): NormalizedFeishuMessage | null {
     senderType: asString(sender.sender_type) ?? asString(asRecord(sender.id).user_id) ?? null,
     mentions: extractMentionNames(message.mentions),
     mentionOpenIds: extractMentionOpenIds(message.mentions),
-    content: stringifyFeishuMessageContent(messageType, messageContentString(message), message.mentions),
+    content: stringifyFeishuMessageContent(messageType, rawContent, message.mentions),
     createdAt: fromUnixMillisString(asString(message.create_time)),
     threadId: asString(message.thread_id) ?? asString(message.root_id),
     parentId: asString(message.parent_id),
+    attachments: extractFeishuMessageAttachments({
+      messageId,
+      messageType,
+      rawContent,
+      rawMessage: message,
+    }),
     raw: message,
   };
 }
@@ -1177,6 +1671,170 @@ function normalizeFeishuMessages(raw: unknown): NormalizedFeishuMessage[] {
   return items
     .map((item) => normalizeFeishuMessage(item))
     .filter((item): item is NormalizedFeishuMessage => item !== null);
+}
+
+function extractFeishuMessageAttachments(input: {
+  messageId: string;
+  messageType: string;
+  rawContent: string | null;
+  rawMessage: Record<string, unknown>;
+}): FeishuMessageAttachment[] {
+  const parsedContent = parseJsonContent(input.rawContent);
+  const attachments: FeishuMessageAttachment[] = [];
+  const content = asRecord(parsedContent);
+
+  if (input.messageType === "image") {
+    const imageKey = asString(content.image_key);
+    if (imageKey) {
+      attachments.push(makeFeishuAttachment({
+        kind: "image",
+        messageId: input.messageId,
+        fileKey: imageKey,
+        resourceType: "image",
+        raw: content,
+      }));
+    }
+  }
+
+  if (input.messageType === "file" || input.messageType === "audio" || input.messageType === "video" || input.messageType === "media") {
+    const fileKey = asString(content.file_key);
+    if (fileKey) {
+      attachments.push(makeFeishuAttachment({
+        kind: input.messageType,
+        messageId: input.messageId,
+        fileKey,
+        resourceType: "file",
+        name: asString(content.file_name) ?? asString(content.name),
+        mimeType: asString(content.mime_type),
+        size: asNumber(content.size),
+        raw: content,
+      }));
+    }
+  }
+
+  for (const url of extractUrls(parsedContent)) {
+    const link = feishuAttachmentFromUrl(url, input.messageId);
+    if (link) {
+      attachments.push(link);
+    }
+  }
+
+  return dedupeFeishuAttachments(attachments);
+}
+
+function parseJsonContent(rawContent: string | null): unknown {
+  if (!rawContent) {
+    return null;
+  }
+  try {
+    return JSON.parse(rawContent);
+  } catch {
+    return rawContent;
+  }
+}
+
+function makeFeishuAttachment(input: {
+  kind: FeishuMessageAttachment["kind"];
+  messageId?: string | null;
+  fileKey?: string | null;
+  resourceType?: "image" | "file" | null;
+  token?: string | null;
+  url?: string | null;
+  name?: string | null;
+  mimeType?: string | null;
+  size?: number | null;
+  raw?: Record<string, unknown>;
+}): FeishuMessageAttachment {
+  const stable = [
+    input.messageId ?? "",
+    input.kind,
+    input.fileKey ?? "",
+    input.token ?? "",
+    input.url ?? "",
+  ].join(":");
+  return {
+    attachmentId: `att_${createHash("sha1").update(stable).digest("hex").slice(0, 16)}`,
+    provider: "feishu",
+    kind: input.kind,
+    messageId: input.messageId ?? null,
+    fileKey: input.fileKey ?? null,
+    resourceType: input.resourceType ?? null,
+    token: input.token ?? null,
+    url: input.url ?? null,
+    name: input.name ?? null,
+    mimeType: input.mimeType ?? null,
+    size: input.size ?? null,
+    raw: input.raw ?? {},
+  };
+}
+
+function extractUrls(value: unknown): string[] {
+  const urls = new Set<string>();
+  const visit = (current: unknown): void => {
+    if (typeof current === "string") {
+      const matches = current.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
+      for (const match of matches) {
+        urls.add(match.replace(/[),.;，。]+$/, ""));
+      }
+      return;
+    }
+    if (Array.isArray(current)) {
+      for (const child of current) {
+        visit(child);
+      }
+      return;
+    }
+    if (current && typeof current === "object") {
+      for (const child of Object.values(current)) {
+        visit(child);
+      }
+    }
+  };
+  visit(value);
+  return Array.from(urls).sort();
+}
+
+function feishuAttachmentFromUrl(url: string, messageId: string): FeishuMessageAttachment | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  const patterns: Array<{ segment: string; kind: FeishuMessageAttachment["kind"] }> = [
+    { segment: "docx", kind: "docx" },
+    { segment: "doc", kind: "doc" },
+    { segment: "wiki", kind: "wiki" },
+    { segment: "sheets", kind: "sheet" },
+    { segment: "sheet", kind: "sheet" },
+    { segment: "base", kind: "bitable" },
+    { segment: "bitable", kind: "bitable" },
+    { segment: "file", kind: "drive_file" },
+  ];
+  for (const pattern of patterns) {
+    const index = parts.indexOf(pattern.segment);
+    const token = index >= 0 ? parts[index + 1] : null;
+    if (token) {
+      return makeFeishuAttachment({
+        kind: pattern.kind,
+        messageId,
+        token,
+        url,
+        name: token,
+        raw: { url },
+      });
+    }
+  }
+  return null;
+}
+
+function dedupeFeishuAttachments(attachments: FeishuMessageAttachment[]): FeishuMessageAttachment[] {
+  const byId = new Map<string, FeishuMessageAttachment>();
+  for (const attachment of attachments) {
+    byId.set(attachment.attachmentId, attachment);
+  }
+  return Array.from(byId.values());
 }
 
 function normalizeFeishuChat(raw: unknown): NormalizedFeishuChat | null {

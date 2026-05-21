@@ -118,6 +118,33 @@ agentinbox source invoke <sourceId> \
   --input-json '{"chatId":"<chatId>","limit":20}'
 ```
 
+## Read Attachments And Documents
+
+When a Feishu/Lark message contains files, images, or cloud document links,
+list the message attachments first:
+
+```bash
+agentinbox source invoke <sourceId> \
+  --operation list_message_attachments \
+  --input-json '{"messageId":"<messageId>"}'
+```
+
+Use the returned `attachmentId` to save one attachment to a local absolute
+path. AgentInbox writes into the path you provide; your runtime sandbox
+controls whether that path is accessible.
+
+```bash
+agentinbox source invoke <sourceId> \
+  --operation save_attachment \
+  --input-json '{"messageId":"<messageId>","attachmentId":"<attachmentId>","outputDir":"/tmp/agentinbox-feishu","identity":"bot"}'
+```
+
+The first Feishu/Lark implementation saves message files and images as the
+original resource. Doc, docx, and wiki links are saved as Markdown files. Sheets
+default to `xlsx`; export a specific sheet as CSV by passing `format:"csv"` and
+`subId`. Base/bitable links default to `.base`; pass `format:"csv"` and
+`subId` for a table CSV export when the app has permission.
+
 Reply with text:
 
 ```bash

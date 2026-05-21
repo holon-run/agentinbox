@@ -132,6 +132,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "mentions", type: "string[]", description: "Mention names extracted from the message." },
       { name: "mentionOpenIds", type: "string[]", description: "Mention open_ids extracted from the message." },
       { name: "content", type: "string|null", description: "Normalized message content string." },
+      { name: "attachments", type: "object[]", description: "Message attachments and Feishu/Lark document links that can be saved by source operations." },
       { name: "threadId", type: "string|null", description: "Thread or root message ID when present." },
       { name: "parentId", type: "string|null", description: "Parent message ID when present." },
     ],
