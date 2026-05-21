@@ -12,6 +12,18 @@ The format is intentionally simple during public beta:
 
 - No unreleased changes yet.
 
+## [1.2.0] - 2026-05-21
+
+### Added
+
+- Added Feishu/Lark source operations to list message attachments and save one
+  attachment to an absolute local path.
+- Extracted Feishu/Lark message files, images, and cloud document links into
+  message metadata so agents can discover attachments from inbox items and
+  message context.
+- Added local save support for Feishu/Lark doc/docx/wiki Markdown export,
+  message file/image downloads, and sheet/base exports.
+
 ## [1.1.0] - 2026-05-20
 
 ### Changed
