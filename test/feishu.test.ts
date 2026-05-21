@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { DeliveryAttempt, SourceStream } from "../src/model";
 import {
   feishuDeliveryOperationsForHandle,
@@ -178,6 +181,27 @@ class ChatDiscoveryFeishuUxcClient implements FeishuCallClient {
         },
       },
     };
+  }
+}
+
+class AttachmentFeishuUxcClient implements FeishuCallClient {
+  public calls: Array<Record<string, unknown>> = [];
+
+  constructor(private readonly message: Record<string, unknown>) {}
+
+  async call(args: Record<string, unknown>) {
+    this.calls.push(args);
+    if (args.operation === "get:/im/v1/messages/{message_id}") {
+      return {
+        data: {
+          code: 0,
+          data: {
+            items: [this.message],
+          },
+        },
+      };
+    }
+    return { data: { code: 0 } };
   }
 }
 
@@ -697,6 +721,219 @@ test("feishu source operations discover visible chats", async () => {
     chat_id: "oc_bottest",
   });
   assert.equal((fetched.chat as Record<string, unknown> | null)?.chatId, "oc_bottest");
+});
+
+test("feishu source operation lists document and file attachments from messages", async () => {
+  const message = {
+    message_id: "om_attachment",
+    chat_id: "oc_chat",
+    chat_type: "group",
+    msg_type: "text",
+    body: { content: JSON.stringify({ text: "please read https://tuptup.feishu.cn/docx/DOCX123" }) },
+    sender: { id: { open_id: "ou_sender" }, sender_type: "user" },
+    create_time: "1773491924409",
+  };
+  const fake = new AttachmentFeishuUxcClient(message);
+  const client = new FeishuUxcClient(fake);
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const operationNames = feishuSourceOperations().map((operation) => operation.name);
+  assert.ok(operationNames.includes("list_message_attachments"));
+  assert.ok(operationNames.includes("save_attachment"));
+
+  const result = await invokeFeishuSourceOperation(source, "list_message_attachments", { messageId: "om_attachment" }, client);
+
+  assert.equal(fake.calls[0]?.operation, "get:/im/v1/messages/{message_id}");
+  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.auth, "feishu-tuptup");
+  const attachments = result.attachments as Array<Record<string, unknown>>;
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0]?.kind, "docx");
+  assert.equal(attachments[0]?.token, "DOCX123");
+  assert.equal(attachments[0]?.url, "https://tuptup.feishu.cn/docx/DOCX123");
+  assert.match(String(attachments[0]?.attachmentId), /^att_/);
+});
+
+test("feishu source operation saves docx attachments as markdown files", async () => {
+  const outputDir = mkdtempSync(join(tmpdir(), "agentinbox-feishu-doc-"));
+  const message = {
+    message_id: "om_doc",
+    chat_id: "oc_chat",
+    chat_type: "group",
+    msg_type: "text",
+    body: { content: JSON.stringify({ text: "doc https://tuptup.feishu.cn/docx/DOCX123" }) },
+    sender: { id: { open_id: "ou_sender" }, sender_type: "user" },
+    create_time: "1773491924409",
+  };
+  const fake = new AttachmentFeishuUxcClient(message);
+  const commandCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+  const client = new FeishuUxcClient(fake, async (command, args, options) => {
+    commandCalls.push({ command, args, cwd: options?.cwd });
+    return {
+      stdout: JSON.stringify({ ok: true, data: { document: { content: "# Title\n\nbody" } } }),
+      stderr: "",
+    };
+  });
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const listed = await invokeFeishuSourceOperation(source, "list_message_attachments", { messageId: "om_doc" }, client);
+  const attachment = (listed.attachments as Array<Record<string, unknown>>)[0];
+
+  const result = await invokeFeishuSourceOperation(source, "save_attachment", {
+    messageId: "om_doc",
+    attachmentId: attachment?.attachmentId,
+    outputDir,
+    identity: "bot",
+  }, client);
+
+  assert.equal(result.kind, "docx");
+  assert.equal(result.format, "markdown");
+  assert.equal(result.path, join(outputDir, "DOCX123.md"));
+  assert.equal(readFileSync(String(result.path), "utf8"), "# Title\n\nbody");
+  assert.equal(commandCalls[0]?.command, "lark-cli");
+  assert.deepEqual(commandCalls[0]?.args, [
+    "docs",
+    "+fetch",
+    "--api-version",
+    "v2",
+    "--doc",
+    "https://tuptup.feishu.cn/docx/DOCX123",
+    "--doc-format",
+    "markdown",
+    "--format",
+    "json",
+    "--as",
+    "bot",
+  ]);
+});
+
+test("feishu source operation saves message file resources to absolute paths", async () => {
+  const outputPath = join(mkdtempSync(join(tmpdir(), "agentinbox-feishu-file-")), "report.pdf");
+  const fake = new AttachmentFeishuUxcClient({ message_id: "om_file" });
+  const commandCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+  const client = new FeishuUxcClient(fake, async (command, args, options) => {
+    commandCalls.push({ command, args, cwd: options?.cwd });
+    return { stdout: JSON.stringify({ ok: true }), stderr: "" };
+  });
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const result = await invokeFeishuSourceOperation(source, "save_attachment", {
+    attachment: {
+      attachmentId: "att_file",
+      kind: "file",
+      messageId: "om_file",
+      fileKey: "file_123",
+      resourceType: "file",
+      name: "report.pdf",
+    },
+    outputPath,
+  }, client);
+
+  assert.equal(result.path, outputPath);
+  assert.equal(result.format, "original");
+  assert.equal(commandCalls[0]?.command, "lark-cli");
+  assert.deepEqual(commandCalls[0]?.args, [
+    "im",
+    "+messages-resources-download",
+    "--message-id",
+    "om_file",
+    "--file-key",
+    "file_123",
+    "--type",
+    "file",
+    "--output",
+    "report.pdf",
+  ]);
+  assert.equal(commandCalls[0]?.cwd, dirname(outputPath));
+});
+
+test("feishu save_attachment rejects misleading conversions and honors doc overwrite", async () => {
+  const outputPath = join(mkdtempSync(join(tmpdir(), "agentinbox-feishu-overwrite-")), "doc.md");
+  writeFileSync(outputPath, "existing", "utf8");
+  const fake = new AttachmentFeishuUxcClient({ message_id: "om_file" });
+  const client = new FeishuUxcClient(fake, async () => ({
+    stdout: JSON.stringify({ ok: true, data: { document: { content: "# New" } } }),
+    stderr: "",
+  }));
+  const source: SourceStream = {
+    sourceId: "src_feishu",
+    sourceType: "feishu_bot",
+    sourceKey: "tenant-default",
+    configRef: null,
+    config: { uxcAuth: "feishu-tuptup" },
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await assert.rejects(
+    () => invokeFeishuSourceOperation(source, "save_attachment", {
+      attachment: {
+        attachmentId: "att_file",
+        kind: "file",
+        messageId: "om_file",
+        fileKey: "file_123",
+      },
+      outputPath: join(dirname(outputPath), "file.md"),
+      format: "markdown",
+    }, client),
+    /cannot convert Feishu file attachments/,
+  );
+
+  await assert.rejects(
+    () => invokeFeishuSourceOperation(source, "save_attachment", {
+      attachment: {
+        attachmentId: "att_doc",
+        kind: "docx",
+        messageId: "om_doc",
+        token: "DOCX123",
+      },
+      outputPath,
+    }, client),
+    /EEXIST/,
+  );
+
+  const result = await invokeFeishuSourceOperation(source, "save_attachment", {
+    attachment: {
+      attachmentId: "att_doc",
+      kind: "docx",
+      messageId: "om_doc",
+      token: "DOCX123",
+    },
+    outputPath,
+    overwrite: true,
+  }, client);
+  assert.equal(result.path, outputPath);
+  assert.equal(readFileSync(outputPath, "utf8"), "# New");
 });
 
 test("feishu search_chats rejects blank queries after trimming", async () => {
