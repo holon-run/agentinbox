@@ -1698,6 +1698,90 @@ test("cli agent register requires --agent-id when --webhook-url is used", async 
   }
 });
 
+test("cli agent target update webhook", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-webhook-target-update-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%905",
+    CODEX_THREAD_ID: "thread-cli-webhook-target-update",
+  };
+
+  try {
+    const register = runCli(["agent", "register", "--agent-id", "agent-cli-webhook-update"], env);
+    assert.equal(register.status, 0, register.stderr);
+
+    const addTarget = runCli([
+      "agent",
+      "target",
+      "add",
+      "webhook",
+      "agent-cli-webhook-update",
+      "--url",
+      "http://127.0.0.1:9999/activate",
+      "--activation-mode",
+      "activation_with_items",
+      "--notify-lease-ms",
+      "100",
+    ], env);
+    assert.equal(addTarget.status, 0, addTarget.stderr);
+    const target = JSON.parse(addTarget.stdout) as { targetId: string; url: string; mode: string };
+    assert.equal(target.url, "http://127.0.0.1:9999/activate");
+
+    // Update URL
+    const update = runCli([
+      "agent",
+      "target",
+      "update",
+      "agent-cli-webhook-update",
+      target.targetId,
+      "--url",
+      "http://127.0.0.1:8888/updated",
+    ], env);
+    assert.equal(update.status, 0, update.stderr);
+    const updated = JSON.parse(update.stdout) as { url: string; mode: string; notifyLeaseMs: number };
+    assert.equal(updated.url, "http://127.0.0.1:8888/updated");
+    assert.equal(updated.mode, "activation_with_items"); // unchanged
+    assert.equal(updated.notifyLeaseMs, 100); // unchanged
+
+    // Update mode
+    const update2 = runCli([
+      "agent",
+      "target",
+      "update",
+      "agent-cli-webhook-update",
+      target.targetId,
+      "--activation-mode",
+      "activation_only",
+    ], env);
+    assert.equal(update2.status, 0, update2.stderr);
+    const updated2 = JSON.parse(update2.stdout) as { mode: string; url: string };
+    assert.equal(updated2.mode, "activation_only");
+    assert.equal(updated2.url, "http://127.0.0.1:8888/updated"); // unchanged
+
+    // Verify list reflects update
+    const list = runCli(["agent", "target", "list", "agent-cli-webhook-update"], env);
+    assert.equal(list.status, 0, list.stderr);
+    assert.match(list.stdout, /8888\/updated/);
+
+    // Usage error when no params
+    const noArgs = runCli(["agent", "target", "update"], env);
+    assert.notEqual(noArgs.status, 0);
+    assert.match(noArgs.stderr, /usage: agentinbox agent target update/);
+
+    // Error for non-existent target
+    const badTarget = runCli(["agent", "target", "update", "agent-cli-webhook-update", "nonexistent", "--url", "http://127.0.0.1:9999/nope"], env);
+    assert.notEqual(badTarget.status, 0);
+    assert.match(badTarget.stderr, /unknown activation target/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("cli source schema resolves source ids to instance schema", () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-source-schema-"));
   const env = {

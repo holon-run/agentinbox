@@ -375,6 +375,13 @@ export interface AddWebhookActivationTargetInput {
   minUnackedItems?: number | null;
 }
 
+export interface UpdateWebhookActivationTargetInput {
+  url?: string;
+  activationMode?: ActivationMode;
+  notifyLeaseMs?: number | null;
+  minUnackedItems?: number | null;
+}
+
 export interface DirectInboxTextMessageInput {
   message: string;
   sender?: string | null;

@@ -5,6 +5,7 @@ import {
   ActivationTarget,
   AddWebhookActivationTargetInput,
   Agent,
+  UpdateWebhookActivationTargetInput,
   AgentTimer,
   DirectInboxTextMessageInput,
   DirectInboxTextMessageResult,
@@ -968,6 +969,34 @@ export class AgentInboxService {
     };
     this.store.insertActivationTarget(target);
     this.markAgentActive(agentId);
+    return target;
+  }
+
+  updateWebhookActivationTarget(
+    agentId: string,
+    targetId: string,
+    input: UpdateWebhookActivationTargetInput,
+  ): WebhookActivationTarget {
+    this.getAgent(agentId);
+    const existing = this.getActivationTarget(targetId);
+    if (existing.agentId !== agentId) {
+      throw new Error(`activation target ${targetId} does not belong to agent ${agentId}`);
+    }
+    if (existing.kind !== "webhook") {
+      throw new Error(`activation target ${targetId} is not a webhook target`);
+    }
+    validateNotifyLeaseMs(input.notifyLeaseMs);
+    validateMinUnackedItems(input.minUnackedItems);
+    const mode = normalizeWebhookActivationMode(input.activationMode ?? existing.mode);
+    const now = nowIso();
+    const target = this.store.updateWebhookActivationTarget(targetId, {
+      url: input.url ?? existing.url,
+      mode,
+      notifyLeaseMs: input.notifyLeaseMs ?? existing.notifyLeaseMs,
+      minUnackedItems: input.minUnackedItems !== undefined ? input.minUnackedItems : existing.minUnackedItems ?? null,
+      updatedAt: now,
+      lastSeenAt: now,
+    });
     return target;
   }
 

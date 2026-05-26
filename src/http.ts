@@ -1130,6 +1130,55 @@ function buildFastifyServer(service: AgentInboxService) {
     });
   });
 
+  app.patch("/agents/:agentId/targets/:targetId", {
+    schema: {
+      tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId", "targetId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          targetId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          url: { type: "string" },
+          activationMode: { type: "string" },
+          notifyLeaseMs: { type: "integer", minimum: 1 },
+          minUnackedItems: { type: "integer", minimum: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; targetId: string };
+    const body = request.body as {
+      url?: string;
+      activationMode?: ActivationMode;
+      notifyLeaseMs?: number;
+      minUnackedItems?: number;
+    };
+    if (!body.url && body.activationMode === undefined && body.notifyLeaseMs === undefined && body.minUnackedItems === undefined) {
+      throw new Error("at least one of --url, --activation-mode, --notify-lease-ms, --min-unacked-items must be provided");
+    }
+    return service.updateWebhookActivationTarget(
+      decodeURIComponent(params.agentId),
+      decodeURIComponent(params.targetId),
+      {
+        url: body.url,
+        activationMode: body.activationMode,
+        notifyLeaseMs: body.notifyLeaseMs ?? null,
+        minUnackedItems: body.minUnackedItems ?? null,
+      },
+    );
+  });
+
   app.delete("/agents/:agentId/targets/:targetId", {
     schema: {
       tags: ["agents"],
