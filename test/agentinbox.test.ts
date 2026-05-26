@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import initSqlJs from "sql.js";
 import { AdapterRegistry } from "../src/adapters";
 import { EventBusBackend, SqliteEventBusBackend } from "../src/backend";
-import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget } from "../src/model";
+import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget, WebhookActivationTarget } from "../src/model";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { ActivationGate } from "../src/runtime_gate";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
@@ -858,6 +858,104 @@ test("terminal registration is rejected while an active webhook target exists fo
     const targets = service.listActivationTargets("agent-webhook-sticky");
     assert.equal(targets.length, 1);
     assert.equal(targets[0]?.kind, "webhook");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update webhook activation target via service", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    service.registerAgent({
+      agentId: "update-webhook-test",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "update-webhook-test",
+      tmuxPaneId: "%999",
+    });
+    const target = service.addWebhookActivationTarget("update-webhook-test", {
+      url: "http://127.0.0.1:9999/original",
+      activationMode: "activation_with_items",
+      notifyLeaseMs: 100,
+      minUnackedItems: 5,
+    });
+    assert.equal(target.url, "http://127.0.0.1:9999/original");
+    assert.equal(target.mode, "activation_with_items");
+    assert.equal(target.notifyLeaseMs, 100);
+    assert.equal(target.minUnackedItems, 5);
+
+    // Update URL only
+    const updated = service.updateWebhookActivationTarget("update-webhook-test", target.targetId, {
+      url: "http://127.0.0.1:8888/updated",
+    });
+    assert.equal(updated.url, "http://127.0.0.1:8888/updated");
+    assert.equal(updated.mode, "activation_with_items"); // unchanged
+    assert.equal(updated.notifyLeaseMs, 100); // unchanged
+    assert.equal(updated.minUnackedItems, 5); // unchanged
+    assert.equal(updated.status, "active"); // reset to active
+
+    // Update mode only
+    const updated2 = service.updateWebhookActivationTarget("update-webhook-test", target.targetId, {
+      activationMode: "activation_only",
+    });
+    assert.equal(updated2.url, "http://127.0.0.1:8888/updated"); // unchanged
+    assert.equal(updated2.mode, "activation_only");
+    assert.equal(updated2.notifyLeaseMs, 100);
+    assert.equal(updated2.minUnackedItems, 5);
+
+    // Update notifyLeaseMs and minUnackedItems
+    const updated3 = service.updateWebhookActivationTarget("update-webhook-test", target.targetId, {
+      notifyLeaseMs: 200,
+      minUnackedItems: 3,
+    });
+    assert.equal(updated3.notifyLeaseMs, 200);
+    assert.equal(updated3.minUnackedItems, 3);
+
+    // Verify store reflects updates
+    const stored = service.getActivationTarget(target.targetId);
+    assert.equal(stored.kind, "webhook");
+    const webhookStored = stored as WebhookActivationTarget;
+    assert.equal(webhookStored.url, "http://127.0.0.1:8888/updated");
+    assert.equal(webhookStored.mode, "activation_only");
+    assert.equal(webhookStored.notifyLeaseMs, 200);
+    assert.equal(webhookStored.minUnackedItems, 3);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("update webhook activation target rejects non-webhook targets", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    service.registerAgent({
+      agentId: "update-non-webhook",
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "update-non-webhook",
+      tmuxPaneId: "%998",
+    });
+    const terminalTargets = service.listActivationTargets("update-non-webhook");
+    assert.equal(terminalTargets.length, 1);
+    const terminalTarget = terminalTargets[0]!;
+    assert.equal(terminalTarget.kind, "terminal");
+
+    assert.throws(
+      () => service.updateWebhookActivationTarget("update-non-webhook", terminalTarget.targetId, {
+        url: "http://127.0.0.1:9999/updated",
+      }),
+      /not a webhook target/,
+    );
+
+    assert.throws(
+      () => service.updateWebhookActivationTarget("update-non-webhook", "nonexistent-id", {
+        url: "http://127.0.0.1:9999/updated",
+      }),
+      /unknown activation target/,
+    );
   } finally {
     await service.stop();
     store.close();

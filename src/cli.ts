@@ -608,6 +608,24 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "agent" && normalized[1] === "target" && normalized[2] === "update") {
+    const [agentId, targetId] = normalized.slice(3, 5);
+    if (!agentId || !targetId) {
+      throw new Error("usage: agentinbox agent target update <agentId> <targetId> [--url URL] [--activation-mode MODE] [--notify-lease-ms N] [--min-unacked-items N]");
+    }
+    const body: Record<string, unknown> = {};
+    const url = takeFlagValue(normalized, "--url");
+    if (url) body.url = url;
+    const activationMode = takeFlagValue(normalized, "--activation-mode");
+    if (activationMode) body.activationMode = activationMode;
+    const notifyLeaseMs = takeFlagValue(normalized, "--notify-lease-ms");
+    if (notifyLeaseMs) body.notifyLeaseMs = parseOptionalNumber(notifyLeaseMs);
+    const minUnackedItems = takeFlagValue(normalized, "--min-unacked-items");
+    if (minUnackedItems) body.minUnackedItems = parseOptionalNumber(minUnackedItems);
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/targets/${encodeURIComponent(targetId)}`, body, "PATCH");
+    return;
+  }
+
   if (command === "subscription" && normalized[1] === "add") {
     const args = normalized.slice(2);
     const positionals = positionalArgs(args, [
@@ -1328,11 +1346,18 @@ function clientArgsForCommand(args: string[]): string[] {
   if (isAgentTargetAddWebhookCommand(args)) {
     return withoutFlagValues(args, "--url");
   }
+  if (isAgentTargetUpdateCommand(args)) {
+    return withoutFlagValues(args, "--url");
+  }
   return args;
 }
 
 function isAgentTargetAddWebhookCommand(args: string[]): boolean {
   return args[0] === "agent" && args[1] === "target" && args[2] === "add" && args[3] === "webhook";
+}
+
+function isAgentTargetUpdateCommand(args: string[]): boolean {
+  return args[0] === "agent" && args[1] === "target" && args[2] === "update";
 }
 
 function withoutFlagValues(args: string[], flag: string): string[] {
@@ -1717,6 +1742,7 @@ Usage:
   agentinbox agent target list <agentId> [--limit N]
   agentinbox agent target remove <agentId> <targetId>
   agentinbox agent target resume <agentId> <targetId>
+  agentinbox agent target update <agentId> <targetId> [--url URL] [--activation-mode MODE] [--notify-lease-ms N] [--min-unacked-items N]
 `,
     timer: `agentinbox timer
 
