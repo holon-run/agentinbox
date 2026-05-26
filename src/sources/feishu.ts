@@ -3,7 +3,6 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename as pathBasename, dirname, extname, isAbsolute, join } from "node:path";
-import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import {
   AppendSourceEventInput,
@@ -21,7 +20,6 @@ import type { ExpandFollowTemplateInput, ExpandedFollowPlan } from "./remote_mod
 export const FEISHU_OPENAPI_ENDPOINT = "https://open.feishu.cn/open-apis";
 export const FEISHU_IM_SCHEMA_URL =
   "https://raw.githubusercontent.com/holon-run/uxc/main/skills/feishu-openapi-skill/references/feishu-im.openapi.json";
-const FEISHU_BOT_SCHEMA_FILE = join(tmpdir(), "agentinbox-feishu-bot.openapi.json");
 export const DEFAULT_FEISHU_EVENT_TYPES = ["im.message.receive_v1"];
 const DEFAULT_CONTEXT_BOUND_SECONDS = 7 * 24 * 60 * 60;
 const execFileAsync = promisify(execFile);
@@ -204,10 +202,8 @@ export class FeishuUxcClient {
       operation: "get:/bot/v3/info",
       payload: {},
       options: {
-        auth: input.auth,
-        schema_url: ensureFeishuBotSchemaFile(),
-        refresh_schema: true,
-        no_cache: true,
+        auth: input.auth ?? undefined,
+        schema_url: FEISHU_IM_SCHEMA_URL,
       },
     });
     const openId = findStringField(response.data, "open_id");
@@ -2240,52 +2236,3 @@ function asStringArray(value: unknown): string[] | null {
     .map((item) => asString(item))
     .filter((item): item is string => Boolean(item));
 }
-
-function ensureFeishuBotSchemaFile(): string {
-  const body = JSON.stringify(FEISHU_BOT_OPENAPI_SCHEMA);
-  writeFileSync(FEISHU_BOT_SCHEMA_FILE, body, "utf8");
-  return FEISHU_BOT_SCHEMA_FILE;
-}
-
-const FEISHU_BOT_OPENAPI_SCHEMA = {
-  openapi: "3.0.3",
-  info: {
-    title: "Feishu Bot Info",
-    version: "1.0.0",
-  },
-  servers: [
-    {
-      url: FEISHU_OPENAPI_ENDPOINT,
-    },
-  ],
-  // Feishu's docs site does not currently expose this as a stable
-  // machine-readable OpenAPI document to UXC, so keep the tiny operation
-  // schema needed for bot self-identification close to the adapter.
-  paths: {
-    "/bot/v3/info": {
-      get: {
-        operationId: "get:/bot/v3/info",
-        summary: "Get bot information for the current app",
-        responses: {
-          "200": {
-            description: "OK",
-          },
-        },
-        security: [
-          {
-            bearerAuth: [],
-          },
-        ],
-      },
-    },
-  },
-  components: {
-    securitySchemes: {
-      bearerAuth: {
-        type: "http",
-        scheme: "bearer",
-        bearerFormat: "tenant_access_token",
-      },
-    },
-  },
-} as const;

@@ -534,8 +534,6 @@ test("feishu mentions follow template resolves the configured bot open id by def
   assert.equal(plan.subscriptions[0]?.trackedResourceRef, "mention:ou_resolved_bot");
   assert.equal(fake.calls[0]?.operation, "get:/bot/v3/info");
   assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.auth, "feishu-tuptup");
-  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.refresh_schema, true);
-  assert.equal((fake.calls[0]?.options as Record<string, unknown>)?.no_cache, true);
 });
 
 test("feishu source operation fetches anchor message context and keeps permission warnings non-fatal", async () => {
