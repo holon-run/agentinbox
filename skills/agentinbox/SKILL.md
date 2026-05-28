@@ -193,6 +193,43 @@ agentinbox source invoke <sourceId> --operation get_message_context --input-json
 agentinbox deliver invoke --handle-json '<deliveryHandle-json>' --operation send_text --input-json '{"text":"Acknowledged","uxcAuth":"feishu-default"}'
 ```
 
+Feishu messages may carry files, images, or cloud document links. List the
+attachments first and then save them locally:
+
+```bash
+# List attachments for a message
+agentinbox source invoke <sourceId> \
+  --operation list_message_attachments \
+  --input-json '{"messageId":"<messageId>"}'
+
+# Save one attachment by messageId + attachmentId
+agentinbox source invoke <sourceId> \
+  --operation save_attachment \
+  --input-json '{"messageId":"<messageId>","attachmentId":"<attachmentId>","outputDir":"/tmp/agentinbox-feishu"}'
+
+# Save with explicit output path and identity
+agentinbox source invoke <sourceId> \
+  --operation save_attachment \
+  --input-json '{"messageId":"<messageId>","attachmentId":"<attachmentId>","outputPath":"/tmp/report.pdf","identity":"bot"}'
+```
+
+Output formats by attachment kind:
+
+| Kind | Default | `format` options |
+|---|---|---|
+| `image` / `file` | original binary | `"original"` only |
+| `doc` / `docx` / `wiki` | `.md` (Markdown) | N/A |
+| `sheet` | `.xlsx` | `"csv"` (requires `subId`) |
+| `bitable` / `base` | `.base` | `"csv"` (requires `subId`) |
+| `drive_file` | original file | `"original"` only |
+
+Optional `save_attachment` parameters: `outputPath`, `outputDir`, `fileName`,
+`format`, `subId`, `identity` (`"user"` or `"bot"`), `overwrite`.
+
+Rich text and file replies are available through `send_post`, `send_file`,
+and `send_file_from_path` delivery operations. Use `deliver actions` to
+inspect available schemas.
+
 Advanced source/subscription commands:
 
 ```bash

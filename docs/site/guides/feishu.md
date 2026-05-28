@@ -129,21 +129,87 @@ agentinbox source invoke <sourceId> \
   --input-json '{"messageId":"<messageId>"}'
 ```
 
-Use the returned `attachmentId` to save one attachment to a local absolute
-path. AgentInbox writes into the path you provide; your runtime sandbox
-controls whether that path is accessible.
+The response includes each attachment with `attachmentId`, `kind`, and
+source-specific fields such as `fileKey` for message resources or `token`
+for cloud documents:
+
+```json
+{
+  "messageId": "om_xxx",
+  "attachments": [
+    {
+      "attachmentId": "att_xxx",
+      "kind": "file",
+      "fileKey": "file_xxx",
+      "name": "report.pdf"
+    },
+    {
+      "attachmentId": "att_yyy",
+      "kind": "doc",
+      "token": "doccn_xxx",
+      "url": "https://internal-api.feishu.cn/open-apis/drive/v1/documents/doccn_xxx"
+    }
+  ]
+}
+```
+
+### Save An Attachment
+
+Use the returned `attachmentId` to save one attachment. AgentInbox writes
+into the path you provide; your runtime sandbox controls whether that path
+is accessible.
+
+**By `messageId` + `attachmentId` (recommended for most callers):**
 
 ```bash
 agentinbox source invoke <sourceId> \
   --operation save_attachment \
-  --input-json '{"messageId":"<messageId>","attachmentId":"<attachmentId>","outputDir":"/tmp/agentinbox-feishu","identity":"bot"}'
+  --input-json '{"messageId":"<messageId>","attachmentId":"<attachmentId>","outputDir":"/tmp/agentinbox-feishu"}'
 ```
 
-The first Feishu/Lark implementation saves message files and images as the
-original resource. Doc, docx, and wiki links are saved as Markdown files. Sheets
-default to `xlsx`; export a specific sheet as CSV by passing `format:"csv"` and
-`subId`. Base/bitable links default to `.base`; pass `format:"csv"` and
-`subId` for a table CSV export when the app has permission.
+**By attachment object (when the caller already has the full attachment):**
+
+```bash
+agentinbox source invoke <sourceId> \
+  --operation save_attachment \
+  --input-json '{"attachment":{...},"outputDir":"/tmp/agentinbox-feishu"}'
+```
+
+### Attachment Types And Output Formats
+
+| Attachment kind | Default output | `format` option | Notes |
+|---|---|---|---|
+| `image` | original image | `"original"` only | Downloads the message image resource; requires `fileKey` |
+| `file` | original file | `"original"` only | Downloads the message file resource; requires `fileKey` |
+| `doc` / `docx` / `wiki` | `.md` (Markdown) | N/A | Exported via Feishu API as Markdown |
+| `sheet` | `.xlsx` | `"csv"` | CSV export requires `subId` for the sheet tab |
+| `bitable` / `base` | `.base` | `"csv"` | CSV export requires `subId` for the table |
+| `drive_file` | original file | `"original"` only | Downloads cloud drive file via Lark CLI |
+
+### Optional Parameters
+
+| Parameter | Type | Description |
+|---|---|---|
+| `outputPath` | string | Full absolute file path (alternative to `outputDir`) |
+| `outputDir` | string | Directory path; filename is auto-generated from attachment name |
+| `fileName` | string | Override the auto-generated filename |
+| `format` | string | Output format (`"original"`, `"csv"`, `"markdown"`) |
+| `subId` | string | Tab or table identifier for sheet/bitable CSV export |
+| `identity` | `"user"` \| `"bot"` | Caller identity for access control; defaults to the configured credential |
+| `overwrite` | boolean | Allow overwriting an existing file; defaults to `false` |
+
+### Save Response
+
+On success, `save_attachment` returns:
+
+```json
+{
+  "attachmentId": "att_xxx",
+  "kind": "file",
+  "path": "/tmp/agentinbox-feishu/report.pdf",
+  "format": "original"
+}
+```
 
 Reply with text:
 
