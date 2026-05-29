@@ -6190,26 +6190,30 @@ test("webhook dispatch transient error uses increasing backoff", async () => {
     let target = service.getActivationTarget(targetId);
     assert.equal(target.status, "active");
     assert.equal(target.consecutiveFailures, 1);
+    const lease1 = store.getActivationDispatchState("webhook-backoff-test", targetId)?.leaseExpiresAt;
+    assert.ok(lease1 != null);
 
     // Second dispatch: consecutiveFailures becomes 2
     fireDispatchWithExpiredLease(store, "webhook-backoff-test", targetId);
     await (service as any).syncActivationDispatchStates();
     target = service.getActivationTarget(targetId);
     assert.equal(target.consecutiveFailures, 2);
+    const lease2 = store.getActivationDispatchState("webhook-backoff-test", targetId)?.leaseExpiresAt;
+    assert.ok(lease2 != null);
 
     // Third dispatch: consecutiveFailures becomes 3
-    // Force lease expiry so syncActivationDispatchStates picks it up
     fireDispatchWithExpiredLease(store, "webhook-backoff-test", targetId);
     await (service as any).syncActivationDispatchStates();
     target = service.getActivationTarget(targetId);
     assert.equal(target.consecutiveFailures, 3);
+    const lease3 = store.getActivationDispatchState("webhook-backoff-test", targetId)?.leaseExpiresAt;
+    assert.ok(lease3 != null);
 
-    // Verify dispatch state exists with increasing lease times
-    const states = store.listActivationDispatchStatesForAgent("webhook-backoff-test");
-    assert.equal(states.length, 1);
-    // State shows dirty status after retryable_failure
-    assert.equal(states[0]?.status, "dirty");
-    assert.ok(states[0]?.leaseExpiresAt != null);
+    // Verify lease times increase: lease1 < lease2 < lease3
+    assert.ok(new Date(lease1).getTime() < new Date(lease2).getTime(),
+      `expected lease1 (${lease1}) < lease2 (${lease2})`);
+    assert.ok(new Date(lease2).getTime() < new Date(lease3).getTime(),
+      `expected lease2 (${lease2}) < lease3 (${lease3})`);
   } finally {
     await service.stop();
     store.close();

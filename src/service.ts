@@ -2510,6 +2510,10 @@ export class AgentInboxService {
             : uniqueSorted(entries.map((entry) => entry.sourceId)),
           entries: unackedItems,
         });
+        // Permanent errors and max-retries-exceeded signal "offline":
+        if (dispatched === "offline") {
+          this.store.deleteActivationDispatchState(buffer.agentId, buffer.targetId);
+        }
         if (dispatched === "retryable_failure") {
           if (state && state.status === "dirty" && state.leaseExpiresAt == null) {
             this.store.upsertActivationDispatchState({
