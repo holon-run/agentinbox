@@ -10,7 +10,15 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
-- No unreleased changes yet.
+## [1.3.1] - 2026-05-22
+
+### Fixed
+
+- Webhook dispatch now uses exponential backoff for transient errors (5s → 10s →
+  20s → ... → max 5min) instead of a fixed 5-second retry loop.
+- Permanently failed webhook targets (HTTP 404/409/410/422) are now cleaned up
+  immediately instead of retrying indefinitely.
+- `flushNotificationBuffer` now clears dispatch state for "offline" outcomes.
 
 ## [1.2.0] - 2026-05-21
 
