@@ -88,6 +88,8 @@ const DEFAULT_ACTIVATION_MAX_ITEMS = 20;
 const DEFAULT_NOTIFY_LEASE_MS = 10 * 60 * 1000;
 const DEFAULT_NOTIFY_RETRY_MS = 5_000;
 const MAX_TERMINAL_DEFER_RETRY_MS = 5 * 60 * 1000;
+const MAX_WEBHOOK_RETRY_MS = 5 * 60 * 1000;
+const MAX_WEBHOOK_CONSECUTIVE_FAILURES = 12;
 const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
@@ -2508,6 +2510,10 @@ export class AgentInboxService {
             : uniqueSorted(entries.map((entry) => entry.sourceId)),
           entries: unackedItems,
         });
+        // Permanent errors and max-retries-exceeded signal "offline":
+        if (dispatched === "offline") {
+          this.store.deleteActivationDispatchState(buffer.agentId, buffer.targetId);
+        }
         if (dispatched === "retryable_failure") {
           if (state && state.status === "dirty" && state.leaseExpiresAt == null) {
             this.store.upsertActivationDispatchState({
@@ -2696,10 +2702,17 @@ export class AgentInboxService {
       return;
     }
     if (dispatched === "retryable_failure") {
+      let backoffMs = DEFAULT_NOTIFY_RETRY_MS;
+      if (target.kind === "webhook") {
+        const updatedTarget = this.getActivationTargetIfExists(agentId, targetId);
+        if (updatedTarget) {
+          backoffMs = webhookDeferRetryMs(updatedTarget.consecutiveFailures);
+        }
+      }
       this.store.upsertActivationDispatchState({
         ...state,
         status: "dirty",
-        leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
+        leaseExpiresAt: new Date(Date.now() + backoffMs).toISOString(),
         deferReason: null,
         deferAttempts: 0,
         firstDeferredAt: null,
@@ -2982,6 +2995,35 @@ export class AgentInboxService {
           this.reconcileAgentStatus(target.agentId);
           return "offline";
         }
+      }
+      if (target.kind === "webhook") {
+        const statusCode = extractHttpStatus(error);
+        // 404 / 410: endpoint gone
+        // 409 / 422: expired or invalid webhook config
+        if (statusCode === 404 || statusCode === 410 || statusCode === 409 || statusCode === 422) {
+          this.logger.info("activation.webhook_permanent_error", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            statusCode,
+            message,
+          });
+          this.markActivationTargetOffline(target.targetId, message);
+          this.reconcileAgentStatus(target.agentId);
+          return "offline";
+        }
+        // Max consecutive transient failures exceeded
+        if (target.consecutiveFailures + 1 >= MAX_WEBHOOK_CONSECUTIVE_FAILURES) {
+          this.logger.info("activation.webhook_max_retries_exceeded", {
+            agentId: input.agentId,
+            targetId: target.targetId,
+            consecutiveFailures: target.consecutiveFailures + 1,
+            maxRetries: MAX_WEBHOOK_CONSECUTIVE_FAILURES,
+          });
+          this.markActivationTargetOffline(target.targetId, message);
+          this.reconcileAgentStatus(target.agentId);
+          return "offline";
+        }
+        // Transient error: fall through to markActivationTargetDispatchFailure
       }
       this.markActivationTargetDispatchFailure(target.targetId, message);
       return "retryable_failure";
@@ -3895,7 +3937,9 @@ export class ActivationDispatcher {
         body: JSON.stringify(activation),
       });
       if (!response.ok) {
-        throw new Error(`activation dispatch failed for ${targetUrl}: ${response.status}`);
+        const error = new Error(`activation dispatch failed for ${targetUrl}: ${response.status}`);
+        (error as any).statusCode = response.status;
+        throw error;
       }
     } catch (error) {
       console.warn(`activation dispatch error for ${targetUrl}:`, error);
@@ -4135,6 +4179,20 @@ function terminalDeferRetryMs(attempts: number): number {
   const normalizedAttempts = Math.max(1, attempts);
   const multiplier = 2 ** (normalizedAttempts - 1);
   return Math.min(DEFAULT_NOTIFY_RETRY_MS * multiplier, MAX_TERMINAL_DEFER_RETRY_MS);
+}
+
+function webhookDeferRetryMs(consecutiveFailures: number): number {
+  const normalized = Math.max(1, consecutiveFailures);
+  const multiplier = 2 ** (normalized - 1);
+  return Math.min(DEFAULT_NOTIFY_RETRY_MS * multiplier, MAX_WEBHOOK_RETRY_MS);
+}
+
+function extractHttpStatus(error: unknown): number | null {
+  if (error instanceof Error) {
+    const code = (error as any).statusCode;
+    if (typeof code === "number") return code;
+  }
+  return null;
 }
 
 function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {

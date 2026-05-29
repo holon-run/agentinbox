@@ -47,6 +47,19 @@ class FailingTerminalDispatcher extends RecordingTerminalDispatcher {
   }
 }
 
+class FailingActivationDispatcher extends ActivationDispatcher {
+  private statusCode: number;
+
+  constructor(statusCode = 500) {
+    super();
+    this.statusCode = statusCode;
+  }
+
+  override async dispatch(_targetUrl: string, _activation: Activation): Promise<void> {
+    throw Object.assign(new Error(`activation dispatch failed: ${this.statusCode}`), { statusCode: this.statusCode });
+  }
+}
+
 class FixedActivationGate implements ActivationGate {
   constructor(
     private readonly outcome: "inject" | "defer" | "offline",
@@ -6024,6 +6037,198 @@ test("registerAgent clears offline and error runtime fields for the current term
   }
 });
 
+// --- webhook dispatch error handling ---
+
+test("webhook dispatch with 404 permanently marks target offline and cleans up dispatch state", async () => {
+  const { store, service, dir } = await makeService({ dispatcher: new FailingActivationDispatcher(404), activationWindowMs: 10 });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-404-test",
+      webhook: { url: "http://127.0.0.1:12345/activate", notifyLeaseMs: 10 },
+    });
+    assert.equal(registered.activationChannel, "webhook");
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-404-test", { message: "hello" });
+
+    // Wait for async activation dispatch to fire
+    await sleep(50);
+
+    const target = service.getActivationTarget(targetId);
+    assert.equal(target.status, "offline");
+    assert.ok(target.offlineSince != null);
+    assert.ok(target.consecutiveFailures > 0);
+
+    // Dispatch state should be cleaned up
+    const states = store.listActivationDispatchStatesForAgent("webhook-404-test");
+    assert.equal(states.length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook dispatch with 410 permanently marks target offline", async () => {
+  const { store, service, dir } = await makeService({ dispatcher: new FailingActivationDispatcher(410), activationWindowMs: 10 });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-410-test",
+      webhook: { url: "http://127.0.0.1:12345/activate", notifyLeaseMs: 10 },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-410-test", { message: "hello" });
+    await sleep(50);
+
+    const target = service.getActivationTarget(targetId);
+    assert.equal(target.status, "offline");
+    assert.equal(store.listActivationDispatchStatesForAgent("webhook-410-test").length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook dispatch with 409 permanently marks target offline", async () => {
+  const { store, service, dir } = await makeService({ dispatcher: new FailingActivationDispatcher(409), activationWindowMs: 10 });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-409-test",
+      webhook: { url: "http://127.0.0.1:12345/activate", notifyLeaseMs: 10 },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-409-test", { message: "hello" });
+    await sleep(50);
+
+    const target = service.getActivationTarget(targetId);
+    assert.equal(target.status, "offline");
+    assert.equal(store.listActivationDispatchStatesForAgent("webhook-409-test").length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook dispatch with 422 permanently marks target offline", async () => {
+  const { store, service, dir } = await makeService({ dispatcher: new FailingActivationDispatcher(422), activationWindowMs: 10 });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-422-test",
+      webhook: { url: "http://127.0.0.1:12345/activate", notifyLeaseMs: 10 },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-422-test", { message: "hello" });
+    await sleep(50);
+
+    const target = service.getActivationTarget(targetId);
+    assert.equal(target.status, "offline");
+    assert.equal(store.listActivationDispatchStatesForAgent("webhook-422-test").length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook dispatch with 500 uses exponential backoff and eventually marks offline", async () => {
+  const { store, service, dir } = await makeService({ dispatcher: new FailingActivationDispatcher(500), activationWindowMs: 10 });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-500-test",
+      webhook: { url: "http://127.0.0.1:12345/activate", notifyLeaseMs: 10 },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-500-test", { message: "hello" });
+    // Wait for the initial async dispatch to happen and fail
+    await sleep(80);
+
+    // Force lease expiry and trigger retries until offline
+    let targetOffline = false;
+    for (let i = 0; i < 15 && !targetOffline; i++) {
+      fireDispatchWithExpiredLease(store, "webhook-500-test", targetId);
+      await (service as any).syncActivationDispatchStates();
+      const t = service.getActivationTarget(targetId);
+      if (t.status === "offline") {
+        targetOffline = true;
+      } else {
+        // Small sleep so the test doesn't spin too fast
+        await sleep(5);
+      }
+    }
+
+    const target = service.getActivationTarget(targetId);
+    assert.equal(target.status, "offline", "webhook should go offline after max retries");
+    assert.ok(target.consecutiveFailures >= 12, `expected >=12 consecutive failures, got ${target.consecutiveFailures}`);
+    assert.equal(store.listActivationDispatchStatesForAgent("webhook-500-test").length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook dispatch transient error uses increasing backoff", async () => {
+  const { store, service, dir } = await makeService({ dispatcher: new FailingActivationDispatcher(500), activationWindowMs: 10 });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-backoff-test",
+      webhook: { url: "http://127.0.0.1:12345/activate", notifyLeaseMs: 10 },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-backoff-test", { message: "hello" });
+    // Wait for initial async dispatch
+    await sleep(80);
+
+    // After first dispatch: consecutiveFailures becomes 1
+    let target = service.getActivationTarget(targetId);
+    assert.equal(target.status, "active");
+    assert.equal(target.consecutiveFailures, 1);
+    const lease1 = store.getActivationDispatchState("webhook-backoff-test", targetId)?.leaseExpiresAt;
+    assert.ok(lease1 != null);
+
+    // Second dispatch: consecutiveFailures becomes 2
+    fireDispatchWithExpiredLease(store, "webhook-backoff-test", targetId);
+    await (service as any).syncActivationDispatchStates();
+    target = service.getActivationTarget(targetId);
+    assert.equal(target.consecutiveFailures, 2);
+    const lease2 = store.getActivationDispatchState("webhook-backoff-test", targetId)?.leaseExpiresAt;
+    assert.ok(lease2 != null);
+
+    // Third dispatch: consecutiveFailures becomes 3
+    fireDispatchWithExpiredLease(store, "webhook-backoff-test", targetId);
+    await (service as any).syncActivationDispatchStates();
+    target = service.getActivationTarget(targetId);
+    assert.equal(target.consecutiveFailures, 3);
+    const lease3 = store.getActivationDispatchState("webhook-backoff-test", targetId)?.leaseExpiresAt;
+    assert.ok(lease3 != null);
+
+    // Verify lease times increase: lease1 < lease2 < lease3
+    assert.ok(new Date(lease1).getTime() < new Date(lease2).getTime(),
+      `expected lease1 (${lease1}) < lease2 (${lease2})`);
+    assert.ok(new Date(lease2).getTime() < new Date(lease3).getTime(),
+      `expected lease2 (${lease2}) < lease3 (${lease3})`);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Force a dispatch state's lease to be expired so syncActivationDispatchStates picks it up. */
+function fireDispatchWithExpiredLease(store: AgentInboxStore, agentId: string, targetId: string): void {
+  const state = store.getActivationDispatchState(agentId, targetId);
+  if (state) {
+    store.upsertActivationDispatchState({ ...state, leaseExpiresAt: new Date(Date.now() - 1).toISOString() });
+  }
 }
