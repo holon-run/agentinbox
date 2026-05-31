@@ -2674,16 +2674,15 @@ export class AgentInboxService {
       return;
     }
     if (reason === "lease" && state.status === "notified") {
-      if (target.kind !== "terminal") {
-        // Webhook targets keep the existing lease-based behavior.
-      } else {
-        this.store.upsertActivationDispatchState({
-          ...state,
-          leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
-          updatedAt: nowIso(),
-        });
-        return;
-      }
+      // No new items since last notification — just renew lease for both
+      // terminal and webhook targets. Re-dispatching would cause an infinite
+      // wake loop (the agent already knows about these items).
+      this.store.upsertActivationDispatchState({
+        ...state,
+        leaseExpiresAt: new Date(Date.now() + target.notifyLeaseMs).toISOString(),
+        updatedAt: nowIso(),
+      });
+      return;
     }
 
     const dispatched = await this.dispatchActivationTarget({
