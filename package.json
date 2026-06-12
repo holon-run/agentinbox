@@ -45,14 +45,14 @@
   "dependencies": {
     "@fastify/swagger": "^9.5.2",
     "@holon-run/uxc-daemon-client": "^0.15.4",
+    "better-sqlite3": "^12.10.0",
     "commander": "^14.0.3",
     "fastify": "^5.6.1",
-    "jexl": "^2.3.0",
-    "sql.js": "^1.13.0"
+    "jexl": "^2.3.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.5.2",
-    "@types/sql.js": "^1.4.9",
     "drizzle-kit": "1.0.0-beta.21",
     "drizzle-orm": "^0.45.2",
     "mdorigin": "^0.5.0",
