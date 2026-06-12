@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import initSqlJs, { Database, SqlJsStatic } from "sql.js";
+import BetterSqlite3, { Database as BetterSqliteDatabase } from "better-sqlite3";
 import type {
   ConsumerRecord,
   StreamEventRecord,
@@ -41,6 +41,10 @@ import { formatEntryRef, formatThreadRef, generateCanonicalId, nowIso, parseEntr
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const V1_BASELINE_TAG = "0000_v1_initial";
 type SqlBindParams = unknown[];
+interface SqlRunResult {
+  changes: number;
+  lastInsertRowid: number | bigint;
+}
 
 interface SqlMigration {
   tag: string;
@@ -88,40 +92,109 @@ function earlierLifecycleRetirement(
 }
 
 export class AgentInboxStore {
-  private static sqlPromise: Promise<SqlJsStatic> | null = null;
-
   private constructor(
     private readonly dbPath: string,
-    private readonly db: Database,
+    private readonly db: BetterSqliteDatabase,
   ) {}
 
   static async open(dbPath: string): Promise<AgentInboxStore> {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    const SQL = await this.loadSqlJs();
-    let db = fs.existsSync(dbPath)
-      ? new SQL.Database(fs.readFileSync(dbPath))
-      : new SQL.Database();
+    const existedBeforeOpen = fs.existsSync(dbPath);
+    let db = await this.openDatabaseWithRecovery(dbPath);
     let store = new AgentInboxStore(dbPath, db);
-    if (fs.existsSync(dbPath) && store.shouldArchivePreV1Database()) {
+    if (existedBeforeOpen && store.shouldArchivePreV1Database()) {
       const archivedPath = store.archivePreV1Database();
       console.warn(
         `[agentinbox] archived pre-v1 local database to ${archivedPath}; starting with a fresh v1 database (no data imported).`,
       );
-      db = new SQL.Database();
+      db = this.openDatabase(dbPath);
       store = new AgentInboxStore(dbPath, db);
+    } else if (existedBeforeOpen) {
+      await store.backupHealthyDatabase();
     }
     store.migrate();
     store.persist();
     return store;
   }
 
-  private static async loadSqlJs(): Promise<SqlJsStatic> {
-    if (!this.sqlPromise) {
-      this.sqlPromise = initSqlJs({
-        locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
-      });
+  private static async openDatabaseWithRecovery(dbPath: string): Promise<BetterSqliteDatabase> {
+    try {
+      return this.openDatabase(dbPath);
+    } catch (error) {
+      if (!fs.existsSync(dbPath)) {
+        throw error;
+      }
+      const backupPath = this.findRecoverableBackup(dbPath);
+      if (!backupPath) {
+        throw error;
+      }
+      const corruptPath = this.nextPath(`${dbPath}.corrupt`);
+      fs.renameSync(dbPath, corruptPath);
+      fs.copyFileSync(backupPath, dbPath);
+      console.warn(
+        `[agentinbox] recovered local database from ${backupPath}; archived corrupt database to ${corruptPath}.`,
+      );
+      return this.openDatabase(dbPath);
     }
-    return this.sqlPromise;
+  }
+
+  private static openDatabase(dbPath: string): BetterSqliteDatabase {
+    const db = new BetterSqlite3(dbPath);
+    db.pragma("busy_timeout = 5000");
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    db.pragma("foreign_keys = ON");
+    this.assertHealthy(db, dbPath);
+    return db;
+  }
+
+  private static assertHealthy(db: BetterSqliteDatabase, dbPath: string): void {
+    const result = db.pragma("integrity_check", { simple: true });
+    if (result !== "ok") {
+      db.close();
+      throw new Error(`sqlite integrity_check failed for ${dbPath}: ${String(result)}`);
+    }
+  }
+
+  private static findRecoverableBackup(dbPath: string): string | null {
+    const candidates = this.listBackupCandidates(dbPath);
+    for (const candidate of candidates) {
+      try {
+        const db = new BetterSqlite3(candidate, { readonly: true, fileMustExist: true });
+        this.assertHealthy(db, candidate);
+        db.close();
+        return candidate;
+      } catch {
+        // Try the next backup candidate.
+      }
+    }
+    return null;
+  }
+
+  private static listBackupCandidates(dbPath: string): string[] {
+    const dir = path.dirname(dbPath);
+    const baseName = path.basename(dbPath);
+    const startupBackups = fs.existsSync(dir)
+      ? fs.readdirSync(dir)
+        .filter((name) => name.startsWith(`${baseName}.startup.`) && name.endsWith(".bak"))
+        .sort()
+        .reverse()
+        .map((name) => path.join(dir, name))
+      : [];
+    return [`${dbPath}.bak`, ...startupBackups].filter((candidate, index, all) =>
+      fs.existsSync(candidate) && all.indexOf(candidate) === index,
+    );
+  }
+
+  private static nextPath(base: string): string {
+    if (!fs.existsSync(base)) {
+      return base;
+    }
+    let suffix = 1;
+    while (fs.existsSync(`${base}.${suffix}`)) {
+      suffix += 1;
+    }
+    return `${base}.${suffix}`;
   }
 
   close(): void {
@@ -130,6 +203,18 @@ export class AgentInboxStore {
 
   save(): void {
     this.persist();
+  }
+
+  private async backupHealthyDatabase(): Promise<void> {
+    const backupPath = `${this.dbPath}.bak`;
+    const tmpPath = `${backupPath}.${process.pid}.tmp`;
+    try {
+      fs.rmSync(tmpPath, { force: true });
+      await this.db.backup(tmpPath);
+      fs.renameSync(tmpPath, backupPath);
+    } finally {
+      fs.rmSync(tmpPath, { force: true });
+    }
   }
 
   private migrate(): void {
@@ -201,7 +286,7 @@ export class AgentInboxStore {
   }
 
   private recordAppliedMigration(tag: string): void {
-    this.db.run(
+    this.run(
       `insert or ignore into ${DRIZZLE_MIGRATIONS_TABLE} (tag, applied_at) values (?, ?)`,
       [tag, nowIso()],
     );
@@ -260,8 +345,7 @@ export class AgentInboxStore {
   }
 
   private persist(): void {
-    const data = this.db.export();
-    fs.writeFileSync(this.dbPath, Buffer.from(data));
+    // better-sqlite3 persists changes through SQLite's journaling layer.
   }
 
   private inTransaction(fn: () => void): void {
@@ -276,7 +360,7 @@ export class AgentInboxStore {
   }
 
   private setUserVersion(version: number): void {
-    this.db.exec(`pragma user_version = ${version};`);
+    this.db.pragma(`user_version = ${version}`);
   }
 
   private tableExists(name: string): boolean {
@@ -353,7 +437,7 @@ export class AgentInboxStore {
           supersededAt: null,
           createdAt: item.occurredAt,
         });
-        this.db.run(
+        this.run(
           "insert or ignore into inbox_entry_items (entry_id, item_id) values (?, ?)",
           [entryId, item.itemId],
         );
@@ -375,7 +459,7 @@ export class AgentInboxStore {
   }
 
   insertSourceHost(host: SourceHost): void {
-    this.db.run(
+    this.run(
       `
       insert into source_hosts (
         host_id, host_type, host_key, config_ref, config_json, status, created_at, updated_at
@@ -410,7 +494,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown source host: ${hostId}`);
     }
-    this.db.run(
+    this.run(
       `
       update source_hosts
       set config_ref = ?, config_json = ?, updated_at = ?
@@ -435,7 +519,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown source host: ${hostId}`);
     }
-    this.db.run(
+    this.run(
       `
       update source_hosts
       set status = ?, updated_at = ?
@@ -468,7 +552,7 @@ export class AgentInboxStore {
       if (!source.hostId || !source.streamKind || !source.streamKey) {
         throw new Error("source insert requires hostId, streamKind, and streamKey");
       }
-      this.db.run(
+      this.run(
         `
         insert into sources (
           source_id, host_id, stream_kind, stream_key,
@@ -516,7 +600,7 @@ export class AgentInboxStore {
   }
 
   upsertSourceIdleState(idleState: SourceIdleState): SourceIdleState {
-    this.db.run(
+    this.run(
       `
       insert into source_idle_states (
         source_id, idle_since, auto_pause_at, auto_paused_at, updated_at
@@ -540,7 +624,7 @@ export class AgentInboxStore {
   }
 
   deleteSourceIdleState(sourceId: string): void {
-    this.db.run("delete from source_idle_states where source_id = ?", [sourceId]);
+    this.run("delete from source_idle_states where source_id = ?", [sourceId]);
     this.persist();
   }
 
@@ -552,7 +636,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown source: ${sourceId}`);
     }
-    this.db.run(
+    this.run(
       `
       update sources
       set config_ref = ?, config_json = ?, updated_at = ?
@@ -577,7 +661,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown source: ${sourceId}`);
     }
-    this.db.run(
+    this.run(
       `
       update sources
       set status = ?, checkpoint = ?, updated_at = ?
@@ -607,20 +691,20 @@ export class AgentInboxStore {
         );
         for (const row of consumers) {
           const consumerId = String(row.consumer_id);
-          this.db.run("delete from consumer_commits where consumer_id = ?", [consumerId]);
+          this.run("delete from consumer_commits where consumer_id = ?", [consumerId]);
         }
-        this.db.run("delete from consumers where stream_id = ?", [stream.streamId]);
-        this.db.run("delete from stream_events where stream_id = ?", [stream.streamId]);
-        this.db.run("delete from streams where stream_id = ?", [stream.streamId]);
+        this.run("delete from consumers where stream_id = ?", [stream.streamId]);
+        this.run("delete from stream_events where stream_id = ?", [stream.streamId]);
+        this.run("delete from streams where stream_id = ?", [stream.streamId]);
       }
-      this.db.run("delete from source_idle_states where source_id = ?", [sourceId]);
-      this.db.run("delete from sources where source_id = ?", [sourceId]);
+      this.run("delete from source_idle_states where source_id = ?", [sourceId]);
+      this.run("delete from sources where source_id = ?", [sourceId]);
       const hostId = source.hostId ?? null;
       const siblings = hostId
         ? this.getOne("select count(*) as count from sources where host_id = ?", [hostId])
         : null;
       if (hostId && Number(siblings?.count ?? 0) === 0) {
-        this.db.run("delete from source_hosts where host_id = ?", [hostId]);
+        this.run("delete from source_hosts where host_id = ?", [hostId]);
       }
     });
     this.persist();
@@ -633,7 +717,7 @@ export class AgentInboxStore {
   }
 
   insertAgent(agent: Agent): void {
-    this.db.run(
+    this.run(
       `
       insert into agents (
         agent_id, status, offline_since, runtime_kind, runtime_session_id, created_at, updated_at, last_seen_at
@@ -665,7 +749,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown agent: ${agentId}`);
     }
-    this.db.run(
+    this.run(
       `
       update agents
       set status = ?, offline_since = ?, runtime_kind = ?, runtime_session_id = ?, updated_at = ?, last_seen_at = ?
@@ -703,7 +787,7 @@ export class AgentInboxStore {
   }
 
   insertInbox(inbox: Inbox): void {
-    this.db.run(
+    this.run(
       `
       insert into inboxes (
         inbox_id, owner_agent_id, aggregation_enabled, aggregation_window_ms,
@@ -728,7 +812,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown inbox: ${inboxId}`);
     }
-    this.db.run(
+    this.run(
       `
       update inboxes
       set aggregation_enabled = ?,
@@ -762,7 +846,7 @@ export class AgentInboxStore {
   }
 
   insertSubscription(subscription: Subscription): void {
-    this.db.run(
+    this.run(
       `
       insert into subscriptions (
         subscription_id, agent_id, source_id, filter_json, tracked_resource_ref, cleanup_policy_json, start_policy, start_offset, start_time, created_at
@@ -856,13 +940,13 @@ export class AgentInboxStore {
       return null;
     }
     this.inTransaction(() => {
-      this.db.run(
+      this.run(
         "delete from consumer_commits where consumer_id in (select consumer_id from consumers where subscription_id = ?)",
         [subscriptionId],
       );
-      this.db.run("delete from consumers where subscription_id = ?", [subscriptionId]);
-      this.db.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
-      this.db.run("delete from subscriptions where subscription_id = ?", [subscriptionId]);
+      this.run("delete from consumers where subscription_id = ?", [subscriptionId]);
+      this.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
+      this.run("delete from subscriptions where subscription_id = ?", [subscriptionId]);
     });
     this.persist();
     return subscription;
@@ -894,7 +978,7 @@ export class AgentInboxStore {
     const next = existing
       ? earlierLifecycleRetirement(existing, retirement)
       : retirement;
-    this.db.run(
+    this.run(
       `
       insert into subscription_lifecycle_retirements (
         subscription_id, host_id, tracked_resource_ref, retire_at, terminal_state, terminal_result, terminal_occurred_at, created_at, updated_at
@@ -926,7 +1010,7 @@ export class AgentInboxStore {
   }
 
   deleteSubscriptionLifecycleRetirement(subscriptionId: string): void {
-    this.db.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
+    this.run("delete from subscription_lifecycle_retirements where subscription_id = ?", [subscriptionId]);
     this.persist();
   }
 
@@ -973,7 +1057,7 @@ export class AgentInboxStore {
 
   insertActivationTarget(target: ActivationTarget): void {
     if (target.kind === "webhook") {
-      this.db.run(
+      this.run(
         `
         insert into activation_targets (
           target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error,
@@ -999,7 +1083,7 @@ export class AgentInboxStore {
         ],
       );
     } else {
-      this.db.run(
+      this.run(
         `
         insert into activation_targets (
           target_id, agent_id, kind, status, offline_since, consecutive_failures, last_delivered_at, last_error, mode, notify_lease_ms, min_unacked_items,
@@ -1052,7 +1136,7 @@ export class AgentInboxStore {
       lastSeenAt: string;
     },
   ): TerminalActivationTarget {
-    this.db.run(
+    this.run(
       `
       update activation_targets
       set status = 'active', offline_since = null, last_error = null, consecutive_failures = 0,
@@ -1093,7 +1177,7 @@ export class AgentInboxStore {
       lastSeenAt: string;
     },
   ): WebhookActivationTarget {
-    this.db.run(
+    this.run(
       `
       update activation_targets
       set kind = 'webhook', status = 'active', offline_since = null, last_error = null, consecutive_failures = 0,
@@ -1134,7 +1218,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown activation target: ${targetId}`);
     }
-    this.db.run(
+    this.run(
       `
       update activation_targets
       set status = ?, offline_since = ?, consecutive_failures = ?, last_delivered_at = ?, last_error = ?, updated_at = ?, last_seen_at = ?
@@ -1177,8 +1261,8 @@ export class AgentInboxStore {
 
   deleteActivationTarget(agentId: string, targetId: string): void {
     this.inTransaction(() => {
-      this.db.run("delete from activation_dispatch_states where agent_id = ? and target_id = ?", [agentId, targetId]);
-      this.db.run("delete from activation_targets where agent_id = ? and target_id = ?", [agentId, targetId]);
+      this.run("delete from activation_dispatch_states where agent_id = ? and target_id = ?", [agentId, targetId]);
+      this.run("delete from activation_targets where agent_id = ? and target_id = ?", [agentId, targetId]);
     });
     this.persist();
   }
@@ -1188,31 +1272,31 @@ export class AgentInboxStore {
     const subscriptions = this.listSubscriptionsForAgent(agentId);
     this.inTransaction(() => {
       for (const subscription of subscriptions) {
-        this.db.run("delete from consumer_commits where consumer_id in (select consumer_id from consumers where subscription_id = ?)", [
+        this.run("delete from consumer_commits where consumer_id in (select consumer_id from consumers where subscription_id = ?)", [
           subscription.subscriptionId,
         ]);
-        this.db.run("delete from consumers where subscription_id = ?", [subscription.subscriptionId]);
+        this.run("delete from consumers where subscription_id = ?", [subscription.subscriptionId]);
       }
-      this.db.run(
+      this.run(
         "delete from subscription_lifecycle_retirements where subscription_id in (select subscription_id from subscriptions where agent_id = ?)",
         [agentId],
       );
-      this.db.run(
+      this.run(
         "delete from source_idle_states where source_id in (select distinct source_id from subscriptions where agent_id = ?)",
         [agentId],
       );
-      this.db.run("delete from timers where agent_id = ?", [agentId]);
-      this.db.run("delete from subscriptions where agent_id = ?", [agentId]);
-      this.db.run("delete from activation_dispatch_states where agent_id = ?", [agentId]);
-      this.db.run("delete from activation_targets where agent_id = ?", [agentId]);
+      this.run("delete from timers where agent_id = ?", [agentId]);
+      this.run("delete from subscriptions where agent_id = ?", [agentId]);
+      this.run("delete from activation_dispatch_states where agent_id = ?", [agentId]);
+      this.run("delete from activation_targets where agent_id = ?", [agentId]);
       if (inbox) {
-        this.db.run("delete from inbox_items where inbox_id = ?", [inbox.inboxId]);
-        this.db.run("delete from activations where agent_id = ? or inbox_id = ?", [agentId, inbox.inboxId]);
-        this.db.run("delete from inboxes where inbox_id = ?", [inbox.inboxId]);
+        this.run("delete from inbox_items where inbox_id = ?", [inbox.inboxId]);
+        this.run("delete from activations where agent_id = ? or inbox_id = ?", [agentId, inbox.inboxId]);
+        this.run("delete from inboxes where inbox_id = ?", [inbox.inboxId]);
       } else {
-        this.db.run("delete from activations where agent_id = ?", [agentId]);
+        this.run("delete from activations where agent_id = ?", [agentId]);
       }
-      this.db.run("delete from agents where agent_id = ?", [agentId]);
+      this.run("delete from agents where agent_id = ?", [agentId]);
     });
     if (options?.persist !== false) {
       this.persist();
@@ -1236,7 +1320,7 @@ export class AgentInboxStore {
   }
 
   insertTimer(timer: AgentTimer): void {
-    this.db.run(
+    this.run(
       `
       insert into timers (
         schedule_id, agent_id, status, mode, at, interval_ms, cron_expr, timezone,
@@ -1302,7 +1386,7 @@ export class AgentInboxStore {
     if (!current) {
       throw new Error(`unknown timer: ${scheduleId}`);
     }
-    this.db.run(
+    this.run(
       `
       update timers
       set status = ?, mode = ?, at = ?, interval_ms = ?, cron_expr = ?, timezone = ?,
@@ -1333,7 +1417,7 @@ export class AgentInboxStore {
     if (!current) {
       return null;
     }
-    this.db.run("delete from timers where schedule_id = ?", [scheduleId]);
+    this.run("delete from timers where schedule_id = ?", [scheduleId]);
     this.persist();
     return current;
   }
@@ -1360,7 +1444,7 @@ export class AgentInboxStore {
   }
 
   upsertActivationDispatchState(state: ActivationDispatchState): void {
-    this.db.run(
+    this.run(
       `
       insert into activation_dispatch_states (
         agent_id, target_id, status, lease_expires_at, last_notified_fingerprint, defer_reason, defer_attempts,
@@ -1404,7 +1488,7 @@ export class AgentInboxStore {
   }
 
   deleteActivationDispatchState(agentId: string, targetId: string): void {
-    this.db.run(
+    this.run(
       "delete from activation_dispatch_states where agent_id = ? and target_id = ?",
       [agentId, targetId],
     );
@@ -1412,8 +1496,7 @@ export class AgentInboxStore {
   }
 
   insertInboxItem(item: InboxItem): boolean {
-    const before = this.changes();
-    this.db.run(
+    const result = this.run(
       `
       insert or ignore into inbox_items (
         item_id, source_id, source_native_id, event_variant, inbox_id, occurred_at,
@@ -1434,10 +1517,10 @@ export class AgentInboxStore {
         item.ackedAt ?? null,
       ],
     );
-    const inserted = this.changes() > before;
+    const inserted = result.changes > 0;
     if (inserted) {
-      const rowId = this.lastInsertRowId();
-      this.db.run(
+      const rowId = Number(result.lastInsertRowid);
+      this.run(
         `
         update inbox_items
         set inbox_sequence = ?
@@ -1489,7 +1572,7 @@ export class AgentInboxStore {
       supersededAt: null,
       createdAt: nowIso(),
     });
-    this.db.run(
+    this.run(
       "insert or ignore into inbox_entry_items (entry_id, item_id) values (?, ?)",
       [entryId, item.itemId],
     );
@@ -1588,7 +1671,7 @@ export class AgentInboxStore {
     createdAt: string;
   }): DigestThreadRecord {
     const threadId = generateCanonicalId("thr");
-    this.db.run(
+    this.run(
       `
       insert into digest_threads (
         thread_id, inbox_id, source_id, group_key, resource_ref, event_family, latest_revision,
@@ -1622,11 +1705,11 @@ export class AgentInboxStore {
 
   addItemToDigestThread(threadId: string, itemId: string, occurredAt: string, summary: string, flushAfterAt: string | null): DigestThreadRecord {
     this.inTransaction(() => {
-      this.db.run(
+      this.run(
         "insert or ignore into digest_thread_items (thread_id, item_id) values (?, ?)",
         [threadId, itemId],
       );
-      this.db.run(
+      this.run(
         `
         update digest_threads
         set summary = ?, last_item_at = ?, flush_after_at = ?, updated_at = ?
@@ -1705,7 +1788,7 @@ export class AgentInboxStore {
     }
     this.inTransaction(() => {
       if (thread.latestEntryId != null) {
-        this.db.run(
+        this.run(
           "update inbox_entries set superseded_at = ? where entry_id = ? and superseded_at is null",
           [input.createdAt, thread.latestEntryId],
         );
@@ -1732,12 +1815,12 @@ export class AgentInboxStore {
         createdAt: input.createdAt,
       });
       for (const itemId of input.itemIds) {
-        this.db.run(
+        this.run(
           "insert or ignore into inbox_entry_items (entry_id, item_id) values (?, ?)",
           [entryId, itemId],
         );
       }
-      this.db.run(
+      this.run(
         `
         update digest_threads
         set latest_revision = ?, latest_entry_id = ?, summary = ?, first_item_at = ?, last_item_at = ?,
@@ -1752,7 +1835,7 @@ export class AgentInboxStore {
   }
 
   closeDigestThread(threadId: string, updatedAt: string): void {
-    this.db.run(
+    this.run(
       "update digest_threads set status = 'closed', flush_after_at = null, updated_at = ? where thread_id = ?",
       [updatedAt, threadId],
     );
@@ -1797,7 +1880,7 @@ export class AgentInboxStore {
   ackItems(inboxId: string, itemIds: string[], ackedAt: string): number {
     let changes = 0;
     for (const itemId of itemIds) {
-      this.db.run(
+      const result = this.run(
         `
         update inbox_items
         set acked_at = ?
@@ -1805,7 +1888,7 @@ export class AgentInboxStore {
       `,
         [ackedAt, inboxId, itemId],
       );
-      changes += this.changes();
+      changes += result.changes;
     }
     if (changes > 0) {
       this.persist();
@@ -1821,7 +1904,7 @@ export class AgentInboxStore {
     if (!anchor) {
       throw new Error(`unknown inbox item: ${itemId}`);
     }
-    this.db.run(
+    const result = this.run(
       `
       update inbox_items
       set acked_at = ?
@@ -1831,7 +1914,7 @@ export class AgentInboxStore {
     `,
       [ackedAt, inboxId, Number(anchor.inbox_sequence)],
     );
-    const changes = this.changes();
+    const changes = result.changes;
     if (changes > 0) {
       this.persist();
     }
@@ -1887,7 +1970,7 @@ export class AgentInboxStore {
   }
 
   insertActivation(activation: Activation): void {
-    this.db.run(
+    this.run(
       `
       insert into activations (
         activation_id, kind, agent_id, inbox_id, target_id, target_kind,
@@ -1921,7 +2004,7 @@ export class AgentInboxStore {
   }
 
   insertDelivery(delivery: DeliveryAttempt): void {
-    this.db.run(
+    this.run(
       `
       insert into deliveries (
         delivery_id, provider, surface, target_ref, thread_ref, reply_mode,
@@ -1950,7 +2033,7 @@ export class AgentInboxStore {
   }
 
   insertStream(stream: StreamRecord): void {
-    this.db.run(
+    this.run(
       "insert into streams (stream_id, source_id, stream_key, backend, created_at) values (?, ?, ?, ?, ?)",
       [stream.streamId, stream.sourceId, stream.streamKey, stream.backend, stream.createdAt],
     );
@@ -1982,8 +2065,7 @@ export class AgentInboxStore {
     const deliveryHandleJson = event.deliveryHandle ? JSON.stringify(event.deliveryHandle) : null;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const before = this.changes();
-      this.db.run(
+      const result = this.run(
         `
         insert or ignore into stream_events (
           stream_event_id, stream_id, source_id, source_native_id, event_variant,
@@ -2004,12 +2086,12 @@ export class AgentInboxStore {
           nowIso(),
         ],
       );
-      if (this.changes() > before) {
+      if (result.changes > 0) {
         this.persist();
         return {
           appended: 1,
           deduped: 0,
-          lastOffset: this.lastInsertRowId(),
+          lastOffset: Number(result.lastInsertRowid),
         };
       }
 
@@ -2083,7 +2165,7 @@ export class AgentInboxStore {
   }
 
   insertConsumer(consumer: ConsumerRecord): void {
-    this.db.run(
+    this.run(
       `
       insert into consumers (
         consumer_id, stream_id, subscription_id, consumer_key, start_policy,
@@ -2123,8 +2205,8 @@ export class AgentInboxStore {
 
   deleteConsumer(consumerId: string): void {
     this.inTransaction(() => {
-      this.db.run("delete from consumer_commits where consumer_id = ?", [consumerId]);
-      this.db.run("delete from consumers where consumer_id = ?", [consumerId]);
+      this.run("delete from consumer_commits where consumer_id = ?", [consumerId]);
+      this.run("delete from consumers where consumer_id = ?", [consumerId]);
     });
     this.persist();
   }
@@ -2136,11 +2218,11 @@ export class AgentInboxStore {
     }
     const updatedAt = nowIso();
     this.inTransaction(() => {
-      this.db.run(
+      this.run(
         "update consumers set next_offset = ?, updated_at = ? where consumer_id = ?",
         [nextOffset, updatedAt, consumerId],
       );
-      this.db.run(
+      this.run(
         `
         insert into consumer_commits (
           commit_id, consumer_id, stream_id, committed_offset, committed_at
@@ -2162,7 +2244,7 @@ export class AgentInboxStore {
       nextOffset: number;
     },
   ): ConsumerRecord {
-    this.db.run(
+    this.run(
       `
       update consumers
       set start_policy = ?, start_offset = ?, start_time = ?, next_offset = ?, updated_at = ?
@@ -2217,31 +2299,16 @@ export class AgentInboxStore {
     return Number(row?.rowid ?? 0);
   }
 
+  private run(sql: string, params: SqlBindParams = []): SqlRunResult {
+    return this.db.prepare(sql).run(...params);
+  }
+
   private getOne(sql: string, params: SqlBindParams = []): Record<string, unknown> | undefined {
-    const statement = this.db.prepare(sql);
-    try {
-      statement.bind(params as never);
-      if (!statement.step()) {
-        return undefined;
-      }
-      return statement.getAsObject() as Record<string, unknown>;
-    } finally {
-      statement.free();
-    }
+    return this.db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
   }
 
   private getAll(sql: string, params: SqlBindParams = []): Record<string, unknown>[] {
-    const statement = this.db.prepare(sql);
-    try {
-      statement.bind(params as never);
-      const rows: Record<string, unknown>[] = [];
-      while (statement.step()) {
-        rows.push(statement.getAsObject() as Record<string, unknown>);
-      }
-      return rows;
-    } finally {
-      statement.free();
-    }
+    return this.db.prepare(sql).all(...params) as Record<string, unknown>[];
   }
 
   private mapSource(row: Record<string, unknown>): SourceStream {
@@ -2606,7 +2673,7 @@ export class AgentInboxStore {
     createdAt: string;
   }): string {
     const entryId = generateCanonicalId("ent");
-    this.db.run(
+    this.run(
       `
       insert into inbox_entries (
         entry_id, inbox_id, kind, sequence, thread_id, revision, group_key, resource_ref, event_family,
@@ -2700,7 +2767,7 @@ export class AgentInboxStore {
   }
 
   private syncInboxEntryAckState(inboxId: string, ackedAt: string): void {
-    this.db.run(
+    this.run(
       `
       update inbox_entries
       set acked_at = ?
@@ -2734,15 +2801,15 @@ export class AgentInboxStore {
   private deleteInboxItemsAndEntryArtifacts(itemIds: string[]): void {
     const placeholders = itemIds.map(() => "?").join(", ");
     this.inTransaction(() => {
-      this.db.run(
+      this.run(
         `delete from digest_thread_items where item_id in (${placeholders})`,
         itemIds,
       );
-      this.db.run(
+      this.run(
         `delete from inbox_items where item_id in (${placeholders})`,
         itemIds,
       );
-      this.db.run(
+      this.run(
         `
         delete from inbox_entries
         where entry_id in (
@@ -2761,7 +2828,7 @@ export class AgentInboxStore {
         )
         `,
       );
-      this.db.run(
+      this.run(
         `
         delete from inbox_entry_items
         where not exists (
@@ -2771,7 +2838,7 @@ export class AgentInboxStore {
         )
         `,
       );
-      this.db.run(
+      this.run(
         `
         update digest_threads
         set latest_entry_id = (
@@ -2788,7 +2855,7 @@ export class AgentInboxStore {
             ), 0)
         `,
       );
-      this.db.run(
+      this.run(
         `
         delete from digest_threads
         where not exists (

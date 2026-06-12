@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
-import initSqlJs from "sql.js";
+import BetterSqlite3 from "better-sqlite3";
 import { AdapterRegistry } from "../src/adapters";
 import { EventBusBackend, SqliteEventBusBackend } from "../src/backend";
 import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, TerminalActivationTarget, WebhookActivationTarget } from "../src/model";
@@ -368,10 +368,8 @@ function requireTerminalTarget(result: { terminalTarget: TerminalActivationTarge
 }
 
 async function createLegacyDb(dbPath: string): Promise<void> {
-  const SQL = await initSqlJs({
-    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
-  });
-  const db = new SQL.Database();
+  fs.rmSync(dbPath, { force: true });
+  const db = new BetterSqlite3(dbPath);
   db.exec(`
     create table if not exists sources (
       source_id text primary key,
@@ -441,15 +439,11 @@ async function createLegacyDb(dbPath: string): Promise<void> {
     );
   `);
   db.exec("pragma user_version = 12;");
-  fs.writeFileSync(dbPath, Buffer.from(db.export()));
   db.close();
 }
 
 async function createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath: string): Promise<void> {
-  const SQL = await initSqlJs({
-    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
-  });
-  const db = new SQL.Database();
+  const db = new BetterSqlite3(dbPath);
   const baselineSql = fs.readFileSync(path.resolve(__dirname, "../drizzle/migrations/0000_v1_initial.sql"), "utf8");
   db.exec(`
     create table if not exists __drizzle_migrations (
@@ -476,7 +470,6 @@ async function createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath: str
       '2026-04-19T00:30:00.000Z', '2026-04-19T00:30:00.000Z', '2026-04-19T00:30:00.000Z'
     );
   `);
-  fs.writeFileSync(dbPath, Buffer.from(db.export()));
   db.close();
 }
 
@@ -486,22 +479,19 @@ async function readMigrationState(dbPath: string): Promise<{
   retirementColumns: string[];
   hasTrackedResourceIndex: boolean;
 }> {
-  const SQL = await initSqlJs({
-    locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
-  });
-  const db = new SQL.Database(fs.readFileSync(dbPath));
-  const migrationResult = db.exec("select tag from __drizzle_migrations order by id asc;") as Array<{ values: unknown[][] }>;
-  const appliedTags = (migrationResult[0]?.values ?? []).map((row) => String(row[0]));
-  const indexResult = db.exec("pragma index_list('inbox_items');") as Array<{ values: unknown[][] }>;
-  const hasNewIndex = indexResult.some((set) =>
-    set.values.some((row) => String(row[1]) === "idx_inbox_items_source_occurred_at"),
-  );
-  const subscriptionIndexResult = db.exec("pragma index_list('subscriptions');") as Array<{ values: unknown[][] }>;
-  const hasTrackedResourceIndex = subscriptionIndexResult.some((set) =>
-    set.values.some((row) => String(row[1]) === "idx_subscriptions_tracked_resource_source"),
-  );
-  const retirementColumnsResult = db.exec("pragma table_info('subscription_lifecycle_retirements');") as Array<{ values: unknown[][] }>;
-  const retirementColumns = (retirementColumnsResult[0]?.values ?? []).map((row) => String(row[1]));
+  const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
+  const appliedTags = db.prepare("select tag from __drizzle_migrations order by id asc;")
+    .all()
+    .map((row) => String((row as Record<string, unknown>).tag));
+  const hasNewIndex = db.prepare("pragma index_list('inbox_items');")
+    .all()
+    .some((row) => String((row as Record<string, unknown>).name) === "idx_inbox_items_source_occurred_at");
+  const hasTrackedResourceIndex = db.prepare("pragma index_list('subscriptions');")
+    .all()
+    .some((row) => String((row as Record<string, unknown>).name) === "idx_subscriptions_tracked_resource_source");
+  const retirementColumns = db.prepare("pragma table_info('subscription_lifecycle_retirements');")
+    .all()
+    .map((row) => String((row as Record<string, unknown>).name));
   db.close();
   return { appliedTags, hasNewIndex, retirementColumns, hasTrackedResourceIndex };
 }
@@ -2939,19 +2929,22 @@ test("terminal lifecycle retirements honor gracePeriodSecs until gc reaches reti
       startPolicy: "earliest",
     });
 
+    const occurredAt = new Date(Date.now() + 60_000).toISOString();
+    const expectedRetireAt = new Date(Date.parse(occurredAt) + 3_600_000).toISOString();
+
     await service.appendSourceEvent({
       sourceId: source.sourceId,
       sourceNativeId: "evt-terminal-grace",
       eventVariant: "demo.lifecycle",
       metadata: {},
       rawPayload: { id: "evt-terminal-grace", ref: "pr:9", state: "closed" },
-      occurredAt: "2026-06-01T00:00:00.000Z",
+      occurredAt,
     });
     await service.pollSubscription(subscription.subscriptionId);
 
     const scheduled = store.getSubscriptionLifecycleRetirement(subscription.subscriptionId);
     assert.ok(scheduled);
-    assert.equal(scheduled?.retireAt, "2026-06-01T01:00:00.000Z");
+    assert.equal(scheduled?.retireAt, expectedRetireAt);
 
     const firstGc = service.gc();
     assert.equal(firstGc.removedSubscriptions, 0);
@@ -3214,12 +3207,8 @@ test("ack through still follows visible order when older binaries left inbox_seq
     store.close();
 
     const dbPath = path.join(dir, "agentinbox.sqlite");
-    const SQL = await initSqlJs({
-      locateFile: (file: string) => require.resolve(`sql.js/dist/${file}`),
-    });
-    const db = new SQL.Database(fs.readFileSync(dbPath));
-    db.exec(`update inbox_items set inbox_sequence = null where inbox_id = '${inboxId}';`);
-    fs.writeFileSync(dbPath, Buffer.from(db.export()));
+    const db = new BetterSqlite3(dbPath);
+    db.prepare("update inbox_items set inbox_sequence = null where inbox_id = ?").run(inboxId);
     db.close();
 
     const reopened = await makeServiceFromDbPath(dbPath, dir);
