@@ -10,6 +10,16 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-06-12
+
+### Fixed
+
+- Migrated local SQLite persistence from `sql.js` whole-file exports to
+  `better-sqlite3` with WAL-backed on-disk writes, avoiding non-atomic database
+  rewrites that could corrupt the inbox store.
+- Added startup integrity checks and recovery from backup snapshots before
+  falling back to a fresh database.
+
 ## [1.3.1] - 2026-05-22
 
 ### Fixed
