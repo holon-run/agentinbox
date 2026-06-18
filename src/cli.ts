@@ -886,12 +886,12 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "ack") {
     const args = normalized.slice(2);
-    const itemId = takeFlagValue(normalized, "--entry");
+    const itemId = takeFlagValue(normalized, "--entry-id") ?? takeFlagValue(normalized, "--entry");
     const throughEntryId = takeFlagValue(normalized, "--through");
     const ackAll = hasFlag(normalized, "--all");
     const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughEntryId)) + Number(ackAll);
-    if (positionalArgs(args, ["--agent-id", "--entry", "--through"]).length > 0 || modeCount !== 1) {
-      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)");
+    if (positionalArgs(args, ["--agent-id", "--entry", "--entry-id", "--through"]).length > 0 || modeCount !== 1) {
+      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --entry-id <entryId> | --all)");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -1772,7 +1772,7 @@ Usage:
   agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]
-  agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --all)
+  agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --entry-id <entryId> | --all)
   agentinbox inbox policy show [--agent-id ID]
   agentinbox inbox policy set [--agent-id ID] [--enabled|--disabled] [--window-ms N] [--max-items N] [--max-thread-age-ms N]
   agentinbox inbox compact <agentId>
