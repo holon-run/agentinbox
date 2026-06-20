@@ -2041,6 +2041,15 @@ export class AgentInboxService {
 
   async status(): Promise<Record<string, unknown>> {
     const sources = await this.listSourceViews();
+    const agents = this.store.listAgents();
+    const subscriptions = this.store.listSubscriptions();
+    const inboxes = this.store.listInboxes();
+    const activationTargets = this.store.listActivationTargets();
+    const activationDispatchStates = this.store.listActivationDispatchStates();
+    const streams = this.store.listStreams();
+    const consumers = this.store.listConsumers();
+    const recentActivations = this.store.listActivations().slice(0, 10);
+    const recentDeliveries = this.store.listDeliveries().slice(0, 10);
     return {
       retention: {
         ackedInboxItemsMs: this.ackedRetentionMs,
@@ -2048,17 +2057,30 @@ export class AgentInboxService {
         lastAckedInboxGcAt: this.lastAckedInboxGcAt > 0 ? new Date(this.lastAckedInboxGcAt).toISOString() : null,
       },
       counts: this.store.getCounts(),
-      agents: this.store.listAgents(),
+      diagnostics: {
+        database: this.store.getDatabaseHealth(),
+        daemon: { status: "running" },
+        sources: summarizeByStatus(sources, ["active", "paused", "error"]),
+        agents: summarizeByStatus(agents, ["active", "offline"]),
+        activationTargets: summarizeByStatus(activationTargets, ["active", "offline"]),
+        activationDispatch: {
+          ...summarizeByStatus(activationDispatchStates, ["dirty", "notified"]),
+          pendingNewItems: activationDispatchStates.reduce((total, state) => total + state.pendingNewItemCount, 0),
+          deferredAttempts: activationDispatchStates.reduce((total, state) => total + state.deferAttempts, 0),
+        },
+        deliveries: summarizeByStatus(recentDeliveries, ["accepted", "sent", "failed"]),
+      },
+      agents,
       sources,
-      subscriptions: this.store.listSubscriptions(),
-      inboxes: this.store.listInboxes(),
-      activationTargets: this.store.listActivationTargets(),
-      activationDispatchStates: this.store.listActivationDispatchStates(),
-      streams: this.store.listStreams(),
-      consumers: this.store.listConsumers(),
+      subscriptions,
+      inboxes,
+      activationTargets,
+      activationDispatchStates,
+      streams,
+      consumers,
       adapters: this.adapters.status(),
-      recentActivations: this.store.listActivations().slice(0, 10),
-      recentDeliveries: this.store.listDeliveries().slice(0, 10),
+      recentActivations,
+      recentDeliveries,
       lifecycle: {
         offlineAgentTtlMs: DEFAULT_OFFLINE_AGENT_TTL_MS,
         gcIntervalMs: DEFAULT_GC_INTERVAL_MS,
@@ -4635,6 +4657,20 @@ function deliveryActionsHelp(handle: DeliveryHandle): string {
 
 function isKnownDeliverySurface(handle: DeliveryHandle): boolean {
   return KNOWN_DELIVERY_SURFACES[handle.provider]?.includes(handle.surface) === true;
+}
+
+function summarizeByStatus<T extends { status: string }>(
+  records: T[],
+  expectedStatuses: string[],
+): Record<string, number> & { total: number } {
+  const summary: Record<string, number> & { total: number } = { total: records.length };
+  for (const status of expectedStatuses) {
+    summary[status] = 0;
+  }
+  for (const record of records) {
+    summary[record.status] = (summary[record.status] ?? 0) + 1;
+  }
+  return summary;
 }
 
 function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: string; type: string; description: string; required?: boolean }> {
