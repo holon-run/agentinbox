@@ -346,8 +346,13 @@ test("cli accepts --json as a no-op compatibility flag on default JSON commands"
   try {
     const status = runCli(["status", "--json"], env);
     assert.equal(status.status, 0, status.stderr);
-    const parsedStatus = JSON.parse(status.stdout) as { counts?: { agents?: number } };
+    const parsedStatus = JSON.parse(status.stdout) as {
+      counts?: { agents?: number };
+      diagnostics?: { database?: { integrityCheck?: string }; daemon?: { status?: string } };
+    };
     assert.equal(typeof parsedStatus.counts?.agents, "number");
+    assert.equal(parsedStatus.diagnostics?.database?.integrityCheck, "ok");
+    assert.equal(parsedStatus.diagnostics?.daemon?.status, "running");
 
     const registered = runCli(["agent", "register"], env);
     assert.equal(registered.status, 0, registered.stderr);
@@ -1208,6 +1213,11 @@ test("control plane source views surface backend managed runtime state", async (
       assert.equal(details.data.runtime?.updatedAt, "2024-04-15T00:00:00.000Z");
 
       const status = await client.request<{
+        diagnostics: {
+          database: { integrityCheck: string; journalMode: string; foreignKeys: boolean };
+          sources: { total: number; active: number; paused: number; error: number };
+          activationDispatch: { total: number; dirty: number; notified: number; pendingNewItems: number; deferredAttempts: number };
+        };
         sources: Array<{
           sourceId: string;
           runtime?: {
@@ -1224,6 +1234,11 @@ test("control plane source views surface backend managed runtime state", async (
         }>;
       }>("/status", undefined, "GET");
       assert.equal(status.statusCode, 200);
+      assert.equal(status.data.diagnostics.database.integrityCheck, "ok");
+      assert.equal(typeof status.data.diagnostics.database.journalMode, "string");
+      assert.equal(status.data.diagnostics.database.foreignKeys, true);
+      assert.equal(status.data.diagnostics.sources.total >= 1, true);
+      assert.equal(status.data.diagnostics.activationDispatch.pendingNewItems, 0);
       const statusSource = status.data.sources.find((entry) => entry.sourceId === source.sourceId);
       assert.ok(statusSource);
       assert.equal(statusSource?.runtime?.backend, "uxc");

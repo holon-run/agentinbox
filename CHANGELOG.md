@@ -10,6 +10,14 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.3.3] - 2026-06-19
+
+### Fixed
+
+- Added `--entry-id` as an alias for `--entry` in `agentinbox ack`, matching
+  entry identifier terminology used elsewhere in the CLI while preserving the
+  existing `--entry` flag.
+
 ## [1.3.2] - 2026-06-12
 
 ### Fixed

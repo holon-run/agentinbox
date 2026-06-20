@@ -36,6 +36,7 @@ import {
   TerminalActivationTarget,
   WebhookActivationTarget,
 } from "./model";
+import { buildSubscriptionListQuery } from "./store_queries";
 import { formatEntryRef, formatThreadRef, generateCanonicalId, nowIso, parseEntryRef } from "./util";
 
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
@@ -67,6 +68,12 @@ interface DigestThreadRecord {
   flushAfterAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface DatabaseHealth {
+  integrityCheck: string;
+  journalMode: string;
+  foreignKeys: boolean;
 }
 
 function parseJson<T>(value: string | null): T {
@@ -203,6 +210,14 @@ export class AgentInboxStore {
 
   save(): void {
     this.persist();
+  }
+
+  getDatabaseHealth(): DatabaseHealth {
+    return {
+      integrityCheck: String(this.db.pragma("integrity_check", { simple: true })),
+      journalMode: String(this.db.pragma("journal_mode", { simple: true })),
+      foreignKeys: Number(this.db.pragma("foreign_keys", { simple: true })) === 1,
+    };
   }
 
   private async backupHealthyDatabase(): Promise<void> {
@@ -869,55 +884,26 @@ export class AgentInboxStore {
   }
 
   listSubscriptions(limit?: number): Subscription[] {
-    const rows = typeof limit === "number"
-      ? this.getAll("select * from subscriptions order by created_at asc, subscription_id asc limit ?", [limit])
-      : this.getAll("select * from subscriptions order by created_at asc, subscription_id asc");
+    const query = buildSubscriptionListQuery({ limit });
+    const rows = this.getAll(query.sql, query.params);
     return rows.map((row) => this.mapSubscription(row));
   }
 
   listSubscriptionsFiltered(filters?: { sourceId?: string; agentId?: string; limit?: number }): Subscription[] {
-    const clauses: string[] = [];
-    const params: Array<string | number> = [];
-    if (filters?.sourceId) {
-      clauses.push("source_id = ?");
-      params.push(filters.sourceId);
-    }
-    if (filters?.agentId) {
-      clauses.push("agent_id = ?");
-      params.push(filters.agentId);
-    }
-    const where = clauses.length > 0 ? ` where ${clauses.join(" and ")}` : "";
-    const limitClause = typeof filters?.limit === "number" ? " limit ?" : "";
-    if (typeof filters?.limit === "number") {
-      params.push(filters.limit);
-    }
-    const rows = this.getAll(`select * from subscriptions${where} order by created_at asc, subscription_id asc${limitClause}`, params);
+    const query = buildSubscriptionListQuery(filters);
+    const rows = this.getAll(query.sql, query.params);
     return rows.map((row) => this.mapSubscription(row));
   }
 
   listSubscriptionsForSource(sourceId: string, limit?: number): Subscription[] {
-    const rows = typeof limit === "number"
-      ? this.getAll(
-        "select * from subscriptions where source_id = ? order by created_at asc, subscription_id asc limit ?",
-        [sourceId, limit],
-      )
-      : this.getAll(
-        "select * from subscriptions where source_id = ? order by created_at asc, subscription_id asc",
-        [sourceId],
-      );
+    const query = buildSubscriptionListQuery({ sourceId, limit });
+    const rows = this.getAll(query.sql, query.params);
     return rows.map((row) => this.mapSubscription(row));
   }
 
   listSubscriptionsForAgent(agentId: string, limit?: number): Subscription[] {
-    const rows = typeof limit === "number"
-      ? this.getAll(
-        "select * from subscriptions where agent_id = ? order by created_at asc, subscription_id asc limit ?",
-        [agentId, limit],
-      )
-      : this.getAll(
-        "select * from subscriptions where agent_id = ? order by created_at asc, subscription_id asc",
-        [agentId],
-      );
+    const query = buildSubscriptionListQuery({ agentId, limit });
+    const rows = this.getAll(query.sql, query.params);
     return rows.map((row) => this.mapSubscription(row));
   }
   listSubscriptionsForHostTrackedResourceRef(hostId: string, trackedResourceRef: string): Subscription[] {
