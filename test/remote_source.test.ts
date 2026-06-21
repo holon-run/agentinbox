@@ -582,6 +582,74 @@ test("github_repo_ci builtin module emits status transitions for one workflow ru
   }
 });
 
+test("telegram_bot builtin module ingests getUpdates messages", async () => {
+  const fake = new FakeRemoteSourceClient();
+  const { dir, store, service } = await makeService(fake);
+  try {
+    const source = await service.registerSource({
+      sourceType: "telegram_bot",
+      sourceKey: "operator-bot",
+      config: { tokenEnv: "TELEGRAM_BOT_TOKEN", chatIds: ["456"], allowedUpdates: ["message"] },
+    });
+    const agent = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "remote-telegram-thread",
+      tmuxPaneId: "%905",
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: { metadata: { chatId: "456" } },
+      startPolicy: "earliest",
+    });
+
+    fake.push("stream:telegram_bot:operator-bot", {
+      update_id: 123,
+      message: {
+        message_id: 7,
+        date: 1710000000,
+        text: "Hello from Telegram",
+        chat: { id: 456, type: "private" },
+        from: { id: 111, username: "operator", first_name: "Op" },
+      },
+    });
+
+    const sourcePoll = await service.pollSource(source.sourceId);
+    const subscriptionPoll = await service.pollSubscription(subscription.subscriptionId);
+    const items = service.listInboxItems(agent.agent.agentId);
+    const spec = (fake as unknown as { streamSpecs: Map<string, ManagedSourceSpec> })
+      .streamSpecs.get("stream:telegram_bot:operator-bot");
+
+    assert.equal(sourcePoll.appended, 1);
+    assert.equal(subscriptionPoll.inboxItemsCreated, 1);
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.sourceNativeId, `telegram:${source.sourceId}:123`);
+    assert.equal(items[0]?.eventVariant, "message.text");
+    assert.equal(items[0]?.metadata?.chatId, "456");
+    assert.equal(items[0]?.metadata?.content, "Hello from Telegram");
+    assert.deepEqual(items[0]?.deliveryHandle, {
+      provider: "telegram",
+      surface: "message_reply",
+      targetRef: "456",
+      threadRef: "7",
+      replyMode: "reply",
+    });
+    assert.equal(spec?.endpoint, "https://api.telegram.org");
+    assert.equal(spec?.operation_id, "getUpdates");
+    assert.equal(spec?.transport_hint, "telegram_get_updates");
+    assert.deepEqual(spec?.args, {
+      tokenEnv: "TELEGRAM_BOT_TOKEN",
+      chatIds: ["456"],
+      allowedUpdates: ["message"],
+    });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("removeSource deletes managed source binding when no subscriptions remain", async () => {
   const fake = new FakeRemoteSourceClient();
   const { dir, store, service } = await makeService(fake);

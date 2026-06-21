@@ -19,6 +19,7 @@ import { AgentInboxStore } from "./store";
 import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubCallClient, GithubDeliveryAdapter } from "./sources/github";
+import { TelegramDeliveryAdapter } from "./sources/telegram";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { ExpandedFollowPlan, ExpandedSubscriptionPlan, ExpandFollowTemplateInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry, builtinRemoteSourceTypes } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
@@ -75,6 +76,7 @@ export class AdapterRegistry {
   private readonly defaultDelivery = new NoopDeliveryAdapter();
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
+  private readonly telegramDelivery = new TelegramDeliveryAdapter();
   private readonly homeDir: string;
   private readonly remoteModuleRegistry: RemoteSourceModuleRegistry;
 
@@ -115,6 +117,9 @@ export class AdapterRegistry {
     if (type === "feishu_bot") {
       return this.remoteSource;
     }
+    if (type === "telegram_bot") {
+      return this.remoteSource;
+    }
     return this.localEventSource;
   }
 
@@ -124,6 +129,9 @@ export class AdapterRegistry {
     }
     if (provider === "github") {
       return this.githubDelivery;
+    }
+    if (provider === "telegram") {
+      return this.telegramDelivery;
     }
     return this.defaultDelivery;
   }
@@ -335,6 +343,9 @@ export class AdapterRegistry {
     if (handle.provider === "feishu") {
       return this.remoteModuleRegistry.resolve(syntheticBuiltinSource("feishu_bot"), this.homeDir);
     }
+    if (handle.provider === "telegram") {
+      return this.remoteModuleRegistry.resolve(syntheticBuiltinSource("telegram_bot"), this.homeDir);
+    }
     return null;
   }
 }
@@ -346,6 +357,7 @@ function isExplicitFollowPreviewRef(value: string): boolean {
     value === "github_repo" ||
     value === "github_repo_ci" ||
     value === "feishu_bot" ||
+    value === "telegram_bot" ||
     value.startsWith("remote:")
   );
 }
@@ -355,7 +367,7 @@ function hasRemoteSourceModulePath(config: Record<string, unknown> | undefined):
   return typeof modulePath === "string" && modulePath.trim().length > 0;
 }
 
-function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot"): SourceStream {
+function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot" | "telegram_bot"): SourceStream {
   return {
     sourceId: `builtin:${sourceType}`,
     hostId: `builtin-host:${sourceType}`,

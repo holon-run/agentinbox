@@ -28,11 +28,15 @@ import {
   RemoteSourceModuleRegistry,
 } from "./remote_modules";
 
+type UxcSourceEnsureArgs = Parameters<UxcDaemonClient["sourceEnsure"]>[0];
+type UxcSourceEnsureSpec = UxcSourceEnsureArgs["spec"];
+
 const REMOTE_SOURCE_TYPES = new Set<SourceStream["sourceType"]>([
   "remote_source",
   "github_repo",
   "github_repo_ci",
   "feishu_bot",
+  "telegram_bot",
 ]);
 
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;
@@ -83,6 +87,8 @@ export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
   constructor(private readonly client: UxcDaemonClient = new UxcDaemonClient({ env: process.env })) {}
 
   sourceEnsure(args: { namespace: string; sourceKey: string; spec: ManagedSourceSpec }): Promise<ManagedSourceEnsureResponse> {
+    const transportHint = args.spec.transport_hint ?? null;
+
     return this.client.sourceEnsure({
       namespace: args.namespace,
       sourceKey: args.sourceKey,
@@ -91,7 +97,7 @@ export class RpcUxcRemoteSourceClient implements UxcRemoteSourceClient {
         operation_id: args.spec.operation_id ?? null,
         resource_uri: args.spec.resource_uri ?? null,
         read_resource: args.spec.read_resource ?? false,
-        transport_hint: args.spec.transport_hint ?? null,
+        transport_hint: transportHint as UxcSourceEnsureSpec["transport_hint"],
         subprotocols: args.spec.subprotocols ?? [],
         initial_text_frames: args.spec.initial_text_frames ?? [],
         poll_config: args.spec.poll_config ?? null,

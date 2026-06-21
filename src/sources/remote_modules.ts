@@ -52,6 +52,13 @@ import {
   normalizeFeishuBotEvent,
   parseFeishuSourceConfig,
 } from "./feishu";
+import {
+  TELEGRAM_BOT_API_ENDPOINT,
+  invokeTelegramDeliveryOperation,
+  normalizeTelegramBotUpdate,
+  parseTelegramSourceConfig,
+  telegramDeliveryOperationsForHandle,
+} from "./telegram";
 
 export interface ManagedSourceSpec {
   endpoint: string;
@@ -59,7 +66,7 @@ export interface ManagedSourceSpec {
   args?: Record<string, unknown> | null;
   resource_uri?: string | null;
   read_resource?: boolean;
-  transport_hint?: "websocket" | "discord_gateway" | "slack_socket_mode" | "feishu_long_connection" | null;
+  transport_hint?: "websocket" | "discord_gateway" | "slack_socket_mode" | "feishu_long_connection" | "telegram_get_updates" | null;
   subprotocols?: string[];
   initial_text_frames?: string[];
   mode: "stream" | "poll";
@@ -195,8 +202,8 @@ export interface RemoteSourceModule {
 }
 
 const REMOTE_USER_MODULE_ROOT_DIR = "source-modules";
-const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot"]);
-const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bot"] as const;
+const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot", "builtin.telegram_bot"]);
+const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bot", "telegram_bot"] as const;
 
 export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
@@ -215,6 +222,9 @@ export class RemoteSourceModuleRegistry {
     }
     if (source.sourceType === "feishu_bot") {
       return Promise.resolve(FEISHU_BOT_MODULE);
+    }
+    if (source.sourceType === "telegram_bot") {
+      return Promise.resolve(TELEGRAM_BOT_MODULE);
     }
     if (source.sourceType !== "remote_source") {
       throw new Error(`unsupported source type for remote module: ${source.sourceType}`);
@@ -265,6 +275,9 @@ export function builtInModuleIdForSourceType(sourceType: SourceStream["sourceTyp
   }
   if (sourceType === "feishu_bot") {
     return "builtin.feishu_bot";
+  }
+  if (sourceType === "telegram_bot") {
+    return "builtin.telegram_bot";
   }
   return null;
 }
@@ -736,6 +749,75 @@ const FEISHU_BOT_MODULE: RemoteSourceModule = {
       metadata: normalized.metadata ?? {},
       rawPayload: normalized.rawPayload ?? rawPayload,
       providerRawPayload: rawPayload,
+      occurredAt: normalized.occurredAt,
+      deliveryHandle: normalized.deliveryHandle,
+    };
+  },
+};
+
+const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
+  id: "builtin.telegram_bot",
+  listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
+    return telegramDeliveryOperationsForHandle(input.handle);
+  },
+  async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    return invokeTelegramDeliveryOperation(input.handle, input.operation, input.input);
+  },
+  describeCapabilities(): RemoteSourceCapabilityDescription {
+    return {
+      sourceKind: "telegram_bot",
+      aliases: ["telegram_bot"],
+      configSchema: [
+        { name: "botToken", type: "string", required: false, description: "Telegram bot token. Prefer tokenEnv for shared/local configuration." },
+        { name: "tokenEnv", type: "string", required: false, description: "Environment variable name containing the Telegram bot token." },
+        { name: "botUsername", type: "string", required: false, description: "Optional bot username used for source host identity." },
+        { name: "chatIds", type: "string[]", required: false, description: "Optional Telegram chat ID allowlist." },
+        { name: "allowedUpdates", type: "string[]", required: false, description: "Optional Telegram Bot API allowed_updates value." },
+        { name: "endpoint", type: "string", required: false, description: "Optional Telegram Bot API endpoint override." },
+      ],
+      metadataFields: [
+        { name: "updateId", type: "string", description: "Telegram update_id." },
+        { name: "chatId", type: "string", description: "Telegram chat ID." },
+        { name: "chatType", type: "string|null", description: "Telegram chat type such as private, group, or channel." },
+        { name: "messageId", type: "string", description: "Telegram message_id." },
+        { name: "messageType", type: "string", description: "Normalized Telegram message type such as text or photo." },
+        { name: "fromId", type: "string|null", description: "Telegram sender user ID when present." },
+        { name: "fromUsername", type: "string|null", description: "Telegram sender username when present." },
+        { name: "fromFirstName", type: "string|null", description: "Telegram sender first_name when present." },
+        { name: "content", type: "string|null", description: "Message text or caption when present." },
+      ],
+      eventVariantExamples: ["message.text", "edited_message.text", "channel_post.photo"],
+    };
+  },
+  validateConfig(source: SourceStream): void {
+    parseTelegramSourceConfig(source);
+  },
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
+    const config = parseTelegramSourceConfig(source);
+    return {
+      endpoint: config.endpoint ?? TELEGRAM_BOT_API_ENDPOINT,
+      operation_id: "getUpdates",
+      mode: "poll",
+      transport_hint: "telegram_get_updates",
+      args: {
+        ...(config.botToken ? { botToken: config.botToken } : {}),
+        ...(config.tokenEnv ? { tokenEnv: config.tokenEnv } : {}),
+        ...(config.chatIds && config.chatIds.length > 0 ? { chatIds: config.chatIds } : {}),
+        ...(config.allowedUpdates && config.allowedUpdates.length > 0 ? { allowedUpdates: config.allowedUpdates } : {}),
+      },
+    };
+  },
+  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
+    const config = parseTelegramSourceConfig(source);
+    const normalized = normalizeTelegramBotUpdate(source, config, rawPayload);
+    if (!normalized) {
+      return null;
+    }
+    return {
+      sourceNativeId: normalized.sourceNativeId,
+      eventVariant: normalized.eventVariant,
+      metadata: normalized.metadata ?? {},
+      rawPayload: normalized.rawPayload ?? rawPayload,
       occurredAt: normalized.occurredAt,
       deliveryHandle: normalized.deliveryHandle,
     };

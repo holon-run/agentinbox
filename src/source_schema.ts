@@ -152,6 +152,41 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "replyInThread", type: "boolean", required: false, description: "Reply in thread when sending outbound messages." },
     ],
   },
+  telegram_bot: {
+    sourceType: "telegram_bot",
+    metadataFields: [
+      { name: "updateId", type: "string", description: "Telegram update_id." },
+      { name: "chatId", type: "string", description: "Telegram chat ID." },
+      { name: "chatType", type: "string|null", description: "Telegram chat type such as private, group, or channel." },
+      { name: "messageId", type: "string", description: "Telegram message_id." },
+      { name: "messageType", type: "string", description: "Normalized Telegram message type such as text or photo." },
+      { name: "fromId", type: "string|null", description: "Telegram sender user ID when present." },
+      { name: "fromUsername", type: "string|null", description: "Telegram sender username when present." },
+      { name: "fromFirstName", type: "string|null", description: "Telegram sender first_name when present." },
+      { name: "content", type: "string|null", description: "Message text or caption when present." },
+    ],
+    payloadExamples: [
+      {
+        update_id: 123,
+        message: {
+          message_id: 7,
+          date: 1710000000,
+          text: "hello",
+          chat: { id: 456, type: "private" },
+          from: { id: 111, username: "operator", first_name: "Op" },
+        },
+      },
+    ],
+    eventVariantExamples: ["message.text", "edited_message.text", "channel_post.photo"],
+    configFields: [
+      { name: "botToken", type: "string", required: false, description: "Telegram bot token. Prefer tokenEnv for shared/local configuration." },
+      { name: "tokenEnv", type: "string", required: false, description: "Environment variable name containing the Telegram bot token." },
+      { name: "botUsername", type: "string", required: false, description: "Optional bot username used for source host identity." },
+      { name: "chatIds", type: "string[]", required: false, description: "Optional Telegram chat ID allowlist." },
+      { name: "allowedUpdates", type: "string[]", required: false, description: "Optional Telegram Bot API allowed_updates value." },
+      { name: "endpoint", type: "string", required: false, description: "Optional Telegram Bot API endpoint override." },
+    ],
+  },
 };
 
 export function getSourceSchema(sourceType: SourceType): SourceSchema {
