@@ -12,6 +12,7 @@ import { ManagedSourceSpec, RemoteSourceModuleRegistry, builtInModuleIdForSource
 import { AgentInboxStore } from "../src/store";
 import { TerminalDispatcher } from "../src/terminal";
 import { nowIso } from "../src/util";
+import { TelegramBotApiClient } from "../src/sources/telegram";
 
 class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   private readonly streams = new Map<string, Array<{ offset: number; raw_payload: unknown }>>();
@@ -192,7 +193,30 @@ class FakeRemoteSourceClient implements UxcRemoteSourceClient {
   }
 }
 
-async function makeService(fake: FakeRemoteSourceClient): Promise<{
+class FakeTelegramFetchClient {
+  public readonly calls: Array<{ url: string; init?: RequestInit }> = [];
+  private updates: Record<string, unknown>[] = [];
+
+  push(update: Record<string, unknown>): void {
+    this.updates.push(update);
+  }
+
+  async fetch(url: string, init?: RequestInit): Promise<{ ok: boolean; status: number; text(): Promise<string> }> {
+    this.calls.push({ url, init });
+    const parsed = new URL(url);
+    const offset = Number(parsed.searchParams.get("offset") ?? "0");
+    const result = this.updates.filter((update) => Number(update.update_id) >= offset);
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({ ok: true, result });
+      },
+    };
+  }
+}
+
+async function makeService(fake: FakeRemoteSourceClient, options?: { telegramFetchClient?: FakeTelegramFetchClient }): Promise<{
   dir: string;
   store: AgentInboxStore;
   service: AgentInboxService;
@@ -204,6 +228,7 @@ async function makeService(fake: FakeRemoteSourceClient): Promise<{
   const adapters = new AdapterRegistry(store, async (input: AppendSourceEventInput) => service.appendSourceEvent(input), {
     homeDir: dir,
     remoteSourceClient: fake,
+    telegramClient: options?.telegramFetchClient ? new TelegramBotApiClient(options.telegramFetchClient) : undefined,
   });
   service = new AgentInboxService(store, adapters, undefined, undefined, undefined, new TerminalDispatcher(async () => ({
     stdout: "",
@@ -584,12 +609,13 @@ test("github_repo_ci builtin module emits status transitions for one workflow ru
 
 test("telegram_bot builtin module ingests getUpdates messages", async () => {
   const fake = new FakeRemoteSourceClient();
-  const { dir, store, service } = await makeService(fake);
+  const telegram = new FakeTelegramFetchClient();
+  const { dir, store, service } = await makeService(fake, { telegramFetchClient: telegram });
   try {
     const source = await service.registerSource({
       sourceType: "telegram_bot",
       sourceKey: "operator-bot",
-      config: { tokenEnv: "TELEGRAM_BOT_TOKEN", chatIds: ["456"], allowedUpdates: ["message"] },
+      config: { botToken: "TOKEN", chatIds: ["456"], allowedUpdates: ["message"], endpoint: "https://telegram.test" },
     });
     const agent = service.registerAgent({
       backend: "tmux",
@@ -604,7 +630,7 @@ test("telegram_bot builtin module ingests getUpdates messages", async () => {
       startPolicy: "earliest",
     });
 
-    fake.push("stream:telegram_bot:operator-bot", {
+    telegram.push({
       update_id: 123,
       message: {
         message_id: 7,
@@ -618,8 +644,6 @@ test("telegram_bot builtin module ingests getUpdates messages", async () => {
     const sourcePoll = await service.pollSource(source.sourceId);
     const subscriptionPoll = await service.pollSubscription(subscription.subscriptionId);
     const items = service.listInboxItems(agent.agent.agentId);
-    const spec = (fake as unknown as { streamSpecs: Map<string, ManagedSourceSpec> })
-      .streamSpecs.get("stream:telegram_bot:operator-bot");
 
     assert.equal(sourcePoll.appended, 1);
     assert.equal(subscriptionPoll.inboxItemsCreated, 1);
@@ -635,14 +659,9 @@ test("telegram_bot builtin module ingests getUpdates messages", async () => {
       threadRef: "7",
       replyMode: "reply",
     });
-    assert.equal(spec?.endpoint, "https://api.telegram.org");
-    assert.equal(spec?.operation_id, "getUpdates");
-    assert.equal(spec?.transport_hint, "telegram_get_updates");
-    assert.deepEqual(spec?.args, {
-      tokenEnv: "TELEGRAM_BOT_TOKEN",
-      chatIds: ["456"],
-      allowedUpdates: ["message"],
-    });
+    assert.equal(fake.ensuredSources.length, 0);
+    assert.match(telegram.calls[0]?.url ?? "", /^https:\/\/telegram\.test\/botTOKEN\/getUpdates\?/);
+    assert.equal(new URL(telegram.calls[0]!.url).searchParams.get("allowed_updates"), '["message"]');
   } finally {
     await service.stop();
     store.close();
