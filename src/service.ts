@@ -114,6 +114,7 @@ interface ActivationPolicy {
 interface BufferedNotification {
   agentId: string;
   targetId: string;
+  targetKind: ActivationTarget["kind"];
   pending: Array<{
     subscriptionId: string | null;
     sourceId: string;
@@ -2417,6 +2418,7 @@ export class AgentInboxService {
       buffer = {
         agentId: target.agentId,
         targetId: target.targetId,
+        targetKind: target.kind,
         pending: [],
         timer: null,
         inFlight: false,
@@ -2514,21 +2516,24 @@ export class AgentInboxService {
         return;
       }
       const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
-      const shouldAttemptDispatch = !state || (state.status === "dirty" && state.leaseExpiresAt == null);
+      const shouldAttemptDispatch = !state
+        || (state.status === "dirty" && state.leaseExpiresAt == null)
+        || (state.status === "notified" && buffer.targetKind === "webhook");
       if (shouldAttemptDispatch) {
+        const pendingState = state?.status === "dirty" ? state : null;
         const inbox = this.ensureInboxForAgent(buffer.agentId);
         const unackedItems = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
         const dispatched = await this.dispatchActivationTarget({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
-          newItemCount: state ? state.pendingNewItemCount + entries.length : entries.length,
+          newItemCount: pendingState ? pendingState.pendingNewItemCount + entries.length : entries.length,
           totalUnackedCount: unackedItems.length,
-          summary: state ? latestSummary(entries) ?? state.pendingSummary : latestSummary(entries),
-          subscriptionIds: state
-            ? uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)])
+          summary: pendingState ? latestSummary(entries) ?? pendingState.pendingSummary : latestSummary(entries),
+          subscriptionIds: pendingState
+            ? uniqueSortedNullable([...pendingState.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)])
             : uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
-          sourceIds: state
-            ? uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)])
+          sourceIds: pendingState
+            ? uniqueSorted([...pendingState.pendingSourceIds, ...entries.map((entry) => entry.sourceId)])
             : uniqueSorted(entries.map((entry) => entry.sourceId)),
           entries: unackedItems,
         });
@@ -2537,22 +2542,22 @@ export class AgentInboxService {
           this.store.deleteActivationDispatchState(buffer.agentId, buffer.targetId);
         }
         if (dispatched === "retryable_failure") {
-          if (state && state.status === "dirty" && state.leaseExpiresAt == null) {
+          if (pendingState && pendingState.leaseExpiresAt == null) {
             this.store.upsertActivationDispatchState({
               agentId: buffer.agentId,
               targetId: buffer.targetId,
               status: "dirty",
               leaseExpiresAt: new Date(Date.now() + DEFAULT_NOTIFY_RETRY_MS).toISOString(),
-              lastNotifiedFingerprint: state.lastNotifiedFingerprint,
+              lastNotifiedFingerprint: pendingState.lastNotifiedFingerprint,
               deferReason: null,
               deferAttempts: 0,
               firstDeferredAt: null,
               lastDeferredAt: null,
               pendingFingerprint: null,
-              pendingNewItemCount: state.pendingNewItemCount + entries.length,
-              pendingSummary: latestSummary(entries) ?? state.pendingSummary,
-              pendingSubscriptionIds: uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
-              pendingSourceIds: uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
+              pendingNewItemCount: pendingState.pendingNewItemCount + entries.length,
+              pendingSummary: latestSummary(entries) ?? pendingState.pendingSummary,
+              pendingSubscriptionIds: uniqueSortedNullable([...pendingState.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
+              pendingSourceIds: uniqueSorted([...pendingState.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
               updatedAt: nowIso(),
             });
           } else {
