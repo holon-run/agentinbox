@@ -19,7 +19,7 @@ import { AgentInboxStore } from "./store";
 import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter } from "./sources/feishu";
 import { GithubCallClient, GithubDeliveryAdapter } from "./sources/github";
-import { TelegramDeliveryAdapter } from "./sources/telegram";
+import { TelegramBotApiClient, TelegramDeliveryAdapter } from "./sources/telegram";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { ExpandedFollowPlan, ExpandedSubscriptionPlan, ExpandFollowTemplateInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry, builtinRemoteSourceTypes } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
@@ -88,6 +88,7 @@ export class AdapterRegistry {
       remoteSourceClient?: UxcRemoteSourceClient;
       remoteModuleRegistry?: RemoteSourceModuleRegistry;
       githubCallClient?: GithubCallClient;
+      telegramClient?: TelegramBotApiClient;
     },
   ) {
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
@@ -98,6 +99,7 @@ export class AdapterRegistry {
       homeDir: this.homeDir,
       client: options?.remoteSourceClient,
       moduleRegistry: this.remoteModuleRegistry,
+      telegramClient: options?.telegramClient,
     });
   }
 

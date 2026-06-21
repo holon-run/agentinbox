@@ -31,6 +31,47 @@ export interface TelegramFetchClient {
 export class TelegramBotApiClient {
   constructor(private readonly client: TelegramFetchClient = { fetch: (url, init) => fetch(url, init) }) {}
 
+  async getUpdates(input: {
+    endpoint?: string;
+    botToken: string;
+    offset?: number;
+    timeout?: number;
+    allowedUpdates?: string[];
+  }): Promise<Record<string, unknown>[]> {
+    const endpoint = stripTrailingSlash(input.endpoint ?? TELEGRAM_BOT_API_ENDPOINT);
+    const params = new URLSearchParams();
+    if (input.offset !== undefined) {
+      params.set("offset", String(input.offset));
+    }
+    if (input.timeout !== undefined) {
+      params.set("timeout", String(input.timeout));
+    }
+    if (input.allowedUpdates && input.allowedUpdates.length > 0) {
+      params.set("allowed_updates", JSON.stringify(input.allowedUpdates));
+    }
+    const query = params.toString();
+    const response = await this.client.fetch(`${endpoint}/bot${input.botToken}/getUpdates${query ? `?${query}` : ""}`);
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(`Telegram getUpdates failed with status ${response.status}: ${body}`);
+    }
+    const parsed = JSON.parse(body) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Telegram getUpdates returned a non-object response");
+    }
+    const envelope = parsed as Record<string, unknown>;
+    if (envelope.ok !== true) {
+      throw new Error(`Telegram getUpdates returned ok=false: ${body}`);
+    }
+    const result = envelope.result;
+    if (!Array.isArray(result)) {
+      throw new Error("Telegram getUpdates response missing result array");
+    }
+    return result
+      .map((item) => asRecord(item))
+      .filter((item) => Object.keys(item).length > 0);
+  }
+
   async sendMessage(input: {
     endpoint?: string;
     botToken: string;

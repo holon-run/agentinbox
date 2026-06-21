@@ -66,7 +66,7 @@ export interface ManagedSourceSpec {
   args?: Record<string, unknown> | null;
   resource_uri?: string | null;
   read_resource?: boolean;
-  transport_hint?: "websocket" | "discord_gateway" | "slack_socket_mode" | "feishu_long_connection" | "telegram_get_updates" | null;
+  transport_hint?: "websocket" | "discord_gateway" | "slack_socket_mode" | "feishu_long_connection" | null;
   subprotocols?: string[];
   initial_text_frames?: string[];
   mode: "stream" | "poll";
@@ -798,12 +798,23 @@ const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
       endpoint: config.endpoint ?? TELEGRAM_BOT_API_ENDPOINT,
       operation_id: "getUpdates",
       mode: "poll",
-      transport_hint: "telegram_get_updates",
       args: {
+        timeout: 5,
         ...(config.botToken ? { botToken: config.botToken } : {}),
         ...(config.tokenEnv ? { tokenEnv: config.tokenEnv } : {}),
         ...(config.chatIds && config.chatIds.length > 0 ? { chatIds: config.chatIds } : {}),
-        ...(config.allowedUpdates && config.allowedUpdates.length > 0 ? { allowedUpdates: config.allowedUpdates } : {}),
+        ...(config.allowedUpdates && config.allowedUpdates.length > 0 ? { allowed_updates: config.allowedUpdates } : {}),
+      },
+      poll_config: {
+        interval_secs: 2,
+        extract_items_pointer: "/result",
+        request_cursor_arg: "offset",
+        cursor_from_item_pointer: "/update_id",
+        cursor_transform: "increment",
+        checkpoint_strategy: {
+          type: "item_key",
+          item_key_pointer: "/update_id",
+        },
       },
     };
   },

@@ -27,6 +27,11 @@ import {
   ManagedSourceSpec,
   RemoteSourceModuleRegistry,
 } from "./remote_modules";
+import {
+  TelegramBotApiClient,
+  normalizeTelegramBotUpdate,
+  parseTelegramSourceConfig,
+} from "./telegram";
 
 type UxcSourceEnsureArgs = Parameters<UxcDaemonClient["sourceEnsure"]>[0];
 type UxcSourceEnsureSpec = UxcSourceEnsureArgs["spec"];
@@ -61,6 +66,9 @@ interface RemoteSourceCheckpoint {
   };
   streamCursor?: {
     afterOffset: number;
+  };
+  telegramCursor?: {
+    nextOffset: number;
   };
   lastEventAt?: string;
   lastError?: string | null;
@@ -139,6 +147,7 @@ export class RemoteSourceRuntime {
   private readonly errorCounts = new Map<string, number>();
   private readonly nextRetryAt = new Map<string, number>();
   private readonly homeDir: string;
+  private readonly telegramClient: TelegramBotApiClient;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -147,11 +156,13 @@ export class RemoteSourceRuntime {
       moduleRegistry?: RemoteSourceModuleRegistry;
       client?: UxcRemoteSourceClient;
       homeDir?: string;
+      telegramClient?: TelegramBotApiClient;
     },
   ) {
     this.moduleRegistry = options?.moduleRegistry ?? new RemoteSourceModuleRegistry();
     this.client = options?.client ?? new RpcUxcRemoteSourceClient();
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
+    this.telegramClient = options?.telegramClient ?? new TelegramBotApiClient();
   }
 
   async ensureSource(source: SourceStream): Promise<void> {
@@ -496,6 +507,9 @@ export class RemoteSourceRuntime {
           };
         }
       }
+      if (source.sourceType === "telegram_bot") {
+        return await this.syncTelegramSource(source);
+      }
 
       const module = await this.moduleRegistry.resolve(source, this.homeDir);
       const moduleSource = moduleInputSource(source);
@@ -601,6 +615,74 @@ export class RemoteSourceRuntime {
       this.inFlight.delete(sourceId);
     }
   }
+
+  private async syncTelegramSource(source: SourceStream): Promise<SourcePollResult> {
+    const config = parseTelegramSourceConfig(source);
+    const botToken = config.botToken ?? tokenFromEnv(config.tokenEnv);
+    if (!botToken) {
+      throw new Error("Telegram source requires config.botToken or tokenEnv");
+    }
+    const checkpoint = parseRemoteCheckpoint(source.checkpoint);
+    const updates = await this.telegramClient.getUpdates({
+      endpoint: config.endpoint,
+      botToken,
+      offset: checkpoint.telegramCursor?.nextOffset,
+      timeout: 0,
+      allowedUpdates: config.allowedUpdates,
+    });
+
+    let appended = 0;
+    let deduped = 0;
+    let nextOffset = checkpoint.telegramCursor?.nextOffset ?? 0;
+    for (const update of updates) {
+      const normalized = normalizeTelegramBotUpdate(source, config, update);
+      const updateId = numberFromUnknown(update.update_id);
+      if (updateId !== undefined) {
+        nextOffset = Math.max(nextOffset, updateId + 1);
+      }
+      if (!normalized) {
+        continue;
+      }
+      const result = await this.appendSourceEvent(normalized);
+      appended += result.appended;
+      deduped += result.deduped;
+    }
+
+    const latestSource = this.store.getSource(source.sourceId);
+    if (!latestSource) {
+      throw new Error(`unknown source: ${source.sourceId}`);
+    }
+    const observedAt = nowIso();
+    this.store.updateSourceRuntime(source.sourceId, {
+      status: latestSource.status === "paused" ? "paused" : "active",
+      checkpoint: JSON.stringify({
+        ...checkpoint,
+        telegramCursor: { nextOffset },
+        managedRuntime: {
+          status: "running",
+          runId: null,
+          streamId: null,
+          lastError: null,
+          updatedAt: observedAt,
+          startedAt: checkpoint.managedRuntime?.startedAt ?? observedAt,
+          stoppedAt: null,
+        },
+        lastEventAt: observedAt,
+        lastError: null,
+      } satisfies RemoteSourceCheckpoint),
+    });
+    this.errorCounts.delete(source.sourceId);
+    this.nextRetryAt.delete(source.sourceId);
+
+    return {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      appended,
+      deduped,
+      eventsRead: updates.length,
+      note: "telegram getUpdates poll completed",
+    };
+  }
 }
 
 function normalizeExpandedSubscriptionPlan(
@@ -664,6 +746,27 @@ function managedBindingForSource(source: SourceStream): { namespace: string; sou
 
 function managedSourceBindingKey(namespace: string, sourceKey: string): string {
   return `${namespace}:${sourceKey}`;
+}
+
+function tokenFromEnv(name: string | undefined): string | null {
+  if (!name) {
+    return null;
+  }
+  const value = process.env[name];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
 }
 
 function parseRemoteCheckpoint(checkpoint: string | null | undefined): RemoteSourceCheckpoint {

@@ -3150,6 +3150,51 @@ test("direct inbox text messages create inbox items and trigger activation", asy
   }
 });
 
+test("webhook targets dispatch new items immediately during an active notify lease", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 20,
+  });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-new-item-lease-test",
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+        notifyLeaseMs: 60_000,
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage("webhook-new-item-lease-test", { message: "first" });
+    await sleep(40);
+
+    assert.equal(dispatcher.calls.length, 1);
+    const firstState = store.getActivationDispatchState("webhook-new-item-lease-test", targetId);
+    assert.equal(firstState?.status, "notified");
+    assert.ok(firstState.leaseExpiresAt);
+    assert.ok(Date.parse(firstState.leaseExpiresAt) > Date.now());
+
+    await service.addDirectInboxTextMessage("webhook-new-item-lease-test", { message: "second" });
+    await sleep(40);
+
+    assert.equal(dispatcher.calls.length, 2);
+    assert.equal(dispatcher.calls[1]!.activation.newItemCount, 1);
+    assert.notEqual(
+      dispatcher.calls[1]!.activation.latestEntryId,
+      dispatcher.calls[0]!.activation.latestEntryId,
+    );
+    const secondState = store.getActivationDispatchState("webhook-new-item-lease-test", targetId);
+    assert.equal(secondState?.status, "notified");
+    assert.equal(secondState?.pendingNewItemCount, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("direct inbox text messages fail cleanly if the inbox item cannot be persisted", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const { store, service, dir } = await makeService({
@@ -3638,7 +3683,8 @@ test("active webhook targets suppress terminal activation dispatch for the same 
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    assert.equal(dispatcher.calls.length, 1);
+    assert.equal(dispatcher.calls.length, 2);
+    assert.equal(dispatcher.calls[1]!.activation.newItemCount, 1);
     assert.equal(terminalDispatcher.calls.length, 0);
 
     const ack = await service.ackAllInboxItems(registered.agent.agentId);
@@ -3653,7 +3699,7 @@ test("active webhook targets suppress terminal activation dispatch for the same 
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    assert.equal(dispatcher.calls.length, 2);
+    assert.equal(dispatcher.calls.length, 3);
     assert.equal(terminalDispatcher.calls.length, 0);
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 1);
   } finally {

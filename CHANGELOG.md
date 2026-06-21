@@ -10,6 +10,20 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-21
+
+### Added
+
+- Added status diagnostics for daemon, database health, source/agent counts,
+  activation target reachability, activation dispatch backlog, and delivery
+  retry state.
+
+### Changed
+
+- Split store subscription query and SQLite migration/recovery coverage into
+  focused tests while keeping the end-to-end smoke path in the integration
+  suite.
+
 ## [1.3.3] - 2026-06-19
 
 ### Fixed
