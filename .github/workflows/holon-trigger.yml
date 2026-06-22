@@ -1,0 +1,37 @@
+name: Holon Trigger
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled, assigned]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+  packages: read
+
+jobs:
+  holon:
+    name: Run Holon
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Holon
+        uses: holon-run/holon@main
+        with:
+          trigger: auto
+          auto_review: true
+          auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
+          model: bigmodel/glm-5.2
+          build_from_source: false
+          github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
+          bigmodel_api_key: ${{ secrets.BIGMODEL_API_KEY }}
