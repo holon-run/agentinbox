@@ -11,6 +11,7 @@ export const TELEGRAM_BOT_API_ENDPOINT = "https://api.telegram.org";
 
 export interface TelegramBotSourceConfig {
   endpoint?: string;
+  uxcAuth?: string;
   botToken?: string;
   tokenEnv?: string;
   botUsername?: string;
@@ -254,6 +255,7 @@ export function parseTelegramSourceConfig(source: SourceStream): TelegramBotSour
   const config = source.config ?? {};
   return {
     endpoint: asString(config.endpoint) ?? asString(config.apiBaseUrl) ?? TELEGRAM_BOT_API_ENDPOINT,
+    uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
     botToken: asString(config.botToken) ?? undefined,
     tokenEnv: asString(config.tokenEnv) ?? undefined,
     botUsername: asString(config.botUsername) ?? undefined,
