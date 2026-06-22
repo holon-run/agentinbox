@@ -14,6 +14,7 @@ import { UxcRemoteSourceClient } from "../src/sources/remote";
 import { FeishuCallClient, FeishuUxcClient } from "../src/sources/feishu";
 import { GithubCallClient } from "../src/sources/github";
 import { AgentInboxStore } from "../src/store";
+import { createServer } from "../src/http";
 import { assignedAgentIdFromContext, TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
 import { nowIso } from "../src/util";
 
@@ -392,10 +393,10 @@ function requireTerminalTarget(result: { terminalTarget: TerminalActivationTarge
 
 async function startHolonStub(): Promise<{
   baseUrl: string;
-  calls: Array<{ method: string; url: string; body: unknown; authorization?: string }>;
+  calls: Array<{ method: string; url: string; body: Record<string, unknown>; authorization?: string }>;
   close: () => Promise<void>;
 }> {
-  const calls: Array<{ method: string; url: string; body: unknown; authorization?: string }> = [];
+  const calls: Array<{ method: string; url: string; body: Record<string, unknown>; authorization?: string }> = [];
   const server = http.createServer((request, response) => {
     const chunks: Buffer[] = [];
     request.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -420,6 +421,41 @@ async function startHolonStub(): Promise<{
     calls,
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
+}
+
+async function postJson(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const parsed = new URL(url);
+  const payload = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      method: "POST",
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: `${parsed.pathname}${parsed.search}`,
+      headers: {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload).toString(),
+        ...headers,
+      },
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () => {
+        const rawBody = Buffer.concat(chunks).toString("utf8");
+        resolve({
+          status: response.statusCode ?? 0,
+          body: rawBody ? JSON.parse(rawBody) : {},
+        });
+      });
+    });
+    request.on("error", reject);
+    request.write(payload);
+    request.end();
+  });
 }
 
 test("agent register creates a stable agent, inbox, and terminal activation target", async () => {
@@ -477,7 +513,9 @@ test("operator ingress forwards Feishu route to Holon and callback sends Feishu 
       operatorActorId: "feishu:ou_test",
       holonBaseUrl: holon.baseUrl,
       deliveryCallbackUrl: "http://agentinbox.test/delivery-routes/{route_id}/messages",
+      deliveryAuth: { type: "bearer", token: "agentinbox-delivery-secret" },
       holonAuth: { type: "bearer", token: "holon-secret" },
+      defaultRouteId: "route_feishu_chat",
       capabilities: ["prompt"],
       syncWithHolon: true,
     });
@@ -486,6 +524,13 @@ test("operator ingress forwards Feishu route to Holon and callback sends Feishu 
     assert.equal(holon.calls.length, 1);
     assert.equal(holon.calls[0].url, `/control/agents/${encodeURIComponent(agent.agentId)}/operator-bindings`);
     assert.equal(holon.calls[0].authorization, "Bearer holon-secret");
+    assert.equal(holon.calls[0].body.default_route_id, "route_feishu_chat");
+    assert.equal(holon.calls[0].body.delivery_callback_url, "http://agentinbox.test/delivery-routes/{route_id}/messages");
+    assert.deepEqual(holon.calls[0].body.delivery_auth, {
+      kind: "bearer",
+      bearer_token: "agentinbox-delivery-secret",
+    });
+    assert.deepEqual(holon.calls[0].body.capabilities, { text: true });
 
     const ingress = await service.forwardOperatorIngress(agent.agentId, {
       bindingId: binding.bindingId,
@@ -524,12 +569,33 @@ test("operator ingress forwards Feishu route to Holon and callback sends Feishu 
       },
     });
 
-    const delivery = await service.deliverOperatorReply("route_feishu_chat", {
+    const server = createServer(service);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const callbackUrl = `http://127.0.0.1:${address.port}/delivery-routes/route_feishu_chat/messages`;
+    const unauthorized = await postJson(callbackUrl, {
+      kind: "operator_output",
+      text: "reply from Holon without auth",
+      target_agent_id: agent.agentId,
+    });
+    assert.equal(unauthorized.status, 401);
+    const delivery = await postJson(callbackUrl, {
+      delivery_intent_id: "odi_test",
+      binding_id: "opb_feishu_test",
+      route_id: "route_feishu_chat",
+      kind: "operator_output",
       text: "reply from Holon",
-      targetAgentId: agent.agentId,
+      target_agent_id: agent.agentId,
+      correlation_id: null,
+      causation_id: null,
+    }, {
+      authorization: "Bearer agentinbox-delivery-secret",
     });
 
-    assert.equal(delivery.status, "sent");
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    assert.equal(delivery.status, 200);
+    assert.equal(delivery.body.status, "sent");
     assert.equal(feishu.calls.length, 1);
     assert.equal(feishu.calls[0].operation, "post:/im/v1/messages");
     assert.equal(feishu.calls[0].payload?.receive_id, "oc_test_chat");
