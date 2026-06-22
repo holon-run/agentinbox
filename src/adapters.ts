@@ -76,7 +76,7 @@ export class AdapterRegistry {
   private readonly defaultDelivery = new NoopDeliveryAdapter();
   private readonly feishuDelivery = new FeishuDeliveryAdapter();
   private readonly githubDelivery = new GithubDeliveryAdapter();
-  private readonly telegramDelivery = new TelegramDeliveryAdapter();
+  private readonly telegramDelivery: TelegramDeliveryAdapter;
   private readonly homeDir: string;
   private readonly remoteModuleRegistry: RemoteSourceModuleRegistry;
 
@@ -95,11 +95,11 @@ export class AdapterRegistry {
     this.remoteModuleRegistry = options?.remoteModuleRegistry ?? new RemoteSourceModuleRegistry({
       githubCallClient: options?.githubCallClient,
     });
+    this.telegramDelivery = new TelegramDeliveryAdapter(options?.telegramClient);
     this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
       homeDir: this.homeDir,
       client: options?.remoteSourceClient,
       moduleRegistry: this.remoteModuleRegistry,
-      telegramClient: options?.telegramClient,
     });
   }
 

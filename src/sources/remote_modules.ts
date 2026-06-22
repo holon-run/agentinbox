@@ -770,6 +770,7 @@ const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
       configSchema: [
         { name: "botToken", type: "string", required: false, description: "Telegram bot token. Prefer tokenEnv for shared/local configuration." },
         { name: "tokenEnv", type: "string", required: false, description: "Environment variable name containing the Telegram bot token." },
+        { name: "uxcAuth", type: "string", required: false, description: "Optional UXC Telegram auth profile." },
         { name: "botUsername", type: "string", required: false, description: "Optional bot username used for source host identity." },
         { name: "chatIds", type: "string[]", required: false, description: "Optional Telegram chat ID allowlist." },
         { name: "allowedUpdates", type: "string[]", required: false, description: "Optional Telegram Bot API allowed_updates value." },
@@ -796,13 +797,10 @@ const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
     const config = parseTelegramSourceConfig(source);
     return {
       endpoint: config.endpoint ?? TELEGRAM_BOT_API_ENDPOINT,
-      operation_id: "getUpdates",
+      operation_id: "post:/getUpdates",
       mode: "poll",
       args: {
         timeout: 5,
-        ...(config.botToken ? { botToken: config.botToken } : {}),
-        ...(config.tokenEnv ? { tokenEnv: config.tokenEnv } : {}),
-        ...(config.chatIds && config.chatIds.length > 0 ? { chatIds: config.chatIds } : {}),
         ...(config.allowedUpdates && config.allowedUpdates.length > 0 ? { allowed_updates: config.allowedUpdates } : {}),
       },
       poll_config: {
@@ -815,6 +813,10 @@ const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
           type: "item_key",
           item_key_pointer: "/update_id",
         },
+      },
+      options: {
+        auth: config.uxcAuth,
+        artifact_compaction: false,
       },
     };
   },
