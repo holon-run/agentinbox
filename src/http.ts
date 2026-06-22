@@ -2103,6 +2103,13 @@ function buildFastifyServer(service: AgentInboxService) {
           text: { type: "string", minLength: 1 },
           kind: { type: "string" },
           targetAgentId: { type: "string" },
+          target_agent_id: { type: "string" },
+          delivery_intent_id: { type: "string" },
+          binding_id: { type: "string" },
+          route_id: { type: "string" },
+          created_at: { type: "string" },
+          correlation_id: { type: ["string", "null"] },
+          causation_id: { type: ["string", "null"] },
           metadata: jsonObjectSchema,
         },
       },
@@ -2114,11 +2121,13 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const params = request.params as { routeId: string };
+    const routeId = decodeURIComponent(params.routeId);
+    assertDeliveryRouteAuthorized(service, routeId, request.headers.authorization);
     const body = request.body as Record<string, unknown>;
-    return service.deliverOperatorReply(decodeURIComponent(params.routeId), {
+    return service.deliverOperatorReply(routeId, {
       text: String(body.text),
       kind: optionalString(body.kind) ?? null,
-      targetAgentId: optionalString(body.targetAgentId) ?? null,
+      targetAgentId: optionalString(body.targetAgentId) ?? optionalString(body.target_agent_id) ?? null,
       metadata: body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : undefined,
     });
   });
@@ -2135,6 +2144,14 @@ function buildFastifyServer(service: AgentInboxService) {
     }
     if (message.startsWith("unknown ")) {
       void reply.code(404).send({ error: message });
+      return;
+    }
+    if (message.startsWith("missing delivery route authorization")) {
+      void reply.code(401).send({ error: message });
+      return;
+    }
+    if (message.startsWith("invalid delivery route authorization")) {
+      void reply.code(403).send({ error: message });
       return;
     }
     if (isBadRequestError(message)) {
@@ -2188,6 +2205,28 @@ function optionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function assertDeliveryRouteAuthorized(
+  service: AgentInboxService,
+  routeId: string,
+  authorization: string | undefined,
+): void {
+  const binding = service.getOperatorBindingForReplyRoute(routeId);
+  const deliveryAuth = binding?.deliveryAuth;
+  if (!deliveryAuth) {
+    return;
+  }
+  if (deliveryAuth.type !== "bearer" || !deliveryAuth.token) {
+    throw new Error("invalid delivery route authorization");
+  }
+  if (!authorization) {
+    throw new Error("missing delivery route authorization");
+  }
+  const [scheme, token] = authorization.split(/\s+/, 2);
+  if (scheme?.toLowerCase() !== "bearer" || token !== deliveryAuth.token) {
+    throw new Error("invalid delivery route authorization");
+  }
 }
 
 function parseOptionalPositiveInteger(value: string | undefined): number | undefined {

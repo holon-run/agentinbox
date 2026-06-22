@@ -2070,6 +2070,11 @@ export class AgentInboxService {
     return this.store.listOperatorTransportBindings(agentId);
   }
 
+  getOperatorBindingForReplyRoute(routeId: string): OperatorTransportBinding | null {
+    const route = this.store.getOperatorReplyRoute(routeId);
+    return route ? this.store.getOperatorTransportBinding(route.bindingId) : null;
+  }
+
   async forwardOperatorIngress(agentId: string, input: OperatorIngressInput): Promise<OperatorIngressResult> {
     if (!input.text) {
       throw new Error("operator ingress requires text");
@@ -2141,20 +2146,26 @@ export class AgentInboxService {
   }
 
   private async syncOperatorBindingToHolon(binding: OperatorTransportBinding): Promise<unknown> {
+    if (!binding.defaultRouteId) {
+      throw new Error("operator binding sync requires defaultRouteId");
+    }
+    if (!binding.deliveryCallbackUrl) {
+      throw new Error("operator binding sync requires deliveryCallbackUrl");
+    }
     return this.postHolonJson(
       binding,
       `/control/agents/${encodeURIComponent(binding.agentId)}/operator-bindings`,
-      {
+      omitNullish({
         binding_id: binding.bindingId,
         transport: binding.transport,
         operator_actor_id: binding.operatorActorId,
         default_route_id: binding.defaultRouteId,
         delivery_callback_url: binding.deliveryCallbackUrl,
-        delivery_auth: binding.deliveryAuth,
-        capabilities: binding.capabilities,
+        delivery_auth: holonOperatorDeliveryAuth(binding.deliveryAuth),
+        capabilities: holonOperatorCapabilities(binding.capabilities),
         provider: binding.provider,
         metadata: binding.metadata,
-      },
+      }),
     );
   }
 
@@ -4841,6 +4852,29 @@ function deliverSendUnsupportedMessage(handle: DeliveryHandle, operations: Deliv
   }
   const names = operations.map((item) => item.name).join(", ");
   return `deliver send is not supported for ${handle.provider}/${handle.surface}; use deliver invoke with one of: ${names}. ${deliveryActionsHelp(handle)}`;
+}
+
+function omitNullish<T extends Record<string, unknown>>(record: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== null && value !== undefined));
+}
+
+function holonOperatorDeliveryAuth(auth: OperatorTransportBinding["deliveryAuth"]): Record<string, unknown> {
+  if (!auth) {
+    throw new Error("operator binding sync requires deliveryAuth");
+  }
+  if (auth.type === "bearer" && auth.token) {
+    return { kind: "bearer", bearer_token: auth.token };
+  }
+  throw new Error("operator binding sync supports only bearer deliveryAuth with a token");
+}
+
+function holonOperatorCapabilities(capabilities: string[]): Record<string, boolean> {
+  const normalized = new Set(capabilities.map((capability) => capability.trim().toLowerCase()).filter(Boolean));
+  return {
+    text: normalized.size === 0 || normalized.has("prompt") || normalized.has("text") || normalized.has("send_prompt"),
+    ...(normalized.has("markdown") ? { markdown: true } : {}),
+    ...(normalized.has("attachments") || normalized.has("attachment") ? { attachments: true } : {}),
+  };
 }
 
 function deliveryActionsHelp(handle: DeliveryHandle): string {
