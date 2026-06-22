@@ -19,6 +19,85 @@ export interface DeliveryHandle {
   replyMode?: string | null;
 }
 
+export interface RegisterOperatorBindingInput {
+  bindingId?: string | null;
+  transport: string;
+  operatorActorId: string;
+  holonBaseUrl: string;
+  deliveryCallbackUrl?: string | null;
+  deliveryAuth?: AuthDescriptor | null;
+  holonAuth?: AuthDescriptor | null;
+  defaultRouteId?: string | null;
+  capabilities?: string[];
+  provider?: string | null;
+  metadata?: Record<string, unknown>;
+  syncWithHolon?: boolean;
+}
+
+export interface OperatorIngressInput {
+  text: string;
+  bindingId: string;
+  actorId?: string | null;
+  replyRouteId?: string | null;
+  provider?: string | null;
+  upstreamProvider?: string | null;
+  providerMessageRef?: string | null;
+  correlationId?: string | null;
+  causationId?: string | null;
+  metadata?: Record<string, unknown>;
+  sourceItemId?: string | null;
+  deliveryHandle?: DeliveryHandle | null;
+}
+
+export interface OperatorIngressResult {
+  accepted: boolean;
+  bindingId: string;
+  replyRouteId: string | null;
+  holon: unknown;
+}
+
+export interface OperatorReplyRoute {
+  routeId: string;
+  bindingId: string;
+  agentId: string;
+  deliveryHandle: DeliveryHandle;
+  sourceId?: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OperatorReplyMessageInput {
+  text: string;
+  kind?: string | null;
+  targetAgentId?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AuthDescriptor {
+  type: "bearer" | "header";
+  token?: string | null;
+  headerName?: string | null;
+  headerValue?: string | null;
+}
+
+export interface OperatorTransportBinding {
+  bindingId: string;
+  agentId: string;
+  transport: string;
+  operatorActorId: string;
+  holonBaseUrl: string;
+  deliveryCallbackUrl?: string | null;
+  deliveryAuth?: AuthDescriptor | null;
+  holonAuth?: AuthDescriptor | null;
+  defaultRouteId?: string | null;
+  capabilities: string[];
+  provider?: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SourceHost {
   hostId: string;
   hostType: HostType;

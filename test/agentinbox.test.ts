@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +11,7 @@ import { Activation, ActivationTarget, AppendSourceEventInput, Subscription, Ter
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
 import { ActivationGate } from "../src/runtime_gate";
 import { UxcRemoteSourceClient } from "../src/sources/remote";
+import { FeishuCallClient, FeishuUxcClient } from "../src/sources/feishu";
 import { GithubCallClient } from "../src/sources/github";
 import { AgentInboxStore } from "../src/store";
 import { assignedAgentIdFromContext, TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
@@ -110,6 +112,25 @@ class FakeGithubCallClient implements GithubCallClient {
         },
       },
     };
+  }
+}
+
+class FakeFeishuCallClient implements FeishuCallClient {
+  public calls: Array<{
+    endpoint: string;
+    operation: string;
+    payload?: Record<string, unknown>;
+    options?: { auth?: string; schema_url?: string; refresh_schema?: boolean; no_cache?: boolean };
+  }> = [];
+
+  async call(args: {
+    endpoint: string;
+    operation: string;
+    payload?: Record<string, unknown>;
+    options?: { auth?: string; schema_url?: string; refresh_schema?: boolean; no_cache?: boolean };
+  }): Promise<{ data: unknown }> {
+    this.calls.push(args);
+    return { data: { ok: true, file_key: "file-test" } };
   }
 }
 
@@ -283,6 +304,7 @@ async function makeService(options?: {
   activationWindowMs?: number;
   activationMaxItems?: number;
   backend?: EventBusBackend;
+  feishuCallClient?: FeishuCallClient;
 }): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
@@ -291,6 +313,7 @@ async function makeService(options?: {
     homeDir: dir,
     remoteSourceClient: new FakeRemoteSourceClient(),
     githubCallClient: new FakeGithubCallClient(),
+    feishuClient: options?.feishuCallClient ? new FeishuUxcClient(options.feishuCallClient) : undefined,
   });
   service = new AgentInboxService(
     store,
@@ -367,6 +390,38 @@ function requireTerminalTarget(result: { terminalTarget: TerminalActivationTarge
   return result.terminalTarget;
 }
 
+async function startHolonStub(): Promise<{
+  baseUrl: string;
+  calls: Array<{ method: string; url: string; body: unknown; authorization?: string }>;
+  close: () => Promise<void>;
+}> {
+  const calls: Array<{ method: string; url: string; body: unknown; authorization?: string }> = [];
+  const server = http.createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    request.on("end", () => {
+      const rawBody = Buffer.concat(chunks).toString("utf8");
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      calls.push({
+        method: request.method ?? "GET",
+        url: request.url ?? "/",
+        body,
+        authorization: request.headers.authorization,
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true, message_id: `msg_${calls.length}` }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    calls,
+    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
+}
+
 test("agent register creates a stable agent, inbox, and terminal activation target", async () => {
   const { store, service, dir } = await makeService();
   try {
@@ -403,6 +458,85 @@ test("agent register creates a stable agent, inbox, and terminal activation targ
     const details = service.getInboxDetailsByAgent(first.agent.agentId) as { inbox: { ownerAgentId: string } };
     assert.equal(details.inbox.ownerAgentId, first.agent.agentId);
   } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("operator ingress forwards Feishu route to Holon and callback sends Feishu reply", async () => {
+  const holon = await startHolonStub();
+  const feishu = new FakeFeishuCallClient();
+  const { store, service, dir } = await makeService({ feishuCallClient: feishu });
+  try {
+    const agent = await registerTmuxAgent(service, "operator-feishu");
+    const binding = await service.registerOperatorTransportBinding(agent.agentId, {
+      bindingId: "opb_feishu_test",
+      transport: "feishu",
+      provider: "feishu",
+      operatorActorId: "feishu:ou_test",
+      holonBaseUrl: holon.baseUrl,
+      deliveryCallbackUrl: "http://agentinbox.test/delivery-routes/{route_id}/messages",
+      holonAuth: { type: "bearer", token: "holon-secret" },
+      capabilities: ["prompt"],
+      syncWithHolon: true,
+    });
+
+    assert.equal(binding.bindingId, "opb_feishu_test");
+    assert.equal(holon.calls.length, 1);
+    assert.equal(holon.calls[0].url, `/control/agents/${encodeURIComponent(agent.agentId)}/operator-bindings`);
+    assert.equal(holon.calls[0].authorization, "Bearer holon-secret");
+
+    const ingress = await service.forwardOperatorIngress(agent.agentId, {
+      bindingId: binding.bindingId,
+      text: "hello from Feishu",
+      actorId: "feishu:ou_test",
+      replyRouteId: "route_feishu_chat",
+      providerMessageRef: "om_test",
+      sourceItemId: "item_test",
+      deliveryHandle: {
+        provider: "feishu",
+        surface: "chat_message",
+        targetRef: "oc_test_chat",
+      },
+      metadata: {
+        chatId: "oc_test_chat",
+      },
+    });
+
+    assert.equal(ingress.accepted, true);
+    assert.equal(ingress.replyRouteId, "route_feishu_chat");
+    assert.equal(holon.calls.length, 2);
+    assert.equal(holon.calls[1].url, `/control/agents/${encodeURIComponent(agent.agentId)}/operator-ingress`);
+    assert.deepEqual(holon.calls[1].body, {
+      text: "hello from Feishu",
+      actor_id: "feishu:ou_test",
+      binding_id: "opb_feishu_test",
+      reply_route_id: "route_feishu_chat",
+      provider: "feishu",
+      upstream_provider: "feishu",
+      provider_message_ref: "om_test",
+      correlation_id: null,
+      causation_id: null,
+      metadata: {
+        chatId: "oc_test_chat",
+        source_item_id: "item_test",
+      },
+    });
+
+    const delivery = await service.deliverOperatorReply("route_feishu_chat", {
+      text: "reply from Holon",
+      targetAgentId: agent.agentId,
+    });
+
+    assert.equal(delivery.status, "sent");
+    assert.equal(feishu.calls.length, 1);
+    assert.equal(feishu.calls[0].operation, "post:/im/v1/messages");
+    assert.equal(feishu.calls[0].payload?.receive_id, "oc_test_chat");
+    assert.equal(feishu.calls[0].payload?.msg_type, "text");
+    assert.equal(feishu.calls[0].payload?.content, JSON.stringify({ text: "reply from Holon" }));
+  } finally {
+    await holon.close();
     await service.stop();
     store.close();
     fs.rmSync(dir, { recursive: true, force: true });
