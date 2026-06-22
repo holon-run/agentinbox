@@ -3,7 +3,16 @@ import Fastify from "fastify";
 import swagger from "@fastify/swagger";
 import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
-import { ActivationMode, DeliveryHandle, FollowInput, PreviewSourceSchemaInput, SourceInvokeRequest, WatchInboxOptions } from "./model";
+import {
+  ActivationMode,
+  AuthDescriptor,
+  DeliveryHandle,
+  FollowInput,
+  OperatorIngressInput,
+  PreviewSourceSchemaInput,
+  SourceInvokeRequest,
+  WatchInboxOptions,
+} from "./model";
 import { jsonResponse } from "./util";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
@@ -77,6 +86,18 @@ const deliveryTargetByFieldsSchema = {
     targetRef: { type: "string", minLength: 1 },
     threadRef: { type: "string" },
     replyMode: { type: "string" },
+  },
+} as const;
+
+const authDescriptorSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["type"],
+  properties: {
+    type: { type: "string", enum: ["bearer", "header"] },
+    token: { type: "string" },
+    headerName: { type: "string" },
+    headerValue: { type: "string" },
   },
 } as const;
 
@@ -1054,6 +1075,137 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.resumeAgent(decodeURIComponent(params.agentId));
   });
 
+  app.get("/agents/:agentId/operator-bindings", {
+    schema: {
+      tags: ["operators"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["bindings"],
+          properties: {
+            bindings: { type: "array", items: jsonObjectSchema },
+          },
+        },
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return { bindings: service.listOperatorTransportBindings(decodeURIComponent(params.agentId)) };
+  });
+
+  app.post("/agents/:agentId/operator-bindings", {
+    schema: {
+      tags: ["operators"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["transport", "operatorActorId", "holonBaseUrl"],
+        properties: {
+          bindingId: { type: "string" },
+          transport: { type: "string", minLength: 1 },
+          operatorActorId: { type: "string", minLength: 1 },
+          holonBaseUrl: { type: "string", minLength: 1 },
+          deliveryCallbackUrl: { type: "string" },
+          deliveryAuth: authDescriptorSchema,
+          holonAuth: authDescriptorSchema,
+          defaultRouteId: { type: "string" },
+          capabilities: { type: "array", items: { type: "string" } },
+          provider: { type: "string" },
+          metadata: jsonObjectSchema,
+          syncWithHolon: { type: "boolean" },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const body = request.body as Record<string, unknown>;
+    return service.registerOperatorTransportBinding(decodeURIComponent(params.agentId), {
+      bindingId: optionalString(body.bindingId) ?? null,
+      transport: String(body.transport),
+      operatorActorId: String(body.operatorActorId),
+      holonBaseUrl: String(body.holonBaseUrl),
+      deliveryCallbackUrl: optionalString(body.deliveryCallbackUrl) ?? null,
+      deliveryAuth: body.deliveryAuth ? body.deliveryAuth as AuthDescriptor : null,
+      holonAuth: body.holonAuth ? body.holonAuth as AuthDescriptor : null,
+      defaultRouteId: optionalString(body.defaultRouteId) ?? null,
+      capabilities: Array.isArray(body.capabilities) ? body.capabilities.map(String) : undefined,
+      provider: optionalString(body.provider) ?? null,
+      metadata: body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : undefined,
+      syncWithHolon: typeof body.syncWithHolon === "boolean" ? body.syncWithHolon : undefined,
+    });
+  });
+
+  app.post("/agents/:agentId/operator-ingress", {
+    schema: {
+      tags: ["operators"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "bindingId"],
+        properties: {
+          text: { type: "string", minLength: 1 },
+          bindingId: { type: "string", minLength: 1 },
+          actorId: { type: "string" },
+          replyRouteId: { type: "string" },
+          provider: { type: "string" },
+          upstreamProvider: { type: "string" },
+          providerMessageRef: { type: "string" },
+          correlationId: { type: "string" },
+          causationId: { type: "string" },
+          metadata: jsonObjectSchema,
+          sourceItemId: { type: "string" },
+          deliveryHandle: deliveryHandleSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const body = request.body as Record<string, unknown>;
+    return service.forwardOperatorIngress(decodeURIComponent(params.agentId), {
+      text: String(body.text),
+      bindingId: String(body.bindingId),
+      actorId: optionalString(body.actorId) ?? null,
+      replyRouteId: optionalString(body.replyRouteId) ?? null,
+      provider: optionalString(body.provider) ?? null,
+      upstreamProvider: optionalString(body.upstreamProvider) ?? null,
+      providerMessageRef: optionalString(body.providerMessageRef) ?? null,
+      correlationId: optionalString(body.correlationId) ?? null,
+      causationId: optionalString(body.causationId) ?? null,
+      metadata: body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : undefined,
+      sourceItemId: optionalString(body.sourceItemId) ?? null,
+      deliveryHandle: body.deliveryHandle ? body.deliveryHandle as DeliveryHandle : null,
+    } satisfies OperatorIngressInput);
+  });
+
   app.get("/agents/:agentId/targets", {
     schema: {
       tags: ["agents"],
@@ -1933,6 +2085,44 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => service.invokeDelivery(request.body as never));
 
+  app.post("/delivery-routes/:routeId/messages", {
+    schema: {
+      tags: ["deliveries"],
+      params: {
+        type: "object",
+        required: ["routeId"],
+        properties: {
+          routeId: { type: "string", minLength: 1 },
+        },
+      },
+      body: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text"],
+        properties: {
+          text: { type: "string", minLength: 1 },
+          kind: { type: "string" },
+          targetAgentId: { type: "string" },
+          metadata: jsonObjectSchema,
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { routeId: string };
+    const body = request.body as Record<string, unknown>;
+    return service.deliverOperatorReply(decodeURIComponent(params.routeId), {
+      text: String(body.text),
+      kind: optionalString(body.kind) ?? null,
+      targetAgentId: optionalString(body.targetAgentId) ?? null,
+      metadata: body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : undefined,
+    });
+  });
+
   app.setNotFoundHandler((_request, reply) => {
     void reply.code(404).send({ error: "not found" });
   });
@@ -2040,6 +2230,9 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("deliver send is not supported") ||
     message.startsWith("deliveryHandle requires") ||
     message.startsWith("delivery operations are not supported") ||
+    message.startsWith("operator binding requires") ||
+    message.startsWith("operator ingress requires") ||
+    message.startsWith("operator reply route requires") ||
     message.startsWith("unsupported delivery surface") ||
     message.startsWith("unsupported delivery operation") ||
     message.startsWith("source operations are not supported") ||

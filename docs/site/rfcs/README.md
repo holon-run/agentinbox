@@ -5,8 +5,13 @@
 - [Subscription Lifecycle And Terminal Auto-Retire](./subscription-lifecycle-and-terminal-retire.md)
 - [Inbox Digests And Threaded Notification Entries](./inbox-digests-and-threaded-notification-entries.md)
 - [Public And Internal Identifier Strategy](./public-and-internal-identifier-strategy.md)
+- [Operator Ingress And Reply Routes](./operator-ingress-and-reply-routes.md)
 
 <!-- INDEX:START -->
+
+- [Operator Ingress And Reply Routes](./operator-ingress-and-reply-routes.md)
+  2026-06-22 · Define how AgentInbox bridges provider messages into Holon operator ingress and routes Holon replies back through provider delivery, starting with Feishu.
+  <!-- mdorigin:index kind=article -->
 
 - [IM Agent Interaction Model](./im-agent-interaction-model.md)
   2026-05-18 · Define how AgentInbox should model IM reminders, on-demand context fetching, and feedback operations, with Feishu/Lark as the first implementation case.

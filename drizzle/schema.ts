@@ -282,6 +282,38 @@ export const deliveries = sqliteTable("deliveries", {
   createdAt: text("created_at").notNull(),
 });
 
+export const operatorTransportBindings = sqliteTable("operator_transport_bindings", {
+  bindingId: text("binding_id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  transport: text("transport").notNull(),
+  operatorActorId: text("operator_actor_id").notNull(),
+  holonBaseUrl: text("holon_base_url").notNull(),
+  deliveryCallbackUrl: text("delivery_callback_url"),
+  deliveryAuthJson: text("delivery_auth_json"),
+  holonAuthJson: text("holon_auth_json"),
+  defaultRouteId: text("default_route_id"),
+  capabilitiesJson: text("capabilities_json").notNull(),
+  provider: text("provider"),
+  metadataJson: text("metadata_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  agentTransportIdx: index("idx_operator_bindings_agent_transport").on(table.agentId, table.transport),
+}));
+
+export const operatorReplyRoutes = sqliteTable("operator_reply_routes", {
+  routeId: text("route_id").primaryKey(),
+  bindingId: text("binding_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  sourceId: text("source_id"),
+  deliveryHandleJson: text("delivery_handle_json").notNull(),
+  metadataJson: text("metadata_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  bindingIdx: index("idx_operator_reply_routes_binding").on(table.bindingId),
+}));
+
 export const streams = sqliteTable("streams", {
   streamId: text("stream_id").primaryKey(),
   sourceId: text("source_id").notNull(),

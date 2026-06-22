@@ -24,6 +24,8 @@ import {
   InboxItem,
   ListInboxItemsOptions,
   NotificationGrouping,
+  OperatorReplyRoute,
+  OperatorTransportBinding,
   AgentTimer,
   RegisterAgentInput,
   SourceHost,
@@ -2018,6 +2020,96 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapDelivery(row));
   }
 
+  upsertOperatorTransportBinding(binding: OperatorTransportBinding): OperatorTransportBinding {
+    this.run(
+      `
+      insert into operator_transport_bindings (
+        binding_id, agent_id, transport, operator_actor_id, holon_base_url,
+        delivery_callback_url, delivery_auth_json, holon_auth_json, default_route_id,
+        capabilities_json, provider, metadata_json, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(binding_id) do update set
+        agent_id = excluded.agent_id,
+        transport = excluded.transport,
+        operator_actor_id = excluded.operator_actor_id,
+        holon_base_url = excluded.holon_base_url,
+        delivery_callback_url = excluded.delivery_callback_url,
+        delivery_auth_json = excluded.delivery_auth_json,
+        holon_auth_json = excluded.holon_auth_json,
+        default_route_id = excluded.default_route_id,
+        capabilities_json = excluded.capabilities_json,
+        provider = excluded.provider,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at
+    `,
+      [
+        binding.bindingId,
+        binding.agentId,
+        binding.transport,
+        binding.operatorActorId,
+        binding.holonBaseUrl,
+        binding.deliveryCallbackUrl ?? null,
+        binding.deliveryAuth ? JSON.stringify(binding.deliveryAuth) : null,
+        binding.holonAuth ? JSON.stringify(binding.holonAuth) : null,
+        binding.defaultRouteId ?? null,
+        JSON.stringify(binding.capabilities),
+        binding.provider ?? null,
+        JSON.stringify(binding.metadata),
+        binding.createdAt,
+        binding.updatedAt,
+      ],
+    );
+    this.persist();
+    return this.getOperatorTransportBinding(binding.bindingId)!;
+  }
+
+  getOperatorTransportBinding(bindingId: string): OperatorTransportBinding | null {
+    const row = this.getOne("select * from operator_transport_bindings where binding_id = ?", [bindingId]);
+    return row ? this.mapOperatorTransportBinding(row) : null;
+  }
+
+  listOperatorTransportBindings(agentId?: string): OperatorTransportBinding[] {
+    const rows = agentId
+      ? this.getAll("select * from operator_transport_bindings where agent_id = ? order by created_at asc", [agentId])
+      : this.getAll("select * from operator_transport_bindings order by created_at asc");
+    return rows.map((row) => this.mapOperatorTransportBinding(row));
+  }
+
+  upsertOperatorReplyRoute(route: OperatorReplyRoute): OperatorReplyRoute {
+    this.run(
+      `
+      insert into operator_reply_routes (
+        route_id, binding_id, agent_id, source_id, delivery_handle_json,
+        metadata_json, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(route_id) do update set
+        binding_id = excluded.binding_id,
+        agent_id = excluded.agent_id,
+        source_id = excluded.source_id,
+        delivery_handle_json = excluded.delivery_handle_json,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at
+    `,
+      [
+        route.routeId,
+        route.bindingId,
+        route.agentId,
+        route.sourceId ?? null,
+        JSON.stringify(route.deliveryHandle),
+        JSON.stringify(route.metadata),
+        route.createdAt,
+        route.updatedAt,
+      ],
+    );
+    this.persist();
+    return this.getOperatorReplyRoute(route.routeId)!;
+  }
+
+  getOperatorReplyRoute(routeId: string): OperatorReplyRoute | null {
+    const row = this.getOne("select * from operator_reply_routes where route_id = ?", [routeId]);
+    return row ? this.mapOperatorReplyRoute(row) : null;
+  }
+
   insertStream(stream: StreamRecord): void {
     this.run(
       "insert into streams (stream_id, source_id, stream_key, backend, created_at) values (?, ?, ?, ?, ?)",
@@ -2612,6 +2704,38 @@ export class AgentInboxStore {
       payload: parseJson<Record<string, unknown>>(row.payload_json as string),
       status: row.status as DeliveryAttempt["status"],
       createdAt: String(row.created_at),
+    };
+  }
+
+  private mapOperatorTransportBinding(row: Record<string, unknown>): OperatorTransportBinding {
+    return {
+      bindingId: String(row.binding_id),
+      agentId: String(row.agent_id),
+      transport: String(row.transport),
+      operatorActorId: String(row.operator_actor_id),
+      holonBaseUrl: String(row.holon_base_url),
+      deliveryCallbackUrl: row.delivery_callback_url ? String(row.delivery_callback_url) : null,
+      deliveryAuth: row.delivery_auth_json ? parseJson<OperatorTransportBinding["deliveryAuth"]>(row.delivery_auth_json as string) : null,
+      holonAuth: row.holon_auth_json ? parseJson<OperatorTransportBinding["holonAuth"]>(row.holon_auth_json as string) : null,
+      defaultRouteId: row.default_route_id ? String(row.default_route_id) : null,
+      capabilities: parseJson<string[]>(row.capabilities_json as string),
+      provider: row.provider ? String(row.provider) : null,
+      metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapOperatorReplyRoute(row: Record<string, unknown>): OperatorReplyRoute {
+    return {
+      routeId: String(row.route_id),
+      bindingId: String(row.binding_id),
+      agentId: String(row.agent_id),
+      sourceId: row.source_id ? String(row.source_id) : null,
+      deliveryHandle: parseJson<OperatorReplyRoute["deliveryHandle"]>(row.delivery_handle_json as string),
+      metadata: parseJson<Record<string, unknown>>(row.metadata_json as string),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
     };
   }
 

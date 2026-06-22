@@ -26,8 +26,12 @@ import {
   InboxWatchEvent,
   NotificationGrouping,
   NotificationPolicy,
+  OperatorIngressInput,
+  OperatorIngressResult,
+  OperatorReplyMessageInput,
   PreviewSourceSchemaInput,
   RegisterAgentInput,
+  RegisterOperatorBindingInput,
   RegisterAgentResult,
   RegisterHostInput,
   RegisterSourceInput,
@@ -50,6 +54,7 @@ import {
   SubscriptionLifecycleRetirement,
   SubscriptionPollResult,
   TerminalActivationTarget,
+  OperatorTransportBinding,
   UpdateTimerStatusResult,
   UpdateSourceInput,
   WatchInboxOptions,
@@ -2025,6 +2030,155 @@ export class AgentInboxService {
     return { ...storedAttempt, note: result.note, operation: request.operation };
   }
 
+  async registerOperatorTransportBinding(
+    agentId: string,
+    input: RegisterOperatorBindingInput,
+  ): Promise<OperatorTransportBinding & { holon?: unknown }> {
+    if (!input.transport) {
+      throw new Error("operator binding requires transport");
+    }
+    if (!input.operatorActorId) {
+      throw new Error("operator binding requires operatorActorId");
+    }
+    if (!input.holonBaseUrl) {
+      throw new Error("operator binding requires holonBaseUrl");
+    }
+    const now = nowIso();
+    const current = input.bindingId ? this.store.getOperatorTransportBinding(input.bindingId) : null;
+    const binding: OperatorTransportBinding = {
+      bindingId: input.bindingId ?? generateCanonicalId("opb"),
+      agentId,
+      transport: input.transport,
+      operatorActorId: input.operatorActorId,
+      holonBaseUrl: input.holonBaseUrl.replace(/\/+$/, ""),
+      deliveryCallbackUrl: input.deliveryCallbackUrl ?? null,
+      deliveryAuth: input.deliveryAuth ?? null,
+      holonAuth: input.holonAuth ?? null,
+      defaultRouteId: input.defaultRouteId ?? null,
+      capabilities: input.capabilities ?? ["prompt"],
+      provider: input.provider ?? null,
+      metadata: input.metadata ?? {},
+      createdAt: current?.createdAt ?? now,
+      updatedAt: now,
+    };
+    const stored = this.store.upsertOperatorTransportBinding(binding);
+    const holon = input.syncWithHolon === false ? undefined : await this.syncOperatorBindingToHolon(stored);
+    return holon === undefined ? stored : { ...stored, holon };
+  }
+
+  listOperatorTransportBindings(agentId: string): OperatorTransportBinding[] {
+    return this.store.listOperatorTransportBindings(agentId);
+  }
+
+  async forwardOperatorIngress(agentId: string, input: OperatorIngressInput): Promise<OperatorIngressResult> {
+    if (!input.text) {
+      throw new Error("operator ingress requires text");
+    }
+    const binding = this.store.getOperatorTransportBinding(input.bindingId);
+    if (!binding || binding.agentId !== agentId) {
+      throw new Error(`unknown operator binding for agent ${agentId}: ${input.bindingId}`);
+    }
+    const replyRouteId = input.replyRouteId ?? binding.defaultRouteId ?? null;
+    if (replyRouteId && input.deliveryHandle) {
+      const now = nowIso();
+      this.store.upsertOperatorReplyRoute({
+        routeId: replyRouteId,
+        bindingId: binding.bindingId,
+        agentId,
+        deliveryHandle: input.deliveryHandle,
+        sourceId: typeof input.metadata?.sourceId === "string" ? input.metadata.sourceId : null,
+        metadata: input.metadata ?? {},
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const holon = await this.postHolonJson(
+      binding,
+      `/control/agents/${encodeURIComponent(agentId)}/operator-ingress`,
+      {
+        text: input.text,
+        actor_id: input.actorId ?? binding.operatorActorId,
+        binding_id: binding.bindingId,
+        reply_route_id: replyRouteId,
+        provider: input.provider ?? binding.provider ?? binding.transport,
+        upstream_provider: input.upstreamProvider ?? binding.provider ?? binding.transport,
+        provider_message_ref: input.providerMessageRef ?? null,
+        correlation_id: input.correlationId ?? null,
+        causation_id: input.causationId ?? null,
+        metadata: {
+          ...(input.metadata ?? {}),
+          source_item_id: input.sourceItemId ?? undefined,
+        },
+      },
+    );
+    return {
+      accepted: true,
+      bindingId: binding.bindingId,
+      replyRouteId,
+      holon,
+    };
+  }
+
+  async deliverOperatorReply(routeId: string, input: OperatorReplyMessageInput): Promise<DeliveryAttempt & { note: string }> {
+    if (!input.text) {
+      throw new Error("operator reply route requires text");
+    }
+    const route = this.store.getOperatorReplyRoute(routeId);
+    if (!route) {
+      throw new Error(`unknown operator reply route: ${routeId}`);
+    }
+    return this.sendDelivery({
+      sourceId: route.sourceId ?? undefined,
+      deliveryHandle: route.deliveryHandle,
+      kind: input.kind ?? "reply",
+      payload: {
+        text: input.text,
+        targetAgentId: input.targetAgentId ?? route.agentId,
+        routeId,
+        metadata: input.metadata ?? {},
+      },
+    });
+  }
+
+  private async syncOperatorBindingToHolon(binding: OperatorTransportBinding): Promise<unknown> {
+    return this.postHolonJson(
+      binding,
+      `/control/agents/${encodeURIComponent(binding.agentId)}/operator-bindings`,
+      {
+        binding_id: binding.bindingId,
+        transport: binding.transport,
+        operator_actor_id: binding.operatorActorId,
+        default_route_id: binding.defaultRouteId,
+        delivery_callback_url: binding.deliveryCallbackUrl,
+        delivery_auth: binding.deliveryAuth,
+        capabilities: binding.capabilities,
+        provider: binding.provider,
+        metadata: binding.metadata,
+      },
+    );
+  }
+
+  private async postHolonJson(
+    binding: OperatorTransportBinding,
+    path: string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    const response = await fetch(`${binding.holonBaseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...authHeaders(binding.holonAuth),
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await response.text();
+    const body = text ? parseJsonResponse(text) : {};
+    if (!response.ok) {
+      throw new Error(`Holon operator route call failed: ${response.status} ${text}`);
+    }
+    return body;
+  }
+
   private async sendCanonicalDeliveryViaModule(
     source: SourceStream,
     handle: DeliveryHandle,
@@ -3962,6 +4116,27 @@ function providerForSourceType(sourceType: SourceStream["sourceType"]): string |
     return "telegram";
   }
   return null;
+}
+
+function authHeaders(auth: OperatorTransportBinding["holonAuth"]): Record<string, string> {
+  if (!auth) {
+    return {};
+  }
+  if (auth.type === "bearer" && auth.token) {
+    return { authorization: `Bearer ${auth.token}` };
+  }
+  if (auth.type === "header" && auth.headerName && auth.headerValue) {
+    return { [auth.headerName]: auth.headerValue };
+  }
+  return {};
+}
+
+function parseJsonResponse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { text };
+  }
 }
 
 export class ActivationDispatcher {

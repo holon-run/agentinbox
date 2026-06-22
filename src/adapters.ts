@@ -17,7 +17,7 @@ import {
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { resolveAgentInboxHome } from "./paths";
-import { FeishuDeliveryAdapter } from "./sources/feishu";
+import { FeishuDeliveryAdapter, FeishuUxcClient } from "./sources/feishu";
 import { GithubCallClient, GithubDeliveryAdapter } from "./sources/github";
 import { TelegramBotApiClient, TelegramDeliveryAdapter } from "./sources/telegram";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
@@ -74,7 +74,7 @@ export class AdapterRegistry {
   private readonly localEventSource = new NoopSourceAdapter("local_event");
   private readonly remoteSource: RemoteSourceRuntime;
   private readonly defaultDelivery = new NoopDeliveryAdapter();
-  private readonly feishuDelivery = new FeishuDeliveryAdapter();
+  private readonly feishuDelivery: FeishuDeliveryAdapter;
   private readonly githubDelivery = new GithubDeliveryAdapter();
   private readonly telegramDelivery: TelegramDeliveryAdapter;
   private readonly homeDir: string;
@@ -88,6 +88,7 @@ export class AdapterRegistry {
       remoteSourceClient?: UxcRemoteSourceClient;
       remoteModuleRegistry?: RemoteSourceModuleRegistry;
       githubCallClient?: GithubCallClient;
+      feishuClient?: FeishuUxcClient;
       telegramClient?: TelegramBotApiClient;
     },
   ) {
@@ -95,6 +96,7 @@ export class AdapterRegistry {
     this.remoteModuleRegistry = options?.remoteModuleRegistry ?? new RemoteSourceModuleRegistry({
       githubCallClient: options?.githubCallClient,
     });
+    this.feishuDelivery = new FeishuDeliveryAdapter(options?.feishuClient);
     this.telegramDelivery = new TelegramDeliveryAdapter(options?.telegramClient);
     this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
       homeDir: this.homeDir,

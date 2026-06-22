@@ -6,6 +6,15 @@ import assert from "node:assert/strict";
 import BetterSqlite3 from "better-sqlite3";
 import { AgentInboxStore } from "../src/store";
 
+const EXPECTED_MIGRATION_TAGS = [
+  "0000_v1_initial",
+  "0001_activation_entry_boundary",
+  "0002_host_scoped_lifecycle_retirements",
+  "0003_subscription_tracked_resource_indexes",
+  "0004_provider_raw_payload",
+  "0005_operator_transport_bindings",
+];
+
 async function createLegacyDb(dbPath: string): Promise<void> {
   fs.rmSync(dbPath, { force: true });
   const db = new BetterSqlite3(dbPath);
@@ -141,13 +150,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, [
-      "0000_v1_initial",
-      "0001_activation_entry_boundary",
-      "0002_host_scoped_lifecycle_retirements",
-      "0003_subscription_tracked_resource_indexes",
-      "0004_provider_raw_payload",
-    ]);
+    assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
     assert.equal(state.hasNewIndex, true);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
     assert.equal(state.hasTrackedResourceIndex, true);
@@ -188,13 +191,7 @@ test("store reopens an existing v1 database without archiving it", async () => {
   const reopened = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, [
-      "0000_v1_initial",
-      "0001_activation_entry_boundary",
-      "0002_host_scoped_lifecycle_retirements",
-      "0003_subscription_tracked_resource_indexes",
-      "0004_provider_raw_payload",
-    ]);
+    assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
     assert.equal(warnings.length, 0);
     assert.equal(state.hasTrackedResourceIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
@@ -229,13 +226,7 @@ test("store recovers a corrupt main database from the latest healthy backup", as
 
     recovered = await AgentInboxStore.open(dbPath);
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, [
-      "0000_v1_initial",
-      "0001_activation_entry_boundary",
-      "0002_host_scoped_lifecycle_retirements",
-      "0003_subscription_tracked_resource_indexes",
-      "0004_provider_raw_payload",
-    ]);
+    assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
     assert.equal(recovered.getDatabaseHealth().integrityCheck, "ok");
     assert.match(warnings.join("\n"), /recovered local database from/);
     assert.equal(fs.readdirSync(dir).some((name) => name.startsWith("agentinbox.sqlite.corrupt")), true);
@@ -258,13 +249,7 @@ test("store archives a pre-v1 database and starts fresh with the v1 baseline", a
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, [
-      "0000_v1_initial",
-      "0001_activation_entry_boundary",
-      "0002_host_scoped_lifecycle_retirements",
-      "0003_subscription_tracked_resource_indexes",
-      "0004_provider_raw_payload",
-    ]);
+    assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
     assert.equal(state.hasNewIndex, true);
     assert.equal(state.hasTrackedResourceIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
@@ -286,13 +271,7 @@ test("store upgrades source-scoped lifecycle retirements to host-scoped retireme
   const store = await AgentInboxStore.open(dbPath);
   try {
     const state = await readMigrationState(dbPath);
-    assert.deepEqual(state.appliedTags, [
-      "0000_v1_initial",
-      "0001_activation_entry_boundary",
-      "0002_host_scoped_lifecycle_retirements",
-      "0003_subscription_tracked_resource_indexes",
-      "0004_provider_raw_payload",
-    ]);
+    assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
     assert.deepEqual(state.retirementColumns.includes("source_id"), false);
     assert.equal(state.hasTrackedResourceIndex, true);
