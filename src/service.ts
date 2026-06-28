@@ -580,6 +580,7 @@ export class AgentInboxService {
         if (!templateSpec) {
           continue;
         }
+        validateFollowTemplateArgs(templateSpec.argsSchema ?? [], templateArgs, templateSpec.templateId);
         await this.adapters.sourceAdapterFor(source.sourceType).validateSource?.(source);
         return { source, templateSpec };
       } catch (error) {

@@ -1290,6 +1290,31 @@ test("stream schema preview supports builtin remote-backed aliases without persi
   }
 });
 
+test("follow github pr reports missing owner before preview source validation", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "follow-missing-owner-thread",
+      tmuxPaneId: "%follow-missing-owner",
+    });
+    await assert.rejects(
+      service.follow({
+        agentId: registered.agent.agentId,
+        providerOrKind: "github",
+        template: "pr",
+        templateArgs: { number: 2040, withCi: true },
+      }),
+      /follow template github\.pr requires argument owner/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("remote_source capability hooks override resolved schema fields and advertise shortcut/lifecycle support", async () => {
   const { store, service, dir } = await makeService();
   try {
