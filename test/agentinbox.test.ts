@@ -3449,6 +3449,40 @@ test("direct inbox text messages fail cleanly if the inbox item cannot be persis
   }
 });
 
+test("flushNotificationBuffer skips dispatch when all items are acked before flush", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 50,
+    activationMaxItems: 20,
+  });
+  try {
+    const registered = service.registerAgent({
+      agentId: "webhook-zero-unacked-test",
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    const result = await service.addDirectInboxTextMessage("webhook-zero-unacked-test", { message: "will be acked" });
+    // Ack the item before the activation window flushes
+    await service.ackInboxItems("webhook-zero-unacked-test", [result.itemId]);
+    await sleep(100);
+
+    assert.equal(dispatcher.calls.length, 0, "should not dispatch when all items acked before flush");
+    assert.equal(
+      store.getActivationDispatchState("webhook-zero-unacked-test", targetId),
+      null,
+      "dispatch state should be cleaned up",
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("registerSubscription rejects offline agents with no active activation targets", async () => {
   const { store, service, dir } = await makeService();
   try {
