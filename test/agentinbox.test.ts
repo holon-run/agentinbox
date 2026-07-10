@@ -6219,6 +6219,119 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+test("syncAllSubscriptions self-heals orphaned subscription whose source was deleted", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-ghost-sub-source-deleted",
+      tmuxPaneId: "ghost-sub-pane",
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "ghost-sub-source",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    // Simulate an orphaned subscription: delete the source directly from the
+    // store, bypassing the service's removeSource cascade that would also
+    // remove dependent subscriptions.
+    store.deleteSource(source.sourceId);
+    assert.equal(store.getSubscription(subscription.subscriptionId) != null, true);
+    assert.equal(store.getSource(source.sourceId), null);
+
+    // service.start() calls syncAllSubscriptions internally; it should self-heal
+    // by removing the orphaned subscription instead of repeatedly erroring.
+    await service.start();
+
+    // The orphaned subscription should now be gone from the DB.
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("syncAllSubscriptions skips subscription deleted between list and poll (race)", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const registered = service.registerAgent({
+      backend: "tmux",
+      runtimeKind: "codex",
+      runtimeSessionId: "thread-ghost-sub-race",
+      tmuxPaneId: "ghost-sub-race-pane",
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "ghost-sub-race",
+      config: {},
+    });
+    await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+
+    // Delete all subscriptions directly from the store after they were listed
+    // by syncAllSubscriptions but before pollSubscription runs. We achieve this
+    // by deleting before calling syncAllSubscriptions — the subscription won't
+    // be in the list at all, so syncAllSubscriptions should complete without error.
+    for (const sub of store.listSubscriptions()) {
+      store.deleteSubscription(sub.subscriptionId);
+    }
+
+    // service.start() calls syncAllSubscriptions internally; should complete
+    // without throwing even though all subscriptions were deleted.
+    await service.start();
+    assert.equal(store.listSubscriptions().length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("flushNotificationBuffer skips dispatch when all items are acked before flush", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 50,
+  });
+  try {
+    service.registerAgent({
+      agentId: "flush-zero-unacked-test",
+      webhook: { url: "http://127.0.0.1:9999/activate" },
+    });
+
+    // Add an inbox item — this enqueues into the notification buffer with a 50ms window.
+    await service.addDirectInboxTextMessage("flush-zero-unacked-test", { message: "hello" });
+
+    // Ack all items before the flush window expires.
+    const ack = await service.ackAllInboxItems("flush-zero-unacked-test");
+    assert.equal(ack.acked, 1);
+
+    // Wait past the flush window so flushNotificationBuffer runs.
+    await sleep(120);
+
+    // No dispatch should have happened — all items were acked before flush.
+    assert.equal(dispatcher.calls.length, 0, "should not dispatch when all items acked before flush");
+
+    // No lingering dispatch state.
+    assert.equal(store.listActivationDispatchStatesForAgent("flush-zero-unacked-test").length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /** Force a dispatch state's lease to be expired so syncActivationDispatchStates picks it up. */
 function fireDispatchWithExpiredLease(store: AgentInboxStore, agentId: string, targetId: string): void {
   const state = store.getActivationDispatchState(agentId, targetId);

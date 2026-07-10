@@ -2689,6 +2689,14 @@ export class AgentInboxService {
         const pendingState = state?.status === "dirty" ? state : null;
         const inbox = this.ensureInboxForAgent(buffer.agentId);
         const unackedItems = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
+        if (unackedItems.length === 0) {
+          // All buffered items were acked before the flush window expired.
+          // Nothing to dispatch — clean up and skip.
+          this.store.deleteActivationDispatchState(buffer.agentId, buffer.targetId);
+          buffer.inFlight = false;
+          this.notificationBuffers.delete(key);
+          return;
+        }
         const dispatched = await this.dispatchActivationTarget({
           agentId: buffer.agentId,
           targetId: buffer.targetId,
@@ -3555,6 +3563,25 @@ export class AgentInboxService {
       try {
         await this.pollSubscription(subscription.subscriptionId);
       } catch (error) {
+        // Self-heal: if the subscription was deleted between listing and polling
+        // (race with lifecycle cleanup), skip silently.
+        if (!this.store.getSubscription(subscription.subscriptionId)) {
+          continue;
+        }
+        // If the source was deleted but the subscription remains (orphaned),
+        // clean up the subscription to stop repeated errors on every cycle.
+        if (!this.store.getSource(subscription.sourceId)) {
+          try {
+            await this.removeSubscription(subscription.subscriptionId);
+          } catch {
+            this.store.deleteSubscription(subscription.subscriptionId);
+            this.clearSubscriptionRuntimeState(subscription);
+          }
+          console.warn(
+            `subscription ${subscription.subscriptionId} orphaned (source ${subscription.sourceId} no longer exists); removed`,
+          );
+          continue;
+        }
         console.warn(`subscription poll failed for ${subscription.subscriptionId}:`, error);
       }
     }
@@ -4231,6 +4258,9 @@ function inboxAggregationPolicy(inbox: Inbox): Required<InboxAggregationPolicy> 
 }
 
 function meetsNotificationThreshold(policy: NotificationPolicy, totalUnackedCount: number): boolean {
+  if (totalUnackedCount === 0) {
+    return false;
+  }
   if (policy.minUnackedItems == null) {
     return true;
   }
