@@ -4262,7 +4262,7 @@ function meetsNotificationThreshold(policy: NotificationPolicy, totalUnackedCoun
     return false;
   }
   if (policy.minUnackedItems == null) {
-    return true;
+    return totalUnackedCount > 0;
   }
   return totalUnackedCount >= policy.minUnackedItems;
 }
