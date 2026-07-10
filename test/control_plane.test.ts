@@ -1978,7 +1978,66 @@ test("cli inbox read rejects unsupported flags like --ack", () => {
   try {
     const read = runCli(["inbox", "read", "--ack"], env);
     assert.notEqual(read.status, 0);
-    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-entry ID] \[--include-acked] \[--limit N]/);
+    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-entry ID] \[--include-acked] \[--limit N] \[--full]/);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("cli inbox read defaults to compact output and --full restores complete fields", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-compact-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%7421",
+    CODEX_THREAD_ID: "thread-compact",
+  };
+
+  try {
+    const register = runCli(["agent", "register"], env);
+    assert.equal(register.status, 0, register.stderr);
+    const registered = JSON.parse(register.stdout) as { agent: { agentId: string } };
+    const agentId = registered.agent.agentId;
+
+    const send = runCli(["inbox", "send", "--agent-id", agentId, "--message", "compact test message"], env);
+    assert.equal(send.status, 0, send.stderr);
+
+    // Default (compact) mode: should NOT contain verbose fields
+    const compactRead = runCli(["inbox", "read", "--agent-id", agentId, "--include-acked"], env);
+    assert.equal(compactRead.status, 0, compactRead.stderr);
+    const compactPayload = JSON.parse(compactRead.stdout) as { entries: Array<Record<string, unknown>> };
+    assert.equal(compactPayload.entries.length, 1);
+    const compactEntry = compactPayload.entries[0];
+    assert.ok(compactEntry.entryId, "compact entry should have entryId");
+    assert.ok(compactEntry.summary, "compact entry should have summary");
+    assert.ok(compactEntry.kind, "compact entry should have kind");
+    assert.ok(compactEntry.metadata, "compact entry should have metadata");
+    assert.equal(compactEntry.rawPayload, undefined, "compact entry should NOT have rawPayload");
+    assert.equal(compactEntry.providerRawPayload, undefined, "compact entry should NOT have providerRawPayload");
+    assert.equal(compactEntry.item, undefined, "compact entry should NOT have item");
+    assert.equal(compactEntry.itemId, undefined, "compact entry should NOT have itemId");
+    assert.equal(compactEntry.inboxId, undefined, "compact entry should NOT have inboxId");
+    assert.equal(compactEntry.sequence, undefined, "compact entry should NOT have sequence");
+    assert.equal(compactEntry.itemIds, undefined, "compact entry should NOT have itemIds");
+    assert.equal(compactEntry.firstItemAt, undefined, "compact entry should NOT have firstItemAt");
+
+    // --full mode: should contain all fields including verbose ones
+    const fullRead = runCli(["inbox", "read", "--agent-id", agentId, "--include-acked", "--full"], env);
+    assert.equal(fullRead.status, 0, fullRead.stderr);
+    const fullPayload = JSON.parse(fullRead.stdout) as { entries: Array<Record<string, unknown>> };
+    assert.equal(fullPayload.entries.length, 1);
+    const fullEntry = fullPayload.entries[0];
+    assert.ok(fullEntry.entryId, "full entry should have entryId");
+    assert.ok(fullEntry.rawPayload, "full entry should have rawPayload");
+    assert.ok(fullEntry.itemId, "full entry should have itemId");
+    assert.ok(fullEntry.inboxId, "full entry should have inboxId");
+    assert.ok(fullEntry.sequence !== undefined, "full entry should have sequence");
+    assert.ok(fullEntry.itemIds, "full entry should have itemIds");
+    assert.ok(fullEntry.firstItemAt, "full entry should have firstItemAt");
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });
@@ -2076,7 +2135,7 @@ test("cli inbox send writes a direct text message into the target inbox", () => 
     const delivered = JSON.parse(send.stdout) as { itemId: string; inboxId: string; activated: boolean };
     assert.equal(delivered.activated, true);
 
-    const read = runCli(["inbox", "read", "--agent-id", registered.agent.agentId, "--include-acked"], env);
+    const read = runCli(["inbox", "read", "--agent-id", registered.agent.agentId, "--include-acked", "--full"], env);
     assert.equal(read.status, 0, read.stderr);
     const payload = JSON.parse(read.stdout) as { entries: Array<{ itemId: string; rawPayload: Record<string, unknown> }> };
     assert.equal(payload.entries.length, 1);
