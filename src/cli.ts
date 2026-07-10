@@ -820,9 +820,9 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
-    const allowedFlags = ["--agent-id", "--after-entry", "--include-acked", "--limit"];
+    const allowedFlags = ["--agent-id", "--after-entry", "--include-acked", "--limit", "--full"];
     if (positionalArgs(args, ["--agent-id", "--after-entry", "--limit"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
-      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N]");
+      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -834,7 +834,11 @@ async function main(): Promise<void> {
       limit: parseOptionalLimitArg(normalized),
     });
     const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/entries${query}`, undefined, "GET");
-    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    const data = response.data;
+    if (!hasFlag(normalized, "--full") && Array.isArray(data.entries)) {
+      data.entries = (data.entries as Array<Record<string, unknown>>).map(compactInboxEntry);
+    }
+    console.log(jsonResponse(withCommandMetadata(data, selection)));
     return;
   }
 
@@ -859,8 +863,9 @@ async function main(): Promise<void> {
   if (command === "inbox" && normalized[1] === "watch") {
     const args = normalized.slice(2);
     if (positionalArgs(args, ["--agent-id", "--after-entry", "--heartbeat-ms"]).length > 0) {
-      throw new Error("usage: agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]");
+      throw new Error("usage: agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N] [--full]");
     }
+    const fullMode = hasFlag(normalized, "--full");
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
       autoRegister: true,
@@ -879,7 +884,11 @@ async function main(): Promise<void> {
       if (event.event !== "items") {
         continue;
       }
-      console.log(jsonResponse(event));
+      const output = fullMode ? event : {
+        ...event,
+        entries: event.entries.map((e) => compactInboxEntry(e as unknown as Record<string, unknown>)),
+      };
+      console.log(jsonResponse(output));
     }
     return;
   }
@@ -1572,6 +1581,37 @@ function withCommandMetadata<T extends Record<string, unknown>>(data: T, selecti
   };
 }
 
+const COMPACT_ENTRY_FIELDS = [
+  "entryId", "kind", "summary", "eventVariant",
+  "occurredAt", "ackedAt", "deliveryHandle", "metadata",
+] as const;
+
+const COMPACT_DIGEST_FIELDS = [
+  "threadId", "revision", "groupKey", "resourceRef", "eventFamily",
+] as const;
+
+/**
+ * Strip verbose/internal fields from an inbox entry, keeping only the fields
+ * an agent needs for decisions and ack. Use `--full` on `inbox read`/`watch`
+ * to bypass this and see the complete entry.
+ */
+function compactInboxEntry(entry: Record<string, unknown>): Record<string, unknown> {
+  const compact: Record<string, unknown> = {};
+  for (const field of COMPACT_ENTRY_FIELDS) {
+    if (entry[field] !== undefined) {
+      compact[field] = entry[field];
+    }
+  }
+  if (entry.kind === "digest_snapshot") {
+    for (const field of COMPACT_DIGEST_FIELDS) {
+      if (entry[field] !== undefined) {
+        compact[field] = entry[field];
+      }
+    }
+  }
+  return compact;
+}
+
 function normalizeSubscriptionAddOutput(data: Record<string, unknown>, shortcutUsed: boolean): Record<string, unknown> {
   if (shortcutUsed) {
     return data;
@@ -1769,9 +1809,9 @@ Usage:
 Usage:
   agentinbox inbox list [--limit N]
   agentinbox inbox show <agentId>
-  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N]
+  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
-  agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N]
+  agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N] [--full]
   agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --entry-id <entryId> | --all)
   agentinbox inbox policy show [--agent-id ID]
   agentinbox inbox policy set [--agent-id ID] [--enabled|--disabled] [--window-ms N] [--max-items N] [--max-thread-age-ms N]
