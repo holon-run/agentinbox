@@ -40,9 +40,10 @@ interface AgentSelection {
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
   const detectedArgs = normalizeHelpArgs(rawArgs);
-  const normalized = shouldTreatJsonFlagAsNoop(detectedArgs)
+  const jsonStripped = shouldTreatJsonFlagAsNoop(detectedArgs)
     ? stripNoopJsonFlag(detectedArgs)
     : detectedArgs;
+  const normalized = normalizeAliases(jsonStripped);
   const shell = parseCommanderShell(normalized);
   const command = normalized[0];
 
@@ -410,14 +411,22 @@ async function main(): Promise<void> {
   if (command === "source" && normalized[1] === "invoke") {
     const sourceId = normalized[2];
     const operation = takeFlagValue(normalized, "--operation");
-    const inputJson = takeFlagValue(normalized, "--input-json");
+    const inputJson = takeFlagValue(normalized, "--input-json") ?? takeFlagValue(normalized, "--input");
     if (!sourceId || !operation || !inputJson) {
       throw new Error("usage: agentinbox source invoke <sourceId> --operation NAME --input-json JSON");
     }
-    await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/invoke`, {
+    try {
+      await printRemote(client, `/sources/${encodeURIComponent(sourceId)}/invoke`, {
       operation,
       input: parseJsonArg(inputJson, "--input-json"),
-    });
+      });
+    } catch (error) {
+      const suggestion = await suggestSourceOperation(client, sourceId, operation);
+      if (suggestion) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}\nDid you mean: --operation ${suggestion}?`);
+      }
+      throw error;
+    }
     return;
   }
 
@@ -896,11 +905,11 @@ async function main(): Promise<void> {
   if (command === "inbox" && normalized[1] === "ack") {
     const args = normalized.slice(2);
     const itemId = takeFlagValue(normalized, "--entry-id") ?? takeFlagValue(normalized, "--entry");
-    const throughEntryId = takeFlagValue(normalized, "--through");
+    const throughEntryId = takeFlagValue(normalized, "--through") ?? takeFlagValue(normalized, "--through-entry-id");
     const ackAll = hasFlag(normalized, "--all");
     const modeCount = Number(Boolean(itemId)) + Number(Boolean(throughEntryId)) + Number(ackAll);
-    if (positionalArgs(args, ["--agent-id", "--entry", "--entry-id", "--through"]).length > 0 || modeCount !== 1) {
-      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --entry-id <entryId> | --all)");
+    if (positionalArgs(args, ["--agent-id", "--entry", "--entry-id", "--through", "--through-entry-id"]).length > 0 || modeCount !== 1) {
+      throw new Error("usage: agentinbox inbox ack [--agent-id ID] (--through <entryId> | --through-entry-id <entryId> | --entry <entryId> | --entry-id <entryId> | --all)");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -1018,21 +1027,18 @@ async function main(): Promise<void> {
     const targetRef = takeFlagValue(normalized, "--target");
     const handleJson = takeFlagValue(normalized, "--handle-json");
     const operation = takeFlagValue(normalized, "--operation");
-    const inputJson = takeFlagValue(normalized, "--input-json");
+    const inputJson = takeFlagValue(normalized, "--input-json") ?? takeFlagValue(normalized, "--input");
     if (!operation || !inputJson || (!handleJson && (!provider || !surface || !targetRef))) {
       throw new Error("usage: agentinbox deliver invoke (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) --operation NAME --input-json JSON [--source-id SOURCE_ID]");
     }
-    await printRemote(
-      client,
-      "/deliveries/invoke",
-      handleJson
-        ? {
+    const invokeBody = handleJson
+      ? {
           sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
           deliveryHandle: parseJsonArg(handleJson),
           operation,
           input: parseJsonArg(inputJson, "--input-json"),
         }
-        : {
+      : {
           sourceId: takeFlagValue(normalized, "--source-id") ?? undefined,
           provider,
           surface,
@@ -1041,8 +1047,16 @@ async function main(): Promise<void> {
           replyMode: takeFlagValue(normalized, "--reply-mode") ?? undefined,
           operation,
           input: parseJsonArg(inputJson, "--input-json"),
-        },
-    );
+        };
+    try {
+      await printRemote(client, "/deliveries/invoke", invokeBody);
+    } catch (error) {
+      const suggestion = await suggestDeliveryOperation(client, invokeBody);
+      if (suggestion) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}\nDid you mean: --operation ${suggestion}?`);
+      }
+      throw error;
+    }
     return;
   }
 
@@ -1056,6 +1070,10 @@ async function main(): Promise<void> {
     return;
   }
 
+  const suggestion = suggestUnknownCommand(normalized);
+  if (suggestion) {
+    throw new Error(`unknown command: ${normalized.join(" ")}\nDid you mean: ${suggestion}?`);
+  }
   throw new Error(`unknown command: ${normalized.join(" ")}`);
 }
 
@@ -1447,6 +1465,142 @@ function normalizeHelpArgs(args: string[]): string[] {
   return [args[1], "--help"];
 }
 
+function normalizeAliases(args: string[]): string[] {
+  // Top-level command aliases
+  if (args[0] === "delivery") {
+    return ["deliver", ...args.slice(1)];
+  }
+  // Top-level shortcuts -> inbox subcommands
+  if (args[0] === "entries") {
+    return ["inbox", "read", ...args.slice(1)];
+  }
+  if (args[0] === "ack") {
+    return ["inbox", "ack", ...args.slice(1)];
+  }
+  // inbox subcommand aliases: get/entries/peek -> read
+  if (args[0] === "inbox" && (args[1] === "get" || args[1] === "entries" || args[1] === "peek")) {
+    return [args[0], "read", ...args.slice(2)];
+  }
+  return args;
+}
+
+function levenshtein(a: string, b: string): number {
+  const matrix: number[][] = [];
+  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      const cost = a[j - 1] === b[i - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost,
+      );
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+function closestMatch(input: string, candidates: string[]): string | null {
+  if (candidates.length === 0) return null;
+  let best: string | null = null;
+  let bestDistance = Infinity;
+  for (const candidate of candidates) {
+    const distance = levenshtein(input.toLowerCase(), candidate.toLowerCase());
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  // Only suggest if the distance is reasonable (at most half the input length)
+  if (best && bestDistance <= Math.max(1, Math.floor(input.length / 2))) {
+    return best;
+  }
+  return null;
+}
+
+const KNOWN_SUBCOMMANDS: Record<string, string[]> = {
+  deliver: ["send", "actions", "invoke"],
+  inbox: ["list", "show", "read", "send", "watch", "ack", "policy", "compact"],
+  daemon: ["start", "stop", "status"],
+  host: ["add", "list", "show", "schema"],
+  stream: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "poll", "event"],
+  source: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "actions", "invoke", "poll", "event"],
+  agent: ["register", "list", "current", "show", "remove", "resume", "target"],
+  subscription: ["add", "list", "show", "remove", "poll", "lag", "reset"],
+  timer: ["add", "list", "pause", "resume", "remove"],
+};
+
+function suggestUnknownCommand(args: string[]): string | null {
+  const command = args[0];
+  if (!command) return null;
+  // Check top-level command suggestions
+  const topCommands = COMMAND_SHELL_SPECS.map((s) => s.name);
+  const topSuggestion = closestMatch(command, topCommands);
+  if (topSuggestion && topSuggestion !== command) {
+    return topSuggestion;
+  }
+  // Check subcommand suggestions
+  if (args[1]) {
+    const subcommands = KNOWN_SUBCOMMANDS[command];
+    if (subcommands) {
+      const subSuggestion = closestMatch(args[1], subcommands);
+      if (subSuggestion) {
+        return `${command} ${subSuggestion}`;
+      }
+    }
+  }
+  return null;
+}
+
+async function suggestDeliveryOperation(
+  client: AgentInboxClient,
+  invokeBody: Record<string, unknown>,
+): Promise<string | null> {
+  try {
+    const actionsBody: Record<string, unknown> = {};
+    if (invokeBody.deliveryHandle) {
+      actionsBody.deliveryHandle = invokeBody.deliveryHandle;
+    } else {
+      if (invokeBody.sourceId) actionsBody.sourceId = invokeBody.sourceId;
+      if (invokeBody.provider) actionsBody.provider = invokeBody.provider;
+      if (invokeBody.surface) actionsBody.surface = invokeBody.surface;
+      if (invokeBody.targetRef) actionsBody.targetRef = invokeBody.targetRef;
+      if (invokeBody.threadRef) actionsBody.threadRef = invokeBody.threadRef;
+      if (invokeBody.replyMode) actionsBody.replyMode = invokeBody.replyMode;
+    }
+    const response = await requestRemote<{ operations: Array<{ name: string }> }>(
+      client,
+      "/deliveries/actions",
+      actionsBody,
+      "POST",
+    );
+    const operationNames = response.data.operations.map((op) => op.name);
+    return closestMatch(String(invokeBody.operation), operationNames);
+  } catch {
+    return null;
+  }
+}
+
+async function suggestSourceOperation(
+  client: AgentInboxClient,
+  sourceId: string,
+  operation: string,
+): Promise<string | null> {
+  try {
+    const response = await requestRemote<{ operations: Array<{ name: string }> }>(
+      client,
+      `/sources/${encodeURIComponent(sourceId)}/actions`,
+      undefined,
+      "GET",
+    );
+    const operationNames = response.data.operations.map((op) => op.name);
+    return closestMatch(operation, operationNames);
+  } catch {
+    return null;
+  }
+}
+
 function stripNoopJsonFlag(args: string[]): string[] {
   return args.filter((arg) => arg !== "--json");
 }
@@ -1809,20 +1963,24 @@ Usage:
 Usage:
   agentinbox inbox list [--limit N]
   agentinbox inbox show <agentId>
-  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]
+  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]  (aliases: inbox get, inbox entries, inbox peek)
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N] [--full]
-  agentinbox inbox ack [--agent-id ID] (--through <entryId> | --entry <entryId> | --entry-id <entryId> | --all)
+  agentinbox inbox ack [--agent-id ID] (--through <entryId> | --through-entry-id <entryId> | --entry <entryId> | --entry-id <entryId> | --all)
   agentinbox inbox policy show [--agent-id ID]
   agentinbox inbox policy set [--agent-id ID] [--enabled|--disabled] [--window-ms N] [--max-items N] [--max-thread-age-ms N]
   agentinbox inbox compact <agentId>
+
+Aliases: inbox get/entries/peek -> inbox read, top-level entries -> inbox read, top-level ack -> inbox ack
 `,
     deliver: `agentinbox deliver
 
 Usage:
   agentinbox deliver send --provider PROVIDER --surface SURFACE --target TARGET [--source-id SOURCE_ID] [--kind KIND] [--payload-json JSON]
   agentinbox deliver actions (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) [--source-id SOURCE_ID]
-  agentinbox deliver invoke (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) --operation NAME --input-json JSON [--source-id SOURCE_ID]
+  agentinbox deliver invoke (--handle-json JSON | --provider PROVIDER --surface SURFACE --target TARGET) --operation NAME --input-json JSON [--source-id SOURCE_ID]  (--input alias for --input-json)
+
+Aliases: delivery -> deliver
 `,
     status: `agentinbox status
 
