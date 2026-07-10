@@ -369,6 +369,68 @@ test("cli accepts --json as a no-op compatibility flag on default JSON commands"
   }
 });
 
+test("cli command aliases normalize to canonical commands", () => {
+  const repoDir = path.resolve(__dirname, "..");
+  const run = (args: string[]) =>
+    spawnSync("node", ["-r", "ts-node/register", "src/cli.ts", ...args], {
+      cwd: repoDir,
+      encoding: "utf8",
+    });
+
+  // delivery -> deliver
+  const deliveryHelp = run(["delivery", "--help"]);
+  const deliverHelp = run(["deliver", "--help"]);
+  assert.equal(deliveryHelp.status, 0, deliveryHelp.stderr);
+  assert.equal(deliveryHelp.stdout, deliverHelp.stdout);
+
+  // inbox get/entries/peek -> inbox read (all show inbox group help)
+  const inboxHelp = run(["inbox", "--help"]);
+  for (const alias of ["get", "entries", "peek"]) {
+    const aliasHelp = run(["inbox", alias, "--help"]);
+    assert.equal(aliasHelp.status, 0, aliasHelp.stderr);
+    assert.equal(aliasHelp.stdout, inboxHelp.stdout);
+  }
+
+  // top-level entries -> inbox read
+  const entriesHelp = run(["entries", "--help"]);
+  assert.equal(entriesHelp.status, 0, entriesHelp.stderr);
+  assert.equal(entriesHelp.stdout, inboxHelp.stdout);
+
+  // top-level ack -> inbox ack
+  const ackHelp = run(["ack", "--help"]);
+  assert.equal(ackHelp.status, 0, ackHelp.stderr);
+  assert.equal(ackHelp.stdout, inboxHelp.stdout);
+});
+
+test("cli did-you-mean suggests closest command for typos", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-dym-home-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%dym",
+    CODEX_THREAD_ID: "thread-dym",
+  };
+
+  try {
+    // Unknown top-level command close to "deliver"
+    const deliverTypo = runCli(["deliv"], env);
+    assert.equal(deliverTypo.status, 1);
+    assert.match(deliverTypo.stderr, /Did you mean: deliver\?/);
+
+    // Unknown subcommand close to "read"
+    const readTypo = runCli(["inbox", "reed"], env);
+    assert.equal(readTypo.status, 1);
+    assert.match(readTypo.stderr, /Did you mean: inbox read\?/);
+  } finally {
+    const stopped = runCli(["daemon", "stop"], env);
+    assert.equal(stopped.status, 0, stopped.stderr);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
   const config = resolveServeConfig({
