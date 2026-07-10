@@ -267,6 +267,10 @@ export class RemoteSourceRuntime {
     }
     const binding = managedBindingForSource(source);
     await this.client.sourceDelete(binding.namespace, binding.sourceKey);
+    // Clean up in-memory state to prevent stale references after DB deletion
+    this.errorCounts.delete(sourceId);
+    this.nextRetryAt.delete(sourceId);
+    this.inFlight.delete(sourceId);
   }
 
   status(): Record<string, unknown> {
