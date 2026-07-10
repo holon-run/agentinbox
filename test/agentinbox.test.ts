@@ -6215,6 +6215,44 @@ test("webhook dispatch transient error uses increasing backoff", async () => {
   }
 });
 
+test("flushNotificationBuffer skips dispatch when all items are acked before flush", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 50,
+    activationMaxItems: 20,
+  });
+  try {
+    const registered = service.registerAgent({
+      agentId: "agent-zero-unacked-flush",
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    // Deliver an item - it enters the notification buffer with a 50 ms flush window.
+    await service.addDirectInboxTextMessage("agent-zero-unacked-flush", { message: "will be acked" });
+
+    // Ack the item before the buffer flushes.
+    const items = service.listInboxItems("agent-zero-unacked-flush");
+    assert.equal(items.length, 1);
+    await service.ackInboxItems("agent-zero-unacked-flush", [items[0].entryId]);
+
+    // Wait for the flush window to elapse.
+    await sleep(80);
+
+    // No activation should have been dispatched.
+    assert.equal(dispatcher.calls.length, 0);
+    // Dispatch state should be cleaned up.
+    assert.equal(store.getActivationDispatchState("agent-zero-unacked-flush", targetId), null);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
