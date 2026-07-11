@@ -10,6 +10,37 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-11
+
+### Added
+
+- Added operator ingress reply routes for agent-initiated outbound delivery
+  through delivery handles (#217).
+- Compact CLI inbox output by default; added `--full` flag to show the full
+  expanded view (#228).
+
+### Fixed
+
+- Fixed operator delivery callback contract to match the documented boundary
+  (#219).
+- Validated follow template args before preview source to surface user errors
+  early (#223).
+- Self-healed ghost subscription/source references in `syncAllSubscriptions`
+  (#222, #230).
+- Increased idle source auto-pause grace period to 30 minutes to avoid
+  premature pausing of slow sources (#226, #229).
+- Added CLI usability aliases and did-you-mean suggestions for common mistyped
+  commands (#225, #232).
+- Fixed spurious `wake_hint` dispatch when all inbox items were acked before
+  buffer flush (#220, #231).
+
+## [1.4.1] - 2026-06-22
+
+### Changed
+
+- Refactored Telegram source to use uxc polling instead of a direct
+  integration (#216).
+
 ## [1.4.0] - 2026-06-21
 
 ### Added
