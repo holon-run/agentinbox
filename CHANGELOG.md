@@ -10,6 +10,8 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-04
+
 ### Changed
 
 - Webhook activation targets no longer re-dispatch on every flush window while
