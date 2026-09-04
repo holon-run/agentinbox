@@ -10,6 +10,22 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+### Changed
+
+- Webhook activation targets no longer re-dispatch on every flush window while
+  a notify lease is active. Items arriving during the lease merge into pending
+  state, and a single re-dispatch covers them on the next ack (when items no
+  previous notification covered remain) or on lease expiry. Fully acked
+  targets delete their dispatch state without re-dispatching (#220, #233).
+- Ack-driven webhook re-dispatch now requires unnotified pending items;
+  acking already-notified entries no longer produces a redundant POST.
+
+### Upgrade notes
+
+- Deployments that relied on per-window webhook re-dispatch during a lease can
+  lower the target's `notifyLeaseMs` to shorten the worst-case wait for new
+  items that arrive while a lease is active.
+
 ## [1.5.0] - 2026-07-11
 
 ### Added
