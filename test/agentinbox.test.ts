@@ -3375,7 +3375,7 @@ test("direct inbox text messages create inbox items and trigger activation", asy
   }
 });
 
-test("webhook targets dispatch new items immediately during an active notify lease", async () => {
+test("webhook targets merge new items into pending during an active notify lease", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const { store, service, dir } = await makeService({
     dispatcher,
@@ -3391,28 +3391,238 @@ test("webhook targets dispatch new items immediately during an active notify lea
       },
     });
     const targetId = registered.webhookTarget!.targetId;
+    const agentId = "webhook-new-item-lease-test";
 
-    await service.addDirectInboxTextMessage("webhook-new-item-lease-test", { message: "first" });
+    await service.addDirectInboxTextMessage(agentId, { message: "first" });
     await sleep(40);
 
     assert.equal(dispatcher.calls.length, 1);
-    const firstState = store.getActivationDispatchState("webhook-new-item-lease-test", targetId);
+    const firstState = store.getActivationDispatchState(agentId, targetId);
     assert.equal(firstState?.status, "notified");
     assert.ok(firstState.leaseExpiresAt);
     assert.ok(Date.parse(firstState.leaseExpiresAt) > Date.now());
+    const firstLease = firstState.leaseExpiresAt;
 
-    await service.addDirectInboxTextMessage("webhook-new-item-lease-test", { message: "second" });
+    await service.addDirectInboxTextMessage(agentId, { message: "second" });
     await sleep(40);
+
+    // New items during the lease merge into pending instead of re-dispatching
+    // (issue #233): one POST per lease cycle, not one per flush window.
+    assert.equal(dispatcher.calls.length, 1, "no re-dispatch during notify lease");
+    const secondState = store.getActivationDispatchState(agentId, targetId);
+    assert.equal(secondState?.status, "dirty");
+    assert.equal(secondState?.pendingNewItemCount, 1);
+    assert.equal(secondState?.leaseExpiresAt, firstLease, "lease preserved while pending merges");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook ack with pending new items re-dispatches exactly once", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 20,
+  });
+  try {
+    const agentId = "webhook-ack-pending-test";
+    const registered = service.registerAgent({
+      agentId,
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+        notifyLeaseMs: 60_000,
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage(agentId, { message: "first" });
+    await sleep(40);
+    assert.equal(dispatcher.calls.length, 1);
+
+    await service.addDirectInboxTextMessage(agentId, { message: "second" });
+    await sleep(40);
+    assert.equal(dispatcher.calls.length, 1);
+
+    const items = service.listInboxItems(agentId);
+    assert.equal(items.length, 2);
+
+    // Acking the already-notified item while unnotified items are pending
+    // triggers exactly one re-dispatch covering the pending items.
+    const acked = await service.ackInboxItems(agentId, [items[0].entryId]);
+    assert.equal(acked.acked, 1);
 
     assert.equal(dispatcher.calls.length, 2);
     assert.equal(dispatcher.calls[1]!.activation.newItemCount, 1);
+    assert.equal(dispatcher.calls[1]!.activation.latestEntryId, items[1].entryId);
     assert.notEqual(
       dispatcher.calls[1]!.activation.latestEntryId,
       dispatcher.calls[0]!.activation.latestEntryId,
     );
-    const secondState = store.getActivationDispatchState("webhook-new-item-lease-test", targetId);
-    assert.equal(secondState?.status, "notified");
-    assert.equal(secondState?.pendingNewItemCount, 0);
+    const state = store.getActivationDispatchState(agentId, targetId);
+    assert.equal(state?.status, "notified");
+    assert.equal(state?.pendingNewItemCount, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook ack without unnotified pending items does not re-dispatch", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 20,
+  });
+  try {
+    const agentId = "webhook-ack-no-pending-test";
+    const registered = service.registerAgent({
+      agentId,
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+        notifyLeaseMs: 60_000,
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage(agentId, { message: "first" });
+    await sleep(40);
+    await service.addDirectInboxTextMessage(agentId, { message: "second" });
+    await sleep(40);
+    await service.addDirectInboxTextMessage(agentId, { message: "third" });
+    await sleep(40);
+
+    const items = service.listInboxItems(agentId);
+    assert.equal(items.length, 3);
+
+    // Partial ack of the notified batch: ack re-dispatch covers the pending
+    // items once and returns to notified.
+    await service.ackInboxItems(agentId, [items[0].entryId]);
+    assert.equal(dispatcher.calls.length, 2);
+
+    // Ack while notified with no pending items: no POST about already-known
+    // entries.
+    await service.ackInboxItems(agentId, [items[2].entryId]);
+    assert.equal(dispatcher.calls.length, 2);
+    let state = store.getActivationDispatchState(agentId, targetId);
+    assert.equal(state?.status, "notified");
+    assert.equal(state?.pendingNewItemCount, 0);
+
+    // Defensive gate: a dirty state with no unnotified pending items must not
+    // re-dispatch on ack either.
+    store.upsertActivationDispatchState({
+      ...state!,
+      status: "dirty",
+      pendingNewItemCount: 0,
+      updatedAt: nowIso(),
+    });
+    await service.ackInboxItems(agentId, [items[1].entryId]);
+    assert.equal(dispatcher.calls.length, 2, "dirty webhook state without pending items must not re-dispatch on ack");
+    state = store.getActivationDispatchState(agentId, targetId);
+    // Acking the last unacked item empties the inbox, so the defensive-gate
+    // path never re-dispatches and the full-ack cleanup deletes the state.
+    assert.equal(
+      state ?? null,
+      null,
+      "full ack must delete webhook dispatch state instead of re-dispatching",
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook lease expiry re-dispatches pending items once and renews lease otherwise", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 20,
+  });
+  try {
+    const agentId = "webhook-lease-expiry-test";
+    const registered = service.registerAgent({
+      agentId,
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+        notifyLeaseMs: 60_000,
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage(agentId, { message: "first" });
+    await sleep(40);
+    assert.equal(dispatcher.calls.length, 1);
+
+    await service.addDirectInboxTextMessage(agentId, { message: "second" });
+    await sleep(40);
+    const items = service.listInboxItems(agentId);
+
+    // Lease expiry with pending items re-dispatches exactly once.
+    fireDispatchWithExpiredLease(store, agentId, targetId);
+    await (service as unknown as { syncActivationDispatchStates(): Promise<void> }).syncActivationDispatchStates();
+    assert.equal(dispatcher.calls.length, 2);
+    assert.equal(dispatcher.calls[1]!.activation.newItemCount, 1);
+    assert.equal(dispatcher.calls[1]!.activation.latestEntryId, items[1].entryId);
+    let state = store.getActivationDispatchState(agentId, targetId);
+    assert.equal(state?.status, "notified");
+    assert.equal(state?.pendingNewItemCount, 0);
+    assert.ok(state?.leaseExpiresAt);
+    assert.ok(Date.parse(state.leaseExpiresAt) > Date.now());
+
+    // Lease expiry with no pending items only renews the lease.
+    fireDispatchWithExpiredLease(store, agentId, targetId);
+    await (service as unknown as { syncActivationDispatchStates(): Promise<void> }).syncActivationDispatchStates();
+    assert.equal(dispatcher.calls.length, 2);
+    state = store.getActivationDispatchState(agentId, targetId);
+    assert.equal(state?.status, "notified");
+    assert.ok(state?.leaseExpiresAt);
+    assert.ok(Date.parse(state.leaseExpiresAt) > Date.now());
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webhook full ack during lease deletes dispatch state without re-dispatch", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 20,
+  });
+  try {
+    const agentId = "webhook-full-ack-lease-test";
+    const registered = service.registerAgent({
+      agentId,
+      webhook: {
+        url: "http://127.0.0.1:9999/webhook",
+        notifyLeaseMs: 60_000,
+      },
+    });
+    const targetId = registered.webhookTarget!.targetId;
+
+    await service.addDirectInboxTextMessage(agentId, { message: "first" });
+    await sleep(40);
+    assert.equal(dispatcher.calls.length, 1);
+
+    await service.addDirectInboxTextMessage(agentId, { message: "second" });
+    await sleep(40);
+    assert.equal(store.getActivationDispatchState(agentId, targetId)?.status, "dirty");
+
+    // Everything acked while merged items are still pending: state is removed
+    // and no redundant POST fires (issue #220 regression guard under the new
+    // merge semantics).
+    const ack = await service.ackAllInboxItems(agentId);
+    assert.equal(ack.acked, 2);
+    assert.equal(dispatcher.calls.length, 1);
+    assert.equal(store.getActivationDispatchState(agentId, targetId), null);
   } finally {
     await service.stop();
     store.close();
@@ -3900,7 +4110,7 @@ test("active webhook targets suppress terminal activation dispatch for the same 
     const webhookTarget = service.addWebhookActivationTarget(registered.agent.agentId, {
       url: "http://127.0.0.1:9999/webhook",
       activationMode: "activation_with_items",
-      notifyLeaseMs: 100,
+      notifyLeaseMs: 60_000,
     });
     const source = await service.registerSource({
       sourceType: "local_event",
@@ -3942,12 +4152,19 @@ test("active webhook targets suppress terminal activation dispatch for the same 
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    assert.equal(dispatcher.calls.length, 2);
-    assert.equal(dispatcher.calls[1]!.activation.newItemCount, 1);
+    // During the notify lease the new event merges into pending instead of
+    // re-dispatching (issue #233); the webhook still suppresses terminal
+    // dispatch while pending.
+    assert.equal(dispatcher.calls.length, 1);
     assert.equal(terminalDispatcher.calls.length, 0);
+    const mergedState = store.getActivationDispatchState(registered.agent.agentId, webhookTarget.targetId);
+    assert.equal(mergedState?.status, "dirty");
+    assert.equal(mergedState?.pendingNewItemCount, 1);
 
     const ack = await service.ackAllInboxItems(registered.agent.agentId);
     assert.equal(ack.acked, 2);
+    // Everything acked: state is removed without another POST.
+    assert.equal(dispatcher.calls.length, 1);
 
     await service.appendSourceEventByCaller(source.sourceId, {
       sourceNativeId: "evt-3",
@@ -3958,7 +4175,7 @@ test("active webhook targets suppress terminal activation dispatch for the same 
     await service.pollSubscription(subscription.subscriptionId);
     await sleep(40);
 
-    assert.equal(dispatcher.calls.length, 3);
+    assert.equal(dispatcher.calls.length, 2);
     assert.equal(terminalDispatcher.calls.length, 0);
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 1);
   } finally {

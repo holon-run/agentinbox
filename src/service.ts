@@ -2682,9 +2682,15 @@ export class AgentInboxService {
         return;
       }
       const state = this.store.getActivationDispatchState(buffer.agentId, buffer.targetId);
+      // Within an active notify lease, buffered entries merge into the pending
+      // set (below) instead of re-dispatching. Webhook targets used to
+      // re-dispatch every flush window during the lease, which queued one
+      // wake per window downstream and produced empty wake turns when the
+      // consuming turn acked everything (issue #233). Merge semantics now
+      // match terminal targets: re-dispatch happens on ack (when pending new
+      // items exist) or lease expiry.
       const shouldAttemptDispatch = !state
-        || (state.status === "dirty" && state.leaseExpiresAt == null)
-        || (state.status === "notified" && buffer.targetKind === "webhook");
+        || (state.status === "dirty" && state.leaseExpiresAt == null);
       if (shouldAttemptDispatch) {
         const pendingState = state?.status === "dirty" ? state : null;
         const inbox = this.ensureInboxForAgent(buffer.agentId);
@@ -2872,6 +2878,13 @@ export class AgentInboxService {
     }
 
     if (reason === "ack" && state.status !== "dirty") {
+      return;
+    }
+    if (reason === "ack" && target.kind === "webhook" && state.pendingNewItemCount <= 0) {
+      // Ack-driven re-dispatch for webhook targets requires items that no
+      // previous notification covered. Without new information a POST would
+      // only wake the runtime about entries it already knows. Terminal
+      // targets keep ack-driven re-render behavior.
       return;
     }
     if (reason === "lease" && state.status === "notified") {
