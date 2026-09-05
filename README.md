@@ -299,6 +299,22 @@ that database next to the DB path (for example,
 `~/.agentinbox/agentinbox.sqlite.pre-v1.<timestamp>.bak`) and starts with a
 fresh v1 database; pre-v1 local data is not imported.
 
+## Database Backups
+
+Startup backups are event-driven, not unconditional:
+
+- before pending schema migrations run, a full backup is written to
+  `<db>.pre-migrate-v<N>.bak` (bounded by `AGENTINBOX_MIGRATION_BACKUP_KEEP`,
+  default 5; `0` keeps all)
+- `agentinbox backup [--home DIR] [--state PATH]` writes a manual snapshot to
+  `<db>.bak` on demand, for scheduled or pre-upgrade snapshots
+- regular opens verify the database with `PRAGMA quick_check` and escalate to
+  a full `integrity_check` only when the quick pass fails; recovery considers
+  manual and pre-migration backups, most recent first
+
+Setting `AGENTINBOX_STARTUP_BACKUP=1` restores the legacy behavior of backing
+up (and fully checking) the database on every open.
+
 ## License
 
 Apache-2.0

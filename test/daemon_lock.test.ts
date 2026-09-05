@@ -331,19 +331,37 @@ test("store open GCs orphan backup tmp files and keeps live-pid ones", async () 
     store.close();
     assert.equal(fs.existsSync(orphanTmp), false, "orphan tmp should be garbage collected");
     assert.equal(fs.existsSync(liveTmp), true, "live-pid tmp must be preserved");
-    assert.equal(fs.existsSync(`${dbPath}.bak`), true, "startup backup runs by default");
+    assert.equal(fs.existsSync(`${dbPath}.bak`), false, "startup backup no longer runs by default");
 
     fs.rmSync(liveTmp, { force: true });
-    fs.rmSync(`${dbPath}.bak`, { force: true });
     store = await AgentInboxStore.open(dbPath, {
-      env: { ...process.env, AGENTINBOX_STARTUP_BACKUP: "0" },
+      env: { ...process.env, AGENTINBOX_STARTUP_BACKUP: "1" },
     });
     store.close();
-    assert.equal(fs.existsSync(`${dbPath}.bak`), false, "AGENTINBOX_STARTUP_BACKUP=0 skips the backup");
+    assert.equal(fs.existsSync(`${dbPath}.bak`), true, "AGENTINBOX_STARTUP_BACKUP=1 restores the legacy startup backup");
   } finally {
     if (liveOwner.exitCode == null) {
       liveOwner.kill("SIGKILL");
     }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("agentinbox backup writes a snapshot without a daemon", async () => {
+  const home = tempHome("agentinbox-backup-cli-home-");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    AGENTINBOX_HOME: home,
+    AGENTINBOX_NO_AUTOSTART: "1",
+  };
+  try {
+    const result = runCli(["backup"], env);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as { ok?: boolean; backupPath?: string };
+    assert.equal(payload.ok, true);
+    assert.ok(payload.backupPath?.endsWith("agentinbox.sqlite.bak"), `unexpected backupPath: ${String(payload.backupPath)}`);
+    assert.equal(fs.existsSync(payload.backupPath!), true, "backup snapshot exists");
+  } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
