@@ -115,6 +115,14 @@ export function resolveDaemonPaths(
   };
 }
 
+/**
+ * Admission lock for the daemon serving a given socket. Scoped to the socket
+ * identity (not the home dir) so an explicit --socket gets its own lock.
+ */
+export function daemonLockPath(socketPath: string): string {
+  return `${socketPath}.lock`;
+}
+
 export function resolveClientTransport(input: ResolveClientTransportInput = {}): ClientTransport {
   const env = input.env ?? process.env;
   const homeDir = resolveAgentInboxHome(env, input.homeDirOverride);

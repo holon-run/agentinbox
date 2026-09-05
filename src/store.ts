@@ -39,7 +39,7 @@ import {
   WebhookActivationTarget,
 } from "./model";
 import { buildSubscriptionListQuery } from "./store_queries";
-import { formatEntryRef, formatThreadRef, generateCanonicalId, nowIso, parseEntryRef } from "./util";
+import { formatEntryRef, formatThreadRef, generateCanonicalId, isEnvFlagDisabled, isPidAlive, nowIso, parseEntryRef } from "./util";
 
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const V1_BASELINE_TAG = "0000_v1_initial";
@@ -106,8 +106,13 @@ export class AgentInboxStore {
     private readonly db: BetterSqliteDatabase,
   ) {}
 
-  static async open(dbPath: string): Promise<AgentInboxStore> {
+  static async open(
+    dbPath: string,
+    options: { env?: NodeJS.ProcessEnv } = {},
+  ): Promise<AgentInboxStore> {
+    const env = options.env ?? process.env;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    removeOrphanBackupTmps(dbPath);
     const existedBeforeOpen = fs.existsSync(dbPath);
     let db = await this.openDatabaseWithRecovery(dbPath);
     let store = new AgentInboxStore(dbPath, db);
@@ -118,7 +123,7 @@ export class AgentInboxStore {
       );
       db = this.openDatabase(dbPath);
       store = new AgentInboxStore(dbPath, db);
-    } else if (existedBeforeOpen) {
+    } else if (existedBeforeOpen && startupBackupEnabled(env)) {
       await store.backupHealthyDatabase();
     }
     store.migrate();
@@ -3045,4 +3050,42 @@ function uniqueSorted(values: Array<string | null | undefined>): string[] {
 
 function summarizeBackfilledItemEntry(item: InboxItem): string {
   return `${item.eventVariant} from ${item.sourceId}`;
+}
+
+function startupBackupEnabled(env: NodeJS.ProcessEnv): boolean {
+  return !isEnvFlagDisabled(env.AGENTINBOX_STARTUP_BACKUP);
+}
+
+/**
+ * Removes leftover `<db>.bak.<pid>.tmp` files whose owning process is dead.
+ * Tmp files owned by a live pid belong to a concurrent open and are preserved.
+ */
+function removeOrphanBackupTmps(dbPath: string): void {
+  const dir = path.dirname(dbPath);
+  const pattern = new RegExp(`^${escapeRegExp(path.basename(dbPath))}\\.bak\\.(\\d+)\\.tmp$`);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    const match = pattern.exec(name);
+    if (!match) {
+      continue;
+    }
+    const pid = Number.parseInt(match[1], 10);
+    if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) {
+      continue;
+    }
+    try {
+      fs.rmSync(path.join(dir, name), { force: true });
+    } catch {
+      // Best-effort GC.
+    }
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -15,10 +15,22 @@ import {
   isHolonRuntimeEnv,
   resolveCurrentAgent,
 } from "./current_agent";
-import { daemonStatus, ensureDaemonForClient, removePidFile, resolveDaemonLogLevel, startDaemon, stopDaemon, writeDaemonMetadata, writePidFile } from "./daemon";
+import {
+  acquireDaemonLock,
+  daemonStatus,
+  ensureDaemonForClient,
+  releaseDaemonLock,
+  removePidFile,
+  removePidFileIfOwned,
+  resolveDaemonLogLevel,
+  startDaemon,
+  stopDaemon,
+  writeDaemonMetadata,
+  writePidFile,
+} from "./daemon";
 import { createServer } from "./http";
 import { JsonLogger, parseLogLevel } from "./logging";
-import { resolveDaemonPaths, resolveServeConfig } from "./paths";
+import { daemonLockPath, resolveDaemonPaths, resolveServeConfig } from "./paths";
 import { AgentInboxService } from "./service";
 import { AgentInboxStore } from "./store";
 import { detectTerminalContext } from "./terminal";
@@ -1149,6 +1161,28 @@ async function runServe(args: string[]): Promise<void> {
   const logLevel = parseLogLevel(takeFlagValue(args, "--log-level") ?? process.env.AGENTINBOX_LOG_LEVEL);
   const logger = new JsonLogger(logLevel, "agentinbox");
 
+  // Socket transport: take the admission lock and publish the pid file before
+  // opening the store, so concurrent starters and status checks see this
+  // process during the (possibly slow) store open instead of racing it.
+  let daemonLock: string | null = null;
+  if (serveConfig.transport.kind === "socket") {
+    daemonLock = daemonLockPath(serveConfig.transport.socketPath);
+    const acquisition = acquireDaemonLock(daemonLock);
+    if (!acquisition.acquired) {
+      const holderPid = acquisition.holder?.pid ?? null;
+      logger.warn("daemon.already_running", {
+        pid: holderPid,
+        socketPath: serveConfig.transport.socketPath,
+        lockPath: daemonLock,
+      });
+      console.error(
+        `agentinbox daemon already running${holderPid != null ? ` (pid ${holderPid})` : ""}; not starting a second instance`,
+      );
+      process.exit(0);
+    }
+    writePidFile(daemonPaths.pidPath, process.pid);
+  }
+
   const store = await AgentInboxStore.open(serveConfig.dbPath);
   let service: AgentInboxService;
   const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
@@ -1159,9 +1193,6 @@ async function runServe(args: string[]): Promise<void> {
   await adapters.start();
   await service.start();
   const controlServer = await startControlServer(server, serveConfig.transport);
-  if (serveConfig.transport.kind === "socket") {
-    writePidFile(daemonPaths.pidPath, process.pid);
-  }
   writeDaemonMetadata(daemonPaths.metadataPath, { logLevel });
   logger.info("daemon.ready", {
     homeDir: serveConfig.homeDir,
@@ -1181,8 +1212,11 @@ async function runServe(args: string[]): Promise<void> {
       void adapters.stop();
       void service.stop();
       store.close();
-      if (serveConfig.transport.kind === "socket") {
-        removePidFile(daemonPaths.pidPath);
+      if (serveConfig.transport.kind === "socket" && daemonLock != null) {
+        // Ownership: only remove files that still belong to this process so a
+        // replaced or rebound instance keeps its own pid file and socket.
+        removePidFileIfOwned(daemonPaths.pidPath, process.pid);
+        releaseDaemonLock(daemonLock, process.pid);
       }
       removePidFile(daemonPaths.metadataPath);
       process.exit(0);
