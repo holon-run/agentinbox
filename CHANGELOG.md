@@ -10,6 +10,34 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+### Changed
+
+- Startup database handling is event-driven instead of unconditional (#237):
+  regular opens verify the database with `PRAGMA quick_check` (escalating to a
+  full `integrity_check` only when the quick pass fails) and no longer rewrite
+  a full backup on every startup.
+- A full backup is now taken automatically only before pending schema
+  migrations run, named `<db>.pre-migrate-v<N>.bak` and bounded by
+  `AGENTINBOX_MIGRATION_BACKUP_KEEP` (default 5; `0` keeps all) (#237).
+- `AGENTINBOX_STARTUP_BACKUP` now defaults to off; setting it to `1` restores
+  the legacy v1.5.2 behavior of an unconditional backup plus a full
+  `integrity_check` on every open (#237).
+- Status diagnostics now report `quickCheck` instead of running a full
+  `integrity_check` on every `status` call (#237).
+
+### Added
+
+- `agentinbox backup` writes a verified `<db>.bak` snapshot on demand for
+  scheduled or pre-upgrade snapshots; recovery considers manual and
+  pre-migration backups, most recent first (#237).
+
+### Fixed
+
+- Corrected the v1.5.2 release notes claim that "an existing healthy backup
+  is reused instead of being rewritten": that behavior was not implemented in
+  v1.5.2 and startup backups were rewritten on every open. The event-driven
+  model above replaces it (#237).
+
 ## [1.5.2] - 2026-09-05
 
 ### Fixed

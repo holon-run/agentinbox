@@ -168,7 +168,7 @@ test("store opens databases with WAL journaling and foreign keys enabled", async
   const store = await AgentInboxStore.open(dbPath);
   try {
     const health = store.getDatabaseHealth();
-    assert.equal(health.integrityCheck, "ok");
+    assert.equal(health.quickCheck, "ok");
     assert.equal(health.journalMode, "wal");
     assert.equal(health.foreignKeys, true);
   } finally {
@@ -214,10 +214,8 @@ test("store recovers a corrupt main database from the latest healthy backup", as
   };
   try {
     const first = await AgentInboxStore.open(dbPath);
+    await first.backupDatabase();
     first.close();
-
-    const reopened = await AgentInboxStore.open(dbPath);
-    reopened.close();
     assert.equal(fs.existsSync(`${dbPath}.bak`), true);
 
     fs.rmSync(`${dbPath}-wal`, { force: true });
@@ -227,7 +225,7 @@ test("store recovers a corrupt main database from the latest healthy backup", as
     recovered = await AgentInboxStore.open(dbPath);
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
-    assert.equal(recovered.getDatabaseHealth().integrityCheck, "ok");
+    assert.equal(recovered.getDatabaseHealth().quickCheck, "ok");
     assert.match(warnings.join("\n"), /recovered local database from/);
     assert.equal(fs.readdirSync(dir).some((name) => name.startsWith("agentinbox.sqlite.corrupt")), true);
   } finally {
@@ -302,6 +300,127 @@ test("store archives repeated pre-v1 databases without clobbering earlier backup
     assert.equal(backups.length, 2);
     assert.notEqual(backups[0], backups[1]);
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store backs up an existing database before applying pending migrations", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-backup-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  await createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath);
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(" "));
+  };
+  let store: AgentInboxStore | null = null;
+  try {
+    store = await AgentInboxStore.open(dbPath);
+    const migrationBackup = `${dbPath}.pre-migrate-v${EXPECTED_MIGRATION_TAGS.length}.bak`;
+    assert.equal(fs.existsSync(migrationBackup), true, "pending migrations trigger a pre-migration backup");
+    assert.equal(fs.existsSync(`${dbPath}.bak`), false, "no unconditional startup backup");
+    assert.match(warnings.join("\n"), /pending schema migrations detected/);
+  } finally {
+    console.warn = originalWarn;
+    store?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store does not create backups when reopening a fully migrated database", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-reopen-nobackup-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  const first = await AgentInboxStore.open(dbPath);
+  first.close();
+
+  const second = await AgentInboxStore.open(dbPath);
+  second.close();
+  try {
+    const backups = fs.readdirSync(dir).filter((name) => name.endsWith(".bak"));
+    assert.deepEqual(backups, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("AGENTINBOX_STARTUP_BACKUP=1 restores the legacy unconditional startup backup", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-legacy-startup-backup-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  const env = { ...process.env, AGENTINBOX_STARTUP_BACKUP: "1" };
+  const first = await AgentInboxStore.open(dbPath, { env });
+  first.close();
+
+  const second = await AgentInboxStore.open(dbPath, { env });
+  second.close();
+  try {
+    assert.equal(fs.existsSync(`${dbPath}.bak`), true, "legacy mode backs up on every open");
+    fs.rmSync(`${dbPath}.bak`, { force: true });
+    const third = await AgentInboxStore.open(dbPath);
+    third.close();
+    assert.equal(fs.existsSync(`${dbPath}.bak`), false, "default mode no longer backs up on open");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store recovers a corrupt database from a pre-migration backup", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-recover-pre-migrate-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  await createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath);
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(" "));
+  };
+  let recovered: AgentInboxStore | null = null;
+  try {
+    const first = await AgentInboxStore.open(dbPath);
+    first.close();
+    fs.rmSync(`${dbPath}-wal`, { force: true });
+    fs.rmSync(`${dbPath}-shm`, { force: true });
+    fs.writeFileSync(dbPath, "not a sqlite database");
+
+    recovered = await AgentInboxStore.open(dbPath);
+    const state = await readMigrationState(dbPath);
+    assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
+    assert.match(warnings.join("\n"), /recovered local database from .*pre-migrate-v6\.bak/);
+  } finally {
+    console.warn = originalWarn;
+    recovered?.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store prunes old pre-migration backups beyond AGENTINBOX_MIGRATION_BACKUP_KEEP", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-migrate-backup-prune-"));
+  const dbPath = path.join(dir, "agentinbox.sqlite");
+  await createV1BaselineDbWithSourceScopedLifecycleRetirement(dbPath);
+  const baseName = path.basename(dbPath);
+  for (const version of [1, 2, 3, 4, 5]) {
+    fs.writeFileSync(path.join(dir, `${baseName}.pre-migrate-v${version}.bak`), "stale");
+  }
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => String(arg)).join(" "));
+  };
+  let store: AgentInboxStore | null = null;
+  try {
+    store = await AgentInboxStore.open(dbPath, {
+      env: { ...process.env, AGENTINBOX_MIGRATION_BACKUP_KEEP: "3" },
+    });
+    const remaining = fs.readdirSync(dir)
+      .filter((name) => name.includes(".pre-migrate-v"))
+      .sort()
+      .reverse();
+    assert.deepEqual(remaining, [
+      `${baseName}.pre-migrate-v6.bak`,
+      `${baseName}.pre-migrate-v5.bak`,
+      `${baseName}.pre-migrate-v4.bak`,
+    ]);
+  } finally {
+    console.warn = originalWarn;
+    store?.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

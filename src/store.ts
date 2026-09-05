@@ -39,7 +39,7 @@ import {
   WebhookActivationTarget,
 } from "./model";
 import { buildSubscriptionListQuery } from "./store_queries";
-import { formatEntryRef, formatThreadRef, generateCanonicalId, isEnvFlagDisabled, isPidAlive, nowIso, parseEntryRef } from "./util";
+import { formatEntryRef, formatThreadRef, generateCanonicalId, isEnvFlagEnabled, isPidAlive, nowIso, parseEntryRef } from "./util";
 
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const V1_BASELINE_TAG = "0000_v1_initial";
@@ -73,7 +73,7 @@ interface DigestThreadRecord {
 }
 
 export interface DatabaseHealth {
-  integrityCheck: string;
+  quickCheck: string;
   journalMode: string;
   foreignKeys: boolean;
 }
@@ -114,8 +114,12 @@ export class AgentInboxStore {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     removeOrphanBackupTmps(dbPath);
     const existedBeforeOpen = fs.existsSync(dbPath);
-    let db = await this.openDatabaseWithRecovery(dbPath);
+    // Legacy AGENTINBOX_STARTUP_BACKUP=1 mode pays for a full check and an
+    // unconditional backup on every open, matching v1.5.2 behavior.
+    const legacyStartupBackup = legacyStartupBackupEnabled(env);
+    let db = await this.openDatabaseWithRecovery(dbPath, legacyStartupBackup);
     let store = new AgentInboxStore(dbPath, db);
+    let archivedPreV1 = false;
     if (existedBeforeOpen && store.shouldArchivePreV1Database()) {
       const archivedPath = store.archivePreV1Database();
       console.warn(
@@ -123,17 +127,21 @@ export class AgentInboxStore {
       );
       db = this.openDatabase(dbPath);
       store = new AgentInboxStore(dbPath, db);
-    } else if (existedBeforeOpen && startupBackupEnabled(env)) {
-      await store.backupHealthyDatabase();
+      archivedPreV1 = true;
+    } else if (existedBeforeOpen && legacyStartupBackup) {
+      await store.backupDatabase();
     }
-    store.migrate();
+    await store.migrate({ existedBeforeOpen: existedBeforeOpen && !archivedPreV1, env });
     store.persist();
     return store;
   }
 
-  private static async openDatabaseWithRecovery(dbPath: string): Promise<BetterSqliteDatabase> {
+  private static async openDatabaseWithRecovery(
+    dbPath: string,
+    fullCheck: boolean,
+  ): Promise<BetterSqliteDatabase> {
     try {
-      return this.openDatabase(dbPath);
+      return this.openDatabase(dbPath, fullCheck);
     } catch (error) {
       if (!fs.existsSync(dbPath)) {
         throw error;
@@ -148,21 +156,31 @@ export class AgentInboxStore {
       console.warn(
         `[agentinbox] recovered local database from ${backupPath}; archived corrupt database to ${corruptPath}.`,
       );
-      return this.openDatabase(dbPath);
+      return this.openDatabase(dbPath, fullCheck);
     }
   }
 
-  private static openDatabase(dbPath: string): BetterSqliteDatabase {
+  private static openDatabase(dbPath: string, fullCheck = false): BetterSqliteDatabase {
     const db = new BetterSqlite3(dbPath);
     db.pragma("busy_timeout = 5000");
     db.pragma("journal_mode = WAL");
     db.pragma("synchronous = NORMAL");
     db.pragma("foreign_keys = ON");
-    this.assertHealthy(db, dbPath);
+    this.assertHealthy(db, dbPath, fullCheck);
     return db;
   }
 
-  private static assertHealthy(db: BetterSqliteDatabase, dbPath: string): void {
+  /**
+   * Verifies database integrity. Regular opens run `quick_check` and only
+   * escalate to a full `integrity_check` when the quick pass fails, so large
+   * databases do not pay a full scan on every startup. Conservative callers
+   * (legacy `AGENTINBOX_STARTUP_BACKUP=1` mode, recovery-candidate
+   * validation) pass `fullCheck`.
+   */
+  private static assertHealthy(db: BetterSqliteDatabase, dbPath: string, fullCheck: boolean): void {
+    if (!fullCheck && db.pragma("quick_check", { simple: true }) === "ok") {
+      return;
+    }
     const result = db.pragma("integrity_check", { simple: true });
     if (result !== "ok") {
       db.close();
@@ -175,7 +193,7 @@ export class AgentInboxStore {
     for (const candidate of candidates) {
       try {
         const db = new BetterSqlite3(candidate, { readonly: true, fileMustExist: true });
-        this.assertHealthy(db, candidate);
+        this.assertHealthy(db, candidate, true);
         db.close();
         return candidate;
       } catch {
@@ -188,16 +206,31 @@ export class AgentInboxStore {
   private static listBackupCandidates(dbPath: string): string[] {
     const dir = path.dirname(dbPath);
     const baseName = path.basename(dbPath);
-    const startupBackups = fs.existsSync(dir)
-      ? fs.readdirSync(dir)
-        .filter((name) => name.startsWith(`${baseName}.startup.`) && name.endsWith(".bak"))
-        .sort()
-        .reverse()
-        .map((name) => path.join(dir, name))
-      : [];
-    return [`${dbPath}.bak`, ...startupBackups].filter((candidate, index, all) =>
-      fs.existsSync(candidate) && all.indexOf(candidate) === index,
-    );
+    const preMigrationPattern = new RegExp(`^${escapeRegExp(baseName)}\\.pre-migrate-v(\\d+)\\.bak$`);
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(dir);
+    } catch {
+      return [];
+    }
+    const candidates: Array<{ path: string; version: number; modifiedAtMs: number }> = [];
+    for (const name of entries) {
+      const candidatePath = path.join(dir, name);
+      if (name === `${baseName}.bak`) {
+        candidates.push({ path: candidatePath, version: 0, modifiedAtMs: backupMtimeMs(candidatePath) });
+        continue;
+      }
+      const preMigration = preMigrationPattern.exec(name);
+      if (preMigration) {
+        candidates.push({
+          path: candidatePath,
+          version: Number.parseInt(preMigration[1]!, 10),
+          modifiedAtMs: backupMtimeMs(candidatePath),
+        });
+      }
+    }
+    candidates.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs || right.version - left.version);
+    return candidates.map((candidate) => candidate.path);
   }
 
   private static nextPath(base: string): string {
@@ -221,14 +254,24 @@ export class AgentInboxStore {
 
   getDatabaseHealth(): DatabaseHealth {
     return {
-      integrityCheck: String(this.db.pragma("integrity_check", { simple: true })),
+      quickCheck: String(this.db.pragma("quick_check", { simple: true })),
       journalMode: String(this.db.pragma("journal_mode", { simple: true })),
       foreignKeys: Number(this.db.pragma("foreign_keys", { simple: true })) === 1,
     };
   }
 
-  private async backupHealthyDatabase(): Promise<void> {
+  /**
+   * Writes a snapshot to `<db>.bak`, used by `agentinbox backup` and by the
+   * opt-in legacy `AGENTINBOX_STARTUP_BACKUP=1` startup backup. The open-time
+   * health check has already run against this handle. Returns the backup path.
+   */
+  async backupDatabase(): Promise<string> {
     const backupPath = `${this.dbPath}.bak`;
+    await this.writeBackupTo(backupPath);
+    return backupPath;
+  }
+
+  private async writeBackupTo(backupPath: string): Promise<void> {
     const tmpPath = `${backupPath}.${process.pid}.tmp`;
     try {
       fs.rmSync(tmpPath, { force: true });
@@ -239,12 +282,19 @@ export class AgentInboxStore {
     }
   }
 
-  private migrate(): void {
+  private async migrate(options: { existedBeforeOpen: boolean; env: NodeJS.ProcessEnv }): Promise<void> {
     const migrations = this.loadSqlMigrations();
     this.ensureDrizzleMigrationsTable();
     const applied = this.listAppliedMigrationTags();
 
     const pending = migrations.filter((migration) => !applied.has(migration.tag));
+    if (options.existedBeforeOpen && pending.length > 0) {
+      const backupPath = await this.backupBeforeMigration(migrations.length);
+      console.warn(
+        `[agentinbox] pending schema migrations detected; backed up the local database to ${backupPath} before migrating to schema v${migrations.length}.`,
+      );
+      this.pruneMigrationBackups(options.env);
+    }
     for (const migration of pending) {
       this.applyMigration(migration);
     }
@@ -252,6 +302,42 @@ export class AgentInboxStore {
     this.ensureInboxEntryBackfill();
 
     this.setUserVersion(migrations.length);
+  }
+
+  private async backupBeforeMigration(targetVersion: number): Promise<string> {
+    const backupPath = `${this.dbPath}.pre-migrate-v${targetVersion}.bak`;
+    await this.writeBackupTo(backupPath);
+    return backupPath;
+  }
+
+  /**
+   * Keeps only the newest `AGENTINBOX_MIGRATION_BACKUP_KEEP` pre-migration
+   * backups (default 5; values <= 0 keep everything). Migration backups are
+   * rare, so pruning only runs right after a new one is written.
+   */
+  private pruneMigrationBackups(env: NodeJS.ProcessEnv): void {
+    const keep = migrationBackupKeep(env);
+    if (keep <= 0) {
+      return;
+    }
+    const dir = path.dirname(this.dbPath);
+    const pattern = new RegExp(`^${escapeRegExp(path.basename(this.dbPath))}\\.pre-migrate-v(\\d+)\\.bak$`);
+    const entries: Array<{ path: string; version: number }> = [];
+    for (const name of fs.readdirSync(dir)) {
+      const match = pattern.exec(name);
+      if (!match) {
+        continue;
+      }
+      entries.push({ path: path.join(dir, name), version: Number.parseInt(match[1]!, 10) });
+    }
+    entries.sort((left, right) => right.version - left.version);
+    for (const entry of entries.slice(keep)) {
+      try {
+        fs.rmSync(entry.path, { force: true });
+      } catch {
+        // Best-effort pruning.
+      }
+    }
   }
 
   private loadSqlMigrations(): SqlMigration[] {
@@ -3052,17 +3138,40 @@ function summarizeBackfilledItemEntry(item: InboxItem): string {
   return `${item.eventVariant} from ${item.sourceId}`;
 }
 
-function startupBackupEnabled(env: NodeJS.ProcessEnv): boolean {
-  return !isEnvFlagDisabled(env.AGENTINBOX_STARTUP_BACKUP);
+const DEFAULT_MIGRATION_BACKUP_KEEP = 5;
+
+/**
+ * Backups are event-driven: a full database backup is taken only before
+ * pending schema migrations run, plus explicit `agentinbox backup` snapshots.
+ * Setting `AGENTINBOX_STARTUP_BACKUP=1` opts back into the legacy v1.5.2
+ * behavior of an unconditional backup and a full `integrity_check` on every
+ * open.
+ */
+function legacyStartupBackupEnabled(env: NodeJS.ProcessEnv): boolean {
+  return isEnvFlagEnabled(env.AGENTINBOX_STARTUP_BACKUP);
+}
+
+function migrationBackupKeep(env: NodeJS.ProcessEnv): number {
+  const parsed = Number.parseInt(env.AGENTINBOX_MIGRATION_BACKUP_KEEP ?? "", 10);
+  return Number.isInteger(parsed) ? parsed : DEFAULT_MIGRATION_BACKUP_KEEP;
+}
+
+function backupMtimeMs(candidatePath: string): number {
+  try {
+    return fs.statSync(candidatePath).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 /**
- * Removes leftover `<db>.bak.<pid>.tmp` files whose owning process is dead.
- * Tmp files owned by a live pid belong to a concurrent open and are preserved.
+ * Removes leftover `<db>.*.bak.<pid>.tmp` files (manual and pre-migration
+ * backup temporaries) whose owning process is dead. Tmp files owned by a live
+ * pid belong to a concurrent open and are preserved.
  */
 function removeOrphanBackupTmps(dbPath: string): void {
   const dir = path.dirname(dbPath);
-  const pattern = new RegExp(`^${escapeRegExp(path.basename(dbPath))}\\.bak\\.(\\d+)\\.tmp$`);
+  const pattern = new RegExp(`^${escapeRegExp(path.basename(dbPath))}\\.(?:.+\\.)?bak\\.(\\d+)\\.tmp$`);
   let entries: string[];
   try {
     entries = fs.readdirSync(dir);

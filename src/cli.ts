@@ -96,6 +96,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "backup") {
+    if (hasHelpFlag(normalized.slice(1))) {
+      printHelp(["backup"]);
+      return;
+    }
+    await runBackup(normalized.slice(1));
+    return;
+  }
+
   if (hasHelpFlag(normalized.slice(1))) {
     printHelp([command]);
     return;
@@ -1105,6 +1114,7 @@ const COMMAND_SHELL_SPECS: Array<{ name: string; group: boolean; summary: string
   { name: "subscription", group: true, summary: "Manage source subscriptions." },
   { name: "inbox", group: true, summary: "Read and manage agent inboxes." },
   { name: "gc", group: false, summary: "Run garbage collection." },
+  { name: "backup", group: false, summary: "Write a local database backup snapshot." },
   { name: "deliver", group: true, summary: "Send outbound delivery actions." },
   { name: "status", group: false, summary: "Show daemon status." },
   { name: "version", group: false, summary: "Show CLI version." },
@@ -1145,6 +1155,25 @@ function parseCommanderShell(args: string[]): CommanderShellParse {
   return {
     isBareGroup: Boolean(COMMAND_SHELL_SPECS.find((item) => item.name === spec?.name())?.group && args.length === 1),
   };
+}
+
+async function runBackup(args: string[]): Promise<void> {
+  const serveConfig = resolveServeConfig({
+    env: process.env,
+    homeDirOverride: takeFlagValue(args, "--home"),
+    statePathOverride: takeFlagValue(args, "--state"),
+  });
+  const store = await AgentInboxStore.open(serveConfig.dbPath);
+  try {
+    const backupPath = await store.backupDatabase();
+    console.log(jsonResponse({
+      ok: true,
+      dbPath: serveConfig.dbPath,
+      backupPath,
+    }));
+  } finally {
+    store.close();
+  }
 }
 
 async function runServe(args: string[]): Promise<void> {
@@ -1905,6 +1934,14 @@ Usage:
   agentinbox daemon start [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock] [--log-level error|warn|info|debug|trace]
   agentinbox daemon stop [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
   agentinbox daemon status [--home ~/.agentinbox] [--socket ~/.agentinbox/agentinbox.sock]
+`,
+    backup: `agentinbox backup
+
+Usage:
+  agentinbox backup [--home ~/.agentinbox] [--state ~/.agentinbox/agentinbox.sqlite]
+
+Writes a verified snapshot to <db>.bak (replaces the previous manual backup).
+Pre-migration backups (<db>.pre-migrate-v<N>.bak) are created automatically.
 `,
     host: `agentinbox host
 

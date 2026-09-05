@@ -348,10 +348,10 @@ test("cli accepts --json as a no-op compatibility flag on default JSON commands"
     assert.equal(status.status, 0, status.stderr);
     const parsedStatus = JSON.parse(status.stdout) as {
       counts?: { agents?: number };
-      diagnostics?: { database?: { integrityCheck?: string }; daemon?: { status?: string } };
+      diagnostics?: { database?: { quickCheck?: string }; daemon?: { status?: string } };
     };
     assert.equal(typeof parsedStatus.counts?.agents, "number");
-    assert.equal(parsedStatus.diagnostics?.database?.integrityCheck, "ok");
+    assert.equal(parsedStatus.diagnostics?.database?.quickCheck, "ok");
     assert.equal(parsedStatus.diagnostics?.daemon?.status, "running");
 
     const registered = runCli(["agent", "register"], env);
@@ -1276,7 +1276,7 @@ test("control plane source views surface backend managed runtime state", async (
 
       const status = await client.request<{
         diagnostics: {
-          database: { integrityCheck: string; journalMode: string; foreignKeys: boolean };
+          database: { quickCheck: string; journalMode: string; foreignKeys: boolean };
           sources: { total: number; active: number; paused: number; error: number };
           activationDispatch: { total: number; dirty: number; notified: number; pendingNewItems: number; deferredAttempts: number };
         };
@@ -1296,7 +1296,7 @@ test("control plane source views surface backend managed runtime state", async (
         }>;
       }>("/status", undefined, "GET");
       assert.equal(status.statusCode, 200);
-      assert.equal(status.data.diagnostics.database.integrityCheck, "ok");
+      assert.equal(status.data.diagnostics.database.quickCheck, "ok");
       assert.equal(typeof status.data.diagnostics.database.journalMode, "string");
       assert.equal(status.data.diagnostics.database.foreignKeys, true);
       assert.equal(status.data.diagnostics.sources.total >= 1, true);
