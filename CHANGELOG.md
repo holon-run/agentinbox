@@ -10,6 +10,8 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-05
+
 ### Changed
 
 - Startup database handling is event-driven instead of unconditional (#237):
