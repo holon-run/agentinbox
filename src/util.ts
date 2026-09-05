@@ -10,6 +10,34 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+export function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Treats an env flag as disabled only when it holds an explicit falsy word.
+ * Missing or empty values mean "unset" and keep the default behavior.
+ */
+export function isEnvFlagDisabled(raw: string | undefined): boolean {
+  if (raw == null) {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  return normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off";
+}
+
+/**
+ * Treats an env flag as set only when it holds a non-empty, non-falsy value.
+ */
+export function isEnvFlagEnabled(raw: string | undefined): boolean {
+  return raw != null && raw.trim() !== "" && !isEnvFlagDisabled(raw);
+}
+
 export function generateCanonicalId(prefix: string, length = CANONICAL_ID_TOKEN_LENGTH): string {
   return `${prefix}_${generateShortToken(length)}`;
 }
