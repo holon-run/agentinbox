@@ -10,6 +10,34 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-05
+
+### Fixed
+
+- Daemon is now single-instance: `serve` takes an exclusive admission lock
+  before opening the store, so a second `serve` exits cleanly instead of
+  corrupting shared state, and clients no longer stack autostarted daemons
+  during slow startup (#235, #236).
+- Daemon cleanup is ownership-aware: the pid file, socket, and metadata are
+  removed only by the instance that owns them, ending the mutual-deletion
+  cycle between overlapping daemon lifetimes (#235, #236).
+- Orphaned `.<db>.bak.<pid>.tmp` backups left by dead processes are swept on
+  startup, retained `.bak` files are bounded, and an existing healthy backup
+  is reused instead of being rewritten (#235, #236).
+
+### Added
+
+- `AGENTINBOX_NO_AUTOSTART=1` disables client autostart of the daemon, and
+  `AGENTINBOX_START_TIMEOUT_MS` overrides the startup healthz wait (#235,
+  #236).
+- `status` now reports a distinct `starting` state when the daemon process is
+  alive but not yet serving (#235, #236).
+
+### Upgrade notes
+
+- Deployments that supervise the daemon with their own service manager can set
+  `AGENTINBOX_NO_AUTOSTART=1` so clients never autostart another instance.
+
 ## [1.5.1] - 2026-09-04
 
 ### Changed
