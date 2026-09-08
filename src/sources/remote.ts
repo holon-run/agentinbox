@@ -41,6 +41,7 @@ const REMOTE_SOURCE_TYPES = new Set<SourceStream["sourceType"]>([
   "github_repo_ci",
   "feishu_bot",
   "telegram_bot",
+  "email_mailbox",
 ]);
 
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;

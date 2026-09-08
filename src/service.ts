@@ -3812,7 +3812,8 @@ function sourceTypeForPreviewRef(sourceRef: string): SourceStream["sourceType"] 
     sourceRef === "github_repo" ||
     sourceRef === "github_repo_ci" ||
     sourceRef === "feishu_bot" ||
-    sourceRef === "telegram_bot"
+    sourceRef === "telegram_bot" ||
+    sourceRef === "email_mailbox"
   ) {
     return sourceRef;
   }
@@ -4166,6 +4167,9 @@ function providerForSourceType(sourceType: SourceStream["sourceType"]): string |
   }
   if (sourceType === "telegram_bot") {
     return "telegram";
+  }
+  if (sourceType === "email_mailbox") {
+    return "email";
   }
   return null;
 }
@@ -4851,6 +4855,8 @@ function listHostStreamKinds(hostType: SourceHost["hostType"]): string[] {
       return ["message_events"];
     case "telegram":
       return ["message_updates"];
+    case "email":
+      return ["message_events"];
     case "local_event":
       return ["events"];
     case "remote_source":
@@ -4861,6 +4867,7 @@ function listHostStreamKinds(hostType: SourceHost["hostType"]): string[] {
 const KNOWN_DELIVERY_SURFACES: Record<string, string[]> = {
   feishu: ["message_reply", "chat_message"],
   github: ["issue_comment", "pull_request_comment", "review_comment"],
+  email: ["message_reply", "message_send"],
 };
 
 function unsupportedDeliverySurfaceMessage(handle: DeliveryHandle): string {
@@ -4959,6 +4966,12 @@ function getHostConfigFields(hostType: SourceHost["hostType"]): Array<{ name: st
         { name: "tokenEnv", type: "string", description: "Environment variable containing the Telegram Bot API token.", required: false },
         { name: "botUsername", type: "string", description: "Optional bot username used for shared host identity.", required: false },
       ];
+    case "email":
+      return [
+        { name: "uxcAuth", type: "string", description: "UXC auth profile holding mailbox credentials.", required: false },
+        { name: "smtpEndpoint", type: "string", description: "Default smtp:// endpoint for outbound delivery.", required: false },
+        { name: "fromAddress", type: "string", description: "Default outbound From address.", required: false },
+      ];
     case "local_event":
       return [];
     case "remote_source":
@@ -4978,6 +4991,9 @@ function sourceTypeForStreamRegistration(hostType: SourceHost["hostType"], strea
   }
   if (hostType === "telegram") {
     return "telegram_bot";
+  }
+  if (hostType === "email") {
+    return "email_mailbox";
   }
   if (hostType === "local_event") {
     return "local_event";

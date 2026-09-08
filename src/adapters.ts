@@ -20,6 +20,7 @@ import { resolveAgentInboxHome } from "./paths";
 import { FeishuDeliveryAdapter, FeishuUxcClient } from "./sources/feishu";
 import { GithubCallClient, GithubDeliveryAdapter } from "./sources/github";
 import { TelegramBotApiClient, TelegramDeliveryAdapter } from "./sources/telegram";
+import { EmailDeliveryAdapter, EmailUxcCallClient } from "./sources/email";
 import { RemoteSourceRuntime, UxcRemoteSourceClient } from "./sources/remote";
 import { ExpandedFollowPlan, ExpandedSubscriptionPlan, ExpandFollowTemplateInput, LifecycleSignal, RemoteSourceModule, RemoteSourceModuleRegistry, builtinRemoteSourceTypes } from "./sources/remote_modules";
 import { resolveSourceIdentity, resolveSourceSchema } from "./source_resolution";
@@ -77,6 +78,7 @@ export class AdapterRegistry {
   private readonly feishuDelivery: FeishuDeliveryAdapter;
   private readonly githubDelivery = new GithubDeliveryAdapter();
   private readonly telegramDelivery: TelegramDeliveryAdapter;
+  private readonly emailDelivery: EmailDeliveryAdapter;
   private readonly homeDir: string;
   private readonly remoteModuleRegistry: RemoteSourceModuleRegistry;
 
@@ -90,6 +92,7 @@ export class AdapterRegistry {
       githubCallClient?: GithubCallClient;
       feishuClient?: FeishuUxcClient;
       telegramClient?: TelegramBotApiClient;
+      emailClient?: EmailUxcCallClient;
     },
   ) {
     this.homeDir = options?.homeDir ?? resolveAgentInboxHome(process.env);
@@ -98,6 +101,7 @@ export class AdapterRegistry {
     });
     this.feishuDelivery = new FeishuDeliveryAdapter(options?.feishuClient);
     this.telegramDelivery = new TelegramDeliveryAdapter(options?.telegramClient);
+    this.emailDelivery = new EmailDeliveryAdapter(options?.emailClient);
     this.remoteSource = new RemoteSourceRuntime(store, appendSourceEvent, {
       homeDir: this.homeDir,
       client: options?.remoteSourceClient,
@@ -124,6 +128,9 @@ export class AdapterRegistry {
     if (type === "telegram_bot") {
       return this.remoteSource;
     }
+    if (type === "email_mailbox") {
+      return this.remoteSource;
+    }
     return this.localEventSource;
   }
 
@@ -136,6 +143,9 @@ export class AdapterRegistry {
     }
     if (provider === "telegram") {
       return this.telegramDelivery;
+    }
+    if (provider === "email") {
+      return this.emailDelivery;
     }
     return this.defaultDelivery;
   }
@@ -350,6 +360,9 @@ export class AdapterRegistry {
     if (handle.provider === "telegram") {
       return this.remoteModuleRegistry.resolve(syntheticBuiltinSource("telegram_bot"), this.homeDir);
     }
+    if (handle.provider === "email") {
+      return this.remoteModuleRegistry.resolve(syntheticBuiltinSource("email_mailbox"), this.homeDir);
+    }
     return null;
   }
 }
@@ -362,6 +375,7 @@ function isExplicitFollowPreviewRef(value: string): boolean {
     value === "github_repo_ci" ||
     value === "feishu_bot" ||
     value === "telegram_bot" ||
+    value === "email_mailbox" ||
     value.startsWith("remote:")
   );
 }
@@ -371,7 +385,7 @@ function hasRemoteSourceModulePath(config: Record<string, unknown> | undefined):
   return typeof modulePath === "string" && modulePath.trim().length > 0;
 }
 
-function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot" | "telegram_bot"): SourceStream {
+function syntheticBuiltinSource(sourceType: "github_repo" | "feishu_bot" | "telegram_bot" | "email_mailbox"): SourceStream {
   return {
     sourceId: `builtin:${sourceType}`,
     hostId: `builtin-host:${sourceType}`,

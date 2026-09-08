@@ -67,6 +67,40 @@ Typical `ci_runs` subscription filters:
 It uses `uxc` long-connection subscriptions for inbound messages and `uxc`
 OpenAPI delivery for replies.
 
+## `email`
+
+`email` is the shared mailbox host. Its canonical stream kind is:
+
+- `message_events`
+
+One `email_mailbox` source watches one mailbox and can serve many agents;
+agents filter by `from`, `subject`, or `threadId` in subscription filters.
+Inbound transports are hosted by `uxc` (`email-imap-idle` for IMAP and
+`email-provider-poll` for Gmail/Microsoft Graph/JMAP) and normalized onto the
+same `email_event` envelope. Outbound replies and new messages go through the
+`uxc` daemon `email.send` / `email.reply` RPC over SMTP.
+
+Typical canonical registration flow:
+
+```bash
+agentinbox host add email email:imap:user@example.com \
+  --config-json '{"uxcAuth":"email-primary"}'
+agentinbox source add <host_id> message_events primary \
+  --config-json '{"provider":"imap","endpoint":"imaps://imap.example.com:993","uxcAuth":"email-primary","account":"user@example.com","smtpEndpoint":"smtp://localhost:2525","fromAddress":"bot@example.com"}'
+```
+
+Credentials never go inline: `uxcAuth` references a `uxc` auth profile that
+holds the mailbox credentials. Delivery requires `smtpEndpoint` and a `from`
+address (input, source config `fromAddress`, or an address-like `account`).
+Attachments are exposed as metadata with opaque retrieval handles only;
+binary content never enters inbox items.
+
+Useful normalized `message_events` metadata includes:
+
+- `from` / `fromName` / `to` / `subject` / `textPreview`
+- `messageId` / `threadId` / `providerMessageId`
+- `hasAttachments` / `attachmentCount` / `attachments`
+
 ## `remote_source`
 
 `remote_source` is the generic host type for custom local modules. Its default
