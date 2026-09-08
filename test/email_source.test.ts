@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { DeliveryHandle, SourceStream } from "../src/model";
 import {
   EmailUxcCallClient,
+  type EmailPollSubscriptionConfig,
   buildEmailMailboxSourceSpec,
   emailDeliveryOperationsForHandle,
   invokeEmailDeliveryOperation,
@@ -149,6 +150,9 @@ test("parseEmailMailboxSourceConfig validates provider, endpoint, and auth", () 
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ provider: "imap", endpoint: "https://x", uxcAuth: "x" })), /imap:\/\//);
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ provider: "imap", endpoint: "imap://x" })), /requires config\.uxcAuth/);
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, pollIntervalSecs: 5 })), /pollIntervalSecs/);
+  assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, initialFetchLimit: -1 })), /initialFetchLimit/);
+  assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, initialFetchLimit: 101 })), /initialFetchLimit/);
+  assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, initialFetchLimit: 2.5 })), /initialFetchLimit/);
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, smtpEndpoint: "smtps://x:465" })), /smtp:\/\//);
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ provider: "jmap", uxcAuth: "x" })), /jmap requires config\.endpoint/);
 
@@ -163,9 +167,14 @@ test("buildEmailMailboxSourceSpec emits imap idle stream spec", () => {
   assert.equal(spec.mode, "stream");
   assert.equal(spec.transport_hint, "email_imap_idle");
   assert.equal(spec.endpoint, "imaps://imap.example.com:993");
-  assert.deepEqual(spec.args, { mailbox: "INBOX", account: "user@example.com" });
+  assert.deepEqual(spec.args, { mailbox: "INBOX", account: "user@example.com", initial_fetch_limit: 25 });
   assert.deepEqual(spec.options, { auth: "email-primary", artifact_compaction: false });
   assert.equal(spec.poll_config, undefined);
+
+  const zeroBackfill = buildEmailMailboxSourceSpec(
+    parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, initialFetchLimit: 0 })),
+  );
+  assert.equal(zeroBackfill.args?.initial_fetch_limit, 0);
 });
 
 test("buildEmailMailboxSourceSpec emits provider poll spec with uid checkpointing", () => {
@@ -175,8 +184,11 @@ test("buildEmailMailboxSourceSpec emits provider poll spec with uid checkpointin
   assert.equal(spec.mode, "poll");
   assert.equal(spec.transport_hint, "email_provider_poll");
   assert.deepEqual(spec.args, { provider: "gmail", mailbox: "INBOX" });
+  const pollConfig = spec.poll_config as EmailPollSubscriptionConfig | undefined;
+  assert.equal(pollConfig?.initial_items_limit, 25);
   assert.deepEqual(spec.poll_config, {
     interval_secs: 120,
+    initial_items_limit: 25,
     extract_items_pointer: "/items",
     checkpoint_strategy: { type: "item_key", item_key_pointer: "/message/uid" },
   });

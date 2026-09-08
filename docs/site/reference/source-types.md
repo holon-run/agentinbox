@@ -95,6 +95,19 @@ address (input, source config `fromAddress`, or an address-like `account`).
 Attachments are exposed as metadata with opaque retrieval handles only;
 binary content never enters inbox items.
 
+### Email first-look backfill depth
+
+`initialFetchLimit` controls how deep the first look into the mailbox goes
+when the source is created (integer `0..100`, default `25`):
+
+- `0` — new mail only: existing messages are skipped, and only mail arriving
+  after the subscription starts is delivered
+- `1..100` — the initial sync emits at most this many of the most recent
+  messages; anything older is treated as baseline and never delivered
+
+The setting applies to both transports (`imap` and `gmail`/`graph`/`jmap`
+polling). Later polls are unaffected: they always deliver new mail.
+
 Useful normalized `message_events` metadata includes:
 
 - `from` / `fromName` / `to` / `subject` / `textPreview`
