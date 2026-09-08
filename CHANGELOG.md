@@ -10,6 +10,24 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-08
+
+### Added
+
+- New `email_mailbox` builtin source type makes email a first-class source
+  (#215): inbound mail arrives through UXC email transports (IMAP IDLE or
+  Gmail/Graph/JMAP provider polling) and is normalized to
+  `email.message.received` inbox items with routing-oriented metadata and
+  attachment metadata; attachment payloads stay behind opaque retrieval
+  handles and never enter inbox items.
+- Email delivery operations `send_text` and `reply_text` (#215): outbound
+  replies and new messages go through the UXC daemon `email.send`/`email.reply`
+  RPC with proper In-Reply-To/References threading. SMTP and MIME handling stay
+  in UXC; daemons without the email RPC return an explicit upgrade hint while
+  inbound delivery keeps working.
+- `email` source host type wiring across source hosting, routing, and docs
+  (#215).
+
 ## [1.6.0] - 2026-09-05
 
 ### Changed
