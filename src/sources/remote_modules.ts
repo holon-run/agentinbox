@@ -59,6 +59,13 @@ import {
   parseTelegramSourceConfig,
   telegramDeliveryOperationsForHandle,
 } from "./telegram";
+import {
+  buildEmailMailboxSourceSpec,
+  emailDeliveryOperationsForHandle,
+  invokeEmailDeliveryOperation,
+  normalizeEmailMailboxEvent,
+  parseEmailMailboxSourceConfig,
+} from "./email";
 
 export interface ManagedSourceSpec {
   endpoint: string;
@@ -66,7 +73,7 @@ export interface ManagedSourceSpec {
   args?: Record<string, unknown> | null;
   resource_uri?: string | null;
   read_resource?: boolean;
-  transport_hint?: "websocket" | "discord_gateway" | "slack_socket_mode" | "feishu_long_connection" | null;
+  transport_hint?: "websocket" | "discord_gateway" | "slack_socket_mode" | "feishu_long_connection" | "email_imap_idle" | "email_provider_poll" | null;
   subprotocols?: string[];
   initial_text_frames?: string[];
   mode: "stream" | "poll";
@@ -202,8 +209,8 @@ export interface RemoteSourceModule {
 }
 
 const REMOTE_USER_MODULE_ROOT_DIR = "source-modules";
-const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot", "builtin.telegram_bot"]);
-const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bot", "telegram_bot"] as const;
+const BUILTIN_MODULE_IDS = new Set(["builtin.github_repo", "builtin.github_repo_ci", "builtin.feishu_bot", "builtin.telegram_bot", "builtin.email_mailbox"]);
+const BUILTIN_REMOTE_SOURCE_TYPES = ["github_repo", "github_repo_ci", "feishu_bot", "telegram_bot", "email_mailbox"] as const;
 
 export class RemoteSourceModuleRegistry {
   private readonly moduleCache = new Map<string, RemoteSourceModule>();
@@ -225,6 +232,9 @@ export class RemoteSourceModuleRegistry {
     }
     if (source.sourceType === "telegram_bot") {
       return Promise.resolve(TELEGRAM_BOT_MODULE);
+    }
+    if (source.sourceType === "email_mailbox") {
+      return Promise.resolve(EMAIL_MAILBOX_MODULE);
     }
     if (source.sourceType !== "remote_source") {
       throw new Error(`unsupported source type for remote module: ${source.sourceType}`);
@@ -278,6 +288,9 @@ export function builtInModuleIdForSourceType(sourceType: SourceStream["sourceTyp
   }
   if (sourceType === "telegram_bot") {
     return "builtin.telegram_bot";
+  }
+  if (sourceType === "email_mailbox") {
+    return "builtin.email_mailbox";
   }
   return null;
 }
@@ -823,6 +836,74 @@ const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
   mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
     const config = parseTelegramSourceConfig(source);
     const normalized = normalizeTelegramBotUpdate(source, config, rawPayload);
+    if (!normalized) {
+      return null;
+    }
+    return {
+      sourceNativeId: normalized.sourceNativeId,
+      eventVariant: normalized.eventVariant,
+      metadata: normalized.metadata ?? {},
+      rawPayload: normalized.rawPayload ?? rawPayload,
+      occurredAt: normalized.occurredAt,
+      deliveryHandle: normalized.deliveryHandle,
+    };
+  },
+};
+
+const EMAIL_MAILBOX_MODULE: RemoteSourceModule = {
+  id: "builtin.email_mailbox",
+  listDeliveryOperations(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[] {
+    return emailDeliveryOperationsForHandle(input.handle);
+  },
+  async invokeDeliveryOperation(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }> {
+    return invokeEmailDeliveryOperation(input.handle, input.operation, input.input, {
+      source: input.source,
+    });
+  },
+  describeCapabilities(): RemoteSourceCapabilityDescription {
+    return {
+      sourceKind: "email_mailbox",
+      aliases: ["email_mailbox", "email"],
+      configSchema: [
+        { name: "provider", type: "string", required: true, description: "Email provider: imap, gmail, graph, or jmap." },
+        { name: "uxcAuth", type: "string", required: true, description: "UXC auth profile name holding mailbox credentials." },
+        { name: "endpoint", type: "string", required: false, description: "imap:// or imaps:// endpoint for imap; provider API endpoint otherwise (required for jmap)." },
+        { name: "account", type: "string", required: false, description: "Account alias; defaults to the auth profile username." },
+        { name: "mailbox", type: "string", required: false, description: "Mailbox to watch; defaults to INBOX." },
+        { name: "pollIntervalSecs", type: "number", required: false, description: "Provider poll interval in seconds (min 15, default 60)." },
+        { name: "smtpEndpoint", type: "string", required: false, description: "Default smtp:// endpoint for outbound delivery." },
+        { name: "fromAddress", type: "string", required: false, description: "Default outbound From address." },
+        { name: "addressAllowlist", type: "string[]", required: false, description: "Optional from/to address allowlist." },
+      ],
+      metadataFields: [
+        { name: "provider", type: "string", description: "Email provider." },
+        { name: "account", type: "string", description: "Mailbox account alias." },
+        { name: "mailbox", type: "string", description: "Mailbox name." },
+        { name: "messageId", type: "string|null", description: "RFC Message-ID when present." },
+        { name: "providerMessageId", type: "string|null", description: "Provider-native message id." },
+        { name: "threadId", type: "string|null", description: "Thread reference from References/In-Reply-To headers." },
+        { name: "from", type: "string|null", description: "Normalized sender address." },
+        { name: "fromName", type: "string|null", description: "Sender display name." },
+        { name: "to", type: "object[]", description: "Normalized recipients." },
+        { name: "cc", type: "object[]", description: "Normalized cc recipients." },
+        { name: "subject", type: "string|null", description: "Message subject." },
+        { name: "textPreview", type: "string|null", description: "Body snippet." },
+        { name: "hasAttachments", type: "boolean", description: "Whether the message carries attachments." },
+        { name: "attachmentCount", type: "number|null", description: "Attachment count; null when provider metadata was not expanded." },
+        { name: "attachments", type: "object[]", description: "Attachment metadata with opaque retrieval handles." },
+      ],
+      eventVariantExamples: ["email.message.received"],
+    };
+  },
+  validateConfig(source: SourceStream): void {
+    parseEmailMailboxSourceConfig(source);
+  },
+  buildManagedSourceSpec(source: SourceStream): ManagedSourceSpec {
+    return buildEmailMailboxSourceSpec(parseEmailMailboxSourceConfig(source));
+  },
+  mapRawEvent(rawPayload: Record<string, unknown>, source: SourceStream): MappedRemoteEvent | null {
+    const config = parseEmailMailboxSourceConfig(source);
+    const normalized = normalizeEmailMailboxEvent(source, config, rawPayload);
     if (!normalized) {
       return null;
     }

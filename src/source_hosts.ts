@@ -69,6 +69,22 @@ export function resolveSourceRegistration(input: RegisterSourceInput): SourceReg
       sourceType: input.sourceType,
     };
   }
+  if (input.sourceType === "email_mailbox") {
+    const provider = stringOrDefault(config.provider, "imap");
+    return {
+      hostType: "email",
+      hostKey: `email:${provider}:${stringOrDefault(config.account, stringOrDefault(config.uxcAuth, input.sourceKey))}`,
+      hostConfig: {
+        ...(valueOrUndefined(config.uxcAuth) ? { uxcAuth: config.uxcAuth } : {}),
+        ...(valueOrUndefined(config.smtpEndpoint) ? { smtpEndpoint: config.smtpEndpoint } : {}),
+        ...(valueOrUndefined(config.fromAddress) ? { fromAddress: config.fromAddress } : {}),
+      },
+      streamKind: "message_events",
+      streamKey: input.sourceKey,
+      streamConfig: config,
+      sourceType: input.sourceType,
+    };
+  }
   if (input.sourceType === "local_event") {
     return {
       hostType: "local_event",
