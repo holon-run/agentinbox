@@ -233,6 +233,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "account", type: "string", required: false, description: "Account alias; defaults to the auth profile username." },
       { name: "mailbox", type: "string", required: false, description: "Mailbox to watch; defaults to INBOX." },
       { name: "pollIntervalSecs", type: "number", required: false, description: "Provider poll interval in seconds (min 15, default 60)." },
+      { name: "initialFetchLimit", type: "number", required: false, description: "First-look backfill depth: 0 = new mail only, max 100, default 25." },
       { name: "smtpEndpoint", type: "string", required: false, description: "Default smtp:// endpoint for outbound reply/send delivery." },
       { name: "fromAddress", type: "string", required: false, description: "Default outbound From address for delivery." },
       { name: "addressAllowlist", type: "string[]", required: false, description: "Optional from/to address allowlist applied before inbox routing." },

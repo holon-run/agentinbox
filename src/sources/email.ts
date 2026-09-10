@@ -1,3 +1,4 @@
+import type { PollSubscriptionConfig } from "@holon-run/uxc-daemon-client";
 import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
 import {
   AppendSourceEventInput,
@@ -11,6 +12,8 @@ import type { ManagedSourceSpec } from "./remote_modules";
 
 export const EMAIL_DEFAULT_MAILBOX = "INBOX";
 export const EMAIL_MAILBOX_DEFAULT_POLL_INTERVAL_SECS = 60;
+export const EMAIL_MAILBOX_DEFAULT_INITIAL_FETCH_LIMIT = 25;
+export const EMAIL_MAILBOX_MAX_INITIAL_FETCH_LIMIT = 100;
 export const EMAIL_EVENT_TYPE = "email_event";
 export const EMAIL_EVENT_VERSION = "v1";
 export const GMAIL_MESSAGES_ENDPOINT = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
@@ -31,10 +34,20 @@ export interface EmailMailboxSourceConfig {
   account?: string;
   mailbox: string;
   pollIntervalSecs: number;
+  /** First-look backfill depth: 0 = new mail only, 1..100, default 25. */
+  initialFetchLimit: number;
   smtpEndpoint?: string;
   fromAddress?: string;
   addressAllowlist?: string[];
 }
+
+/**
+ * PollSubscriptionConfig extended with the first-look backfill depth
+ * (`initial_items_limit`, uxc >= 0.20). The local extension keeps this
+ * compiling against older published client types; it becomes redundant once
+ * the dependency carries the field.
+ */
+export type EmailPollSubscriptionConfig = PollSubscriptionConfig & { initial_items_limit?: number };
 
 export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailboxSourceConfig {
   const config = source.config ?? {};
@@ -86,6 +99,23 @@ export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailbo
     pollIntervalSecs = parsed;
   }
 
+  const initialFetchLimitRaw = config.initialFetchLimit ?? config.initial_fetch_limit;
+  let initialFetchLimit = EMAIL_MAILBOX_DEFAULT_INITIAL_FETCH_LIMIT;
+  if (initialFetchLimitRaw !== undefined && initialFetchLimitRaw !== null) {
+    const parsed = numberFromUnknown(initialFetchLimitRaw);
+    if (
+      parsed === undefined ||
+      !Number.isInteger(parsed) ||
+      parsed < 0 ||
+      parsed > EMAIL_MAILBOX_MAX_INITIAL_FETCH_LIMIT
+    ) {
+      throw new Error(
+        `email_mailbox config.initialFetchLimit must be an integer between 0 and ${EMAIL_MAILBOX_MAX_INITIAL_FETCH_LIMIT} (0 = new mail only); got ${String(initialFetchLimitRaw)}`,
+      );
+    }
+    initialFetchLimit = parsed;
+  }
+
   const smtpEndpoint = asString(config.smtpEndpoint);
   if (smtpEndpoint && !/^smtp:\/\/./i.test(smtpEndpoint)) {
     throw new Error(`email_mailbox config.smtpEndpoint must use smtp:// (uxc SMTP surface); got ${smtpEndpoint}`);
@@ -115,6 +145,7 @@ export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailbo
     account: account?.trim() || undefined,
     mailbox,
     pollIntervalSecs,
+    initialFetchLimit,
     ...(smtpEndpoint ? { smtpEndpoint } : {}),
     ...(fromAddress ? { fromAddress } : {}),
     ...(addressAllowlist && addressAllowlist.length > 0 ? { addressAllowlist } : {}),
@@ -131,13 +162,27 @@ export function buildEmailMailboxSourceSpec(config: EmailMailboxSourceConfig): M
       endpoint: config.endpoint,
       mode: "stream",
       transport_hint: "email_imap_idle",
-      args,
+      args: {
+        ...args,
+        initial_fetch_limit: config.initialFetchLimit,
+      },
       options: {
         auth: config.uxcAuth,
         artifact_compaction: false,
       },
     };
   }
+  // See EmailPollSubscriptionConfig: the extra field is tolerated by older
+  // daemons (serde ignores unknown poll_config fields).
+  const pollConfig: EmailPollSubscriptionConfig = {
+    interval_secs: config.pollIntervalSecs,
+    initial_items_limit: config.initialFetchLimit,
+    extract_items_pointer: "/items",
+    checkpoint_strategy: {
+      type: "item_key",
+      item_key_pointer: "/message/uid",
+    },
+  };
   return {
     endpoint: config.endpoint,
     mode: "poll",
@@ -146,14 +191,7 @@ export function buildEmailMailboxSourceSpec(config: EmailMailboxSourceConfig): M
       provider: config.provider,
       ...args,
     },
-    poll_config: {
-      interval_secs: config.pollIntervalSecs,
-      extract_items_pointer: "/items",
-      checkpoint_strategy: {
-        type: "item_key",
-        item_key_pointer: "/message/uid",
-      },
-    },
+    poll_config: pollConfig,
     options: {
       auth: config.uxcAuth,
       artifact_compaction: false,
