@@ -8,6 +8,8 @@ import {
 } from "../model";
 
 export const TELEGRAM_BOT_API_ENDPOINT = "https://api.telegram.org";
+export const TELEGRAM_BOT_SCHEMA_URL =
+  "https://raw.githubusercontent.com/holon-run/uxc/main/skills/telegram-openapi-skill/references/telegram-bot.openapi.json";
 
 export interface TelegramBotSourceConfig {
   endpoint?: string;
