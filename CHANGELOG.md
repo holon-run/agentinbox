@@ -10,6 +10,20 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-10
+
+### Added
+
+- `email_mailbox` sources expose `initialFetchLimit` (#241): a bounded
+  first-look backfill depth (integer 0..100, default 25) so newly subscribed
+  mailboxes no longer dump an unbounded history into the inbox. `0` skips the
+  initial backfill entirely and only delivers mail that arrives after
+  subscription start. The value is forwarded to UXC as
+  `args.initial_fetch_limit` for IMAP IDLE transports and as
+  `poll_config.initial_items_limit` for provider polling (Gmail/Graph/JMAP);
+  the snake_case alias `initial_fetch_limit` is also accepted. The `0` =
+  new-mail-only semantics on IMAP requires UXC 0.20.0+ (#450).
+
 ## [1.7.0] - 2026-09-08
 
 ### Added
