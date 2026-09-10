@@ -9,6 +9,7 @@ import {
   AgentTimer,
   DirectInboxTextMessageInput,
   DirectInboxTextMessageResult,
+  EmailBodyReadResult,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
@@ -86,6 +87,11 @@ import { ExpandedFollowPlan, ExpandedSubscriptionMember, ExpandedSubscriptionPla
 import { ActivationGate, DefaultActivationGate, GatingPolicy } from "./runtime_gate";
 import { Logger, NoopLogger } from "./logging";
 import { resolveSourceRegistration } from "./source_hosts";
+import {
+  EmailBodyReader,
+  type EmailBodyReadOptions,
+  type EmailBodyUxcClient,
+} from "./email_body";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -177,6 +183,7 @@ export class AgentInboxService {
   private lastAckedInboxGcAt = 0;
   private lastLifecycleCleanupAt = 0;
   private lastOfflineAgentGcAt = 0;
+  private readonly emailBodyReader: EmailBodyReader;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -188,6 +195,7 @@ export class AgentInboxService {
     activationGate?: ActivationGate,
     logger: Logger = new NoopLogger(),
     gatingPolicy?: GatingPolicy,
+    emailBodyUxcClient?: EmailBodyUxcClient,
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
@@ -197,6 +205,7 @@ export class AgentInboxService {
     this.terminalDispatcher = terminalDispatcher;
     this.logger = logger;
     this.activationGate = activationGate ?? new DefaultActivationGate(undefined, undefined, this.logger.child("gate"), gatingPolicy);
+    this.emailBodyReader = new EmailBodyReader(store, emailBodyUxcClient);
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
@@ -1407,6 +1416,41 @@ export class AgentInboxService {
 
   listInboxItems(agentId: string, options?: WatchInboxOptions): InboxEntry[] {
     return this.store.listInboxEntries(this.ensureInboxForAgent(agentId).inboxId, options);
+  }
+
+  async readInboxEmailBody(
+    agentId: string,
+    entryId: string,
+    options?: EmailBodyReadOptions,
+  ): Promise<EmailBodyReadResult> {
+    const inbox = this.store.getInboxByAgentId(agentId);
+    if (!inbox) {
+      throw new Error(`unknown inbox entry: ${entryId}`);
+    }
+    const entry = this.store.getInboxEntryForInbox(inbox.inboxId, entryId);
+    if (!entry) {
+      throw new Error(`unknown inbox entry: ${entryId}`);
+    }
+    if (entry.kind !== "item") {
+      return {
+        status: "unavailable",
+        entryId: entry.entryId,
+        code: "unsupported",
+        retryable: false,
+        message: "Digest entries do not represent one email body.",
+      };
+    }
+    const source = entry.sourceId ? this.store.getSource(entry.sourceId) : null;
+    if (!source) {
+      return {
+        status: "unavailable",
+        entryId: entry.entryId,
+        code: "source_unavailable",
+        retryable: false,
+        message: "The source for this inbox entry is no longer available.",
+      };
+    }
+    return this.emailBodyReader.read(inbox.inboxId, entry, source, options);
   }
 
   listRawInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {

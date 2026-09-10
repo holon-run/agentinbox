@@ -850,9 +850,50 @@ async function main(): Promise<void> {
 
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
-    const allowedFlags = ["--agent-id", "--after-entry", "--include-acked", "--limit", "--full"];
-    if (positionalArgs(args, ["--agent-id", "--after-entry", "--limit"]).length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
-      throw new Error("usage: agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]");
+    const positionals = positionalArgs(args, ["--agent-id", "--after-entry", "--limit", "--max-bytes", "--cursor"]);
+    const allowedFlags = [
+      "--agent-id", "--after-entry", "--include-acked", "--limit", "--full",
+      "--max-bytes", "--no-fetch", "--cursor",
+    ];
+    if (positionals.length > 1 || unexpectedFlags(args, allowedFlags).length > 0) {
+      throw new Error("usage: agentinbox inbox read [<entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full] | --agent-id ID [--after-entry ID] [--include-acked] [--limit N] [--full]]");
+    }
+    const entryId = positionals[0];
+    if (entryId) {
+      if (
+        hasFlag(normalized, "--include-acked") ||
+        takeFlagValue(normalized, "--after-entry") !== undefined ||
+        takeFlagValue(normalized, "--limit") !== undefined
+      ) {
+        throw new Error("usage: agentinbox inbox read <entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full]");
+      }
+      const selection = await selectAgentForCommand(client, {
+        explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+        autoRegister: false,
+      });
+      const query = buildQuery({
+        max_bytes: takeFlagValue(normalized, "--max-bytes"),
+        fetch: hasFlag(normalized, "--no-fetch") ? "false" : undefined,
+        cursor: takeFlagValue(normalized, "--cursor"),
+      });
+      const response = await requestRemote<Record<string, unknown>>(
+        client,
+        `/agents/${encodeURIComponent(selection.agentId)}/inbox/entries/${encodeURIComponent(entryId)}/body${query}`,
+        undefined,
+        "GET",
+      );
+      console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+      if (response.data.status === "unavailable") {
+        process.exitCode = 1;
+      }
+      return;
+    }
+    if (
+      takeFlagValue(normalized, "--max-bytes") !== undefined ||
+      takeFlagValue(normalized, "--cursor") !== undefined ||
+      hasFlag(normalized, "--no-fetch")
+    ) {
+      throw new Error("usage: agentinbox inbox read <entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full]");
     }
     const selection = await selectAgentForCommand(client, {
       explicitAgentId: takeFlagValue(normalized, "--agent-id"),
@@ -865,8 +906,12 @@ async function main(): Promise<void> {
     });
     const response = await requestRemote<Record<string, unknown>>(client, `/agents/${encodeURIComponent(selection.agentId)}/inbox/entries${query}`, undefined, "GET");
     const data = response.data;
-    if (!hasFlag(normalized, "--full") && Array.isArray(data.entries)) {
-      data.entries = (data.entries as Array<Record<string, unknown>>).map(compactInboxEntry);
+    if (Array.isArray(data.entries)) {
+      data.entries = (data.entries as Array<Record<string, unknown>>).map((entry) =>
+        hasFlag(normalized, "--full")
+          ? redactInternalEmailRefs(entry) as Record<string, unknown>
+          : compactInboxEntry(entry)
+      );
     }
     console.log(jsonResponse(withCommandMetadata(data, selection)));
     return;
@@ -914,9 +959,11 @@ async function main(): Promise<void> {
       if (event.event !== "items") {
         continue;
       }
-      const output = fullMode ? event : {
+      const output = {
         ...event,
-        entries: event.entries.map((e) => compactInboxEntry(e as unknown as Record<string, unknown>)),
+        entries: event.entries.map((entry) => fullMode
+          ? redactInternalEmailRefs(entry)
+          : compactInboxEntry(entry as unknown as Record<string, unknown>)),
       };
       console.log(jsonResponse(output));
     }
@@ -1829,6 +1876,23 @@ function compactInboxEntry(entry: Record<string, unknown>): Record<string, unkno
   return compact;
 }
 
+function redactInternalEmailRefs(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactInternalEmailRefs);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "message_ref" || key === "messageRef") {
+      continue;
+    }
+    result[key] = redactInternalEmailRefs(child);
+  }
+  return result;
+}
+
 function normalizeSubscriptionAddOutput(data: Record<string, unknown>, shortcutUsed: boolean): Record<string, unknown> {
   if (shortcutUsed) {
     return data;
@@ -2034,7 +2098,8 @@ Usage:
 Usage:
   agentinbox inbox list [--limit N]
   agentinbox inbox show <agentId>
-  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]  (aliases: inbox get, inbox entries, inbox peek)
+  agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]  (list; aliases: inbox get, inbox entries, inbox peek)
+  agentinbox inbox read <entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full]  (read one email body)
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N] [--full]
   agentinbox inbox ack [--agent-id ID] (--through <entryId> | --through-entry-id <entryId> | --entry <entryId> | --entry-id <entryId> | --all)

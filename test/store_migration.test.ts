@@ -13,6 +13,7 @@ const EXPECTED_MIGRATION_TAGS = [
   "0003_subscription_tracked_resource_indexes",
   "0004_provider_raw_payload",
   "0005_operator_transport_bindings",
+  "0006_email_body_cache",
 ];
 
 async function createLegacyDb(dbPath: string): Promise<void> {
@@ -383,7 +384,10 @@ test("store recovers a corrupt database from a pre-migration backup", async () =
     recovered = await AgentInboxStore.open(dbPath);
     const state = await readMigrationState(dbPath);
     assert.deepEqual(state.appliedTags, EXPECTED_MIGRATION_TAGS);
-    assert.match(warnings.join("\n"), /recovered local database from .*pre-migrate-v6\.bak/);
+    assert.match(
+      warnings.join("\n"),
+      new RegExp(`recovered local database from .*pre-migrate-v${EXPECTED_MIGRATION_TAGS.length}\\.bak`),
+    );
   } finally {
     console.warn = originalWarn;
     recovered?.close();
@@ -414,7 +418,7 @@ test("store prunes old pre-migration backups beyond AGENTINBOX_MIGRATION_BACKUP_
       .sort()
       .reverse();
     assert.deepEqual(remaining, [
-      `${baseName}.pre-migrate-v6.bak`,
+      `${baseName}.pre-migrate-v${EXPECTED_MIGRATION_TAGS.length}.bak`,
       `${baseName}.pre-migrate-v5.bak`,
       `${baseName}.pre-migrate-v4.bak`,
     ]);

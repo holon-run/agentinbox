@@ -2040,7 +2040,10 @@ test("cli inbox read rejects unsupported flags like --ack", () => {
   try {
     const read = runCli(["inbox", "read", "--ack"], env);
     assert.notEqual(read.status, 0);
-    assert.match(read.stderr, /usage: agentinbox inbox read \[--agent-id ID] \[--after-entry ID] \[--include-acked] \[--limit N] \[--full]/);
+    assert.match(
+      read.stderr,
+      /usage: agentinbox inbox read \[<entryId> \[--agent-id ID] \[--max-bytes N] \[--no-fetch] \[--cursor TOKEN] \[--full] \| --agent-id ID \[--after-entry ID] \[--include-acked] \[--limit N] \[--full]]/,
+    );
   } finally {
     void runCli(["daemon", "stop"], env);
     fs.rmSync(homeDir, { recursive: true, force: true });

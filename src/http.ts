@@ -1747,8 +1747,48 @@ function buildFastifyServer(service: AgentInboxService) {
         afterEntryId: query.after_entry_id,
         includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
         limit: parseOptionalPositiveInteger(query.limit),
-      }),
+      }).map(redactInternalEmailRefs),
     };
+  });
+
+  app.get("/agents/:agentId/inbox/entries/:entryId/body", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId", "entryId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          entryId: { type: "string", minLength: 1 },
+        },
+      },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          max_bytes: { type: "string", pattern: "^[1-9][0-9]*$" },
+          fetch: { type: "string", enum: ["true", "false"] },
+          cursor: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; entryId: string };
+    const query = request.query as { max_bytes?: string; fetch?: "true" | "false"; cursor?: string };
+    return service.readInboxEmailBody(
+      decodeURIComponent(params.agentId),
+      decodeURIComponent(params.entryId),
+      {
+        maxBytes: parseOptionalPositiveInteger(query.max_bytes),
+        fetch: query.fetch ? query.fetch === "true" : undefined,
+        cursor: query.cursor,
+      },
+    );
   });
 
   app.post("/agents/:agentId/inbox/items", {
@@ -1831,12 +1871,14 @@ function buildFastifyServer(service: AgentInboxService) {
     });
 
     const session = service.watchInbox(agentId, watchOptions, (event) => {
-      sendSse(raw, event.event, event);
+      sendSse(raw, event.event, event.event === "items"
+        ? { ...event, entries: event.entries.map(redactInternalEmailRefs) }
+        : event);
     });
     sendSse(raw, "items", {
       event: "items",
       agentId,
-      entries: session.initialItems,
+      entries: session.initialItems.map(redactInternalEmailRefs),
     });
     session.start();
 
@@ -2256,6 +2298,23 @@ function normalizeValidationMessage(message: string): string {
   return message;
 }
 
+function redactInternalEmailRefs<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(redactInternalEmailRefs) as T;
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "message_ref" || key === "messageRef") {
+      continue;
+    }
+    result[key] = redactInternalEmailRefs(child);
+  }
+  return result as T;
+}
+
 function isBadRequestError(message: string): boolean {
   return (
     message.startsWith("direct inbox ") ||
@@ -2305,6 +2364,7 @@ function isBadRequestError(message: string): boolean {
     message.startsWith("expected boolean") ||
     message.startsWith("expected integer") ||
     message.startsWith("expected positive integer") ||
+    message.startsWith("email body ") ||
     message.startsWith("webhook agent registration requires") ||
     message.startsWith("agent registration requires either") ||
     message.startsWith("notifyLeaseMs must be a positive integer") ||
