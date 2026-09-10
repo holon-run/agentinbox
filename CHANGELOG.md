@@ -10,6 +10,18 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-09-10
+
+### Fixed
+
+- `telegram_bot` managed sources now pass `schema_url` in the UXC subscription
+  spec (#243): UXC protocol detection could never resolve an adapter for
+  `api.telegram.org` (no builtin mapping), so telegram sources have been stuck
+  in a reconnect loop since #216 delegated polling to UXC. The spec now points
+  at the UXC curated Telegram Bot OpenAPI schema, mirroring the feishu pattern,
+  so telegram sources can activate again. See uxc#460 for the suggested
+  builtin `api.telegram.org` mapping follow-up.
+
 ## [1.7.1] - 2026-09-10
 
 ### Added
