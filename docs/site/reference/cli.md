@@ -130,6 +130,7 @@ Inbox commands use `agentId`, not `inboxId`.
 agentinbox inbox list
 agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
+agentinbox inbox read <entry_id> [--agent-id <agent_id>] [--max-bytes <bytes>] [--no-fetch] [--cursor <token>] [--full]
 agentinbox inbox send --agent-id <agent_id> --message "..." [--sender <sender>]
 agentinbox inbox watch [--agent-id <agent_id>]
 agentinbox inbox ack [--agent-id <agent_id>] --through <entry_id>
@@ -137,6 +138,18 @@ agentinbox inbox ack [--agent-id <agent_id>] --item <entry_id>
 agentinbox inbox ack [--agent-id <agent_id>] --all
 agentinbox inbox compact <agent_id>
 ```
+
+Without an entry ID, `inbox read` retains its existing list behavior. With an
+email entry ID, it returns a bounded normalized text page. Reading is local
+first; omit `--no-fetch` to allow UXC to retrieve missing content. If
+`body.hasMore` is true, pass the returned `body.nextCursor` with the same entry
+ID to continue the fixed snapshot. `--full` is accepted for compatibility in
+single-entry mode but never exposes the internal UXC `message_ref`.
+
+The result reports `complete`, `partial`, or `unverified` body completeness
+separately from output pagination. It includes only safe attachment display
+metadata; attachment bytes remain unavailable until the managed
+`attachment_ref` contract is implemented.
 
 ## Timers
 

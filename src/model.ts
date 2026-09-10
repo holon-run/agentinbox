@@ -345,6 +345,62 @@ export interface DigestSnapshotEntry extends InboxEntryBase {
 
 export type InboxEntry = InboxItemEntry | DigestSnapshotEntry;
 
+export type EmailBodyCompleteness = "complete" | "partial" | "unverified";
+export type EmailBodyOrigin = "local" | "cache" | "fetched";
+
+export interface EmailBodyCacheRecord {
+  entryId: string;
+  inboxId: string;
+  itemId: string;
+  sourceId: string;
+  contentVersion: string;
+  schemaVersion: number;
+  parserVersion: string;
+  text: string;
+  bytes: number;
+  completeness: EmailBodyCompleteness;
+  reasons: string[];
+  createdAt: string;
+  expiresAt: string;
+  lastAccessedAt: string;
+}
+
+export interface EmailBodyPage {
+  format: "text";
+  text: string;
+  returnedBytes: number;
+  completeness: EmailBodyCompleteness;
+  reasons: string[];
+  hasMore: boolean;
+  nextCursor?: string;
+  truncated: boolean;
+  totalBytes?: number;
+  origin: EmailBodyOrigin;
+}
+
+export interface AvailableEmailBodyRead {
+  status: "available";
+  entryId: string;
+  subject?: string | null;
+  from?: string | null;
+  attachments: Array<{
+    filename?: string | null;
+    contentType?: string | null;
+    size?: number | null;
+  }>;
+  body: EmailBodyPage;
+}
+
+export interface UnavailableEmailBodyRead {
+  status: "unavailable";
+  entryId: string;
+  code: string;
+  retryable: boolean;
+  message: string;
+}
+
+export type EmailBodyReadResult = AvailableEmailBodyRead | UnavailableEmailBodyRead;
+
 export interface NotificationGrouping {
   groupable: boolean;
   resourceRef?: string | null;

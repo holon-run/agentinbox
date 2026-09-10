@@ -222,6 +222,20 @@ test("normalizeEmailMailboxEvent maps imap email_event to inbox item", () => {
   assert.equal(normalized.deliveryHandle?.replyMode, "reply");
 });
 
+test("normalizeEmailMailboxEvent prefers UXC stable_key for dedupe identity", () => {
+  const source = emailSource(imapConfig);
+  const config = parseEmailMailboxSourceConfig(source);
+  const base = imapEmailEvent();
+  const normalized = normalizeEmailMailboxEvent(source, config, imapEmailEvent({
+    message: {
+      ...(base.message as Record<string, unknown>),
+      stable_key: "uxc-email-stable-v1:account:uidvalidity:42",
+    },
+  }));
+  assert.ok(normalized);
+  assert.equal(normalized.sourceNativeId, "email:uxc-email-stable-v1:account:uidvalidity:42");
+});
+
 test("normalizeEmailMailboxEvent keeps provider objects and nullable attachment count", () => {
   const source = emailSource({ provider: "graph", uxcAuth: "graph-oauth", account: "user@example.com" });
   const normalized = normalizeEmailMailboxEvent(source, parseEmailMailboxSourceConfig(source), graphEmailEvent());

@@ -133,6 +133,10 @@ when registering.
 agentinbox agent register
 agentinbox follow github pr --agent-id <agentId> --arg owner=holon-run --arg repo=agentinbox --arg number=87 --arg withCi=true
 agentinbox inbox read --agent-id <agentId>
+# For an email entry selected from the list:
+agentinbox inbox read <entryId> --agent-id <agentId>
+# Continue only when body.hasMore is true:
+agentinbox inbox read <entryId> --agent-id <agentId> --cursor <nextCursor>
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 ```
 
@@ -252,6 +256,7 @@ Read and ack the inbox:
 
 ```bash
 agentinbox inbox read --agent-id <agentId>
+agentinbox inbox read <entryId> --agent-id <agentId>
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 agentinbox inbox send --agent-id <agentId> --message "Please review PR #87"
 agentinbox inbox watch --agent-id <agentId>

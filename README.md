@@ -176,8 +176,18 @@ cat filter.json | agentinbox subscription add <source_id> --filter-stdin
 agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
+agentinbox inbox read <entry_id> --agent-id <agent_id>
 agentinbox inbox ack --agent-id <agent_id> --through <last_entry_id>
 ```
+
+For an email entry, the positional form reads its normalized body using the
+`entryId` as the only message selector. It uses local content first and may ask
+UXC to retrieve missing content unless `--no-fetch` is set. The default page is
+32 KiB; use `--max-bytes <n>` to change the page budget and repeat the command
+with `--cursor <nextCursor>` when `body.hasMore` is true. Body reads do not ack
+the inbox entry, mark the provider message as read, download attachments, or
+expose the internal UXC message reference. Attachment metadata is informational
+until the managed `attachment_ref` lifecycle from #239 is available.
 
 The HTTP `POST /subscriptions` endpoint always returns
 `{ "subscriptions": [...] }`, even when only one subscription is created. That

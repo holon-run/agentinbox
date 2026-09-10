@@ -18,6 +18,7 @@ import {
   AppendSourceEventResult,
   CleanupPolicy,
   DeliveryAttempt,
+  EmailBodyCacheRecord,
   Inbox,
   InboxAggregationPolicy,
   InboxEntry,
@@ -1369,6 +1370,7 @@ export class AgentInboxStore {
       this.run("delete from activation_dispatch_states where agent_id = ?", [agentId]);
       this.run("delete from activation_targets where agent_id = ?", [agentId]);
       if (inbox) {
+        this.run("delete from email_body_cache where inbox_id = ?", [inbox.inboxId]);
         this.run("delete from inbox_items where inbox_id = ?", [inbox.inboxId]);
         this.run("delete from activations where agent_id = ? or inbox_id = ?", [agentId, inbox.inboxId]);
         this.run("delete from inboxes where inbox_id = ?", [inbox.inboxId]);
@@ -1689,6 +1691,102 @@ export class AgentInboxStore {
   getInboxEntry(entryId: string): InboxEntry | null {
     const rows = this.getAll("select * from inbox_entries where entry_id = ?", [parseEntryRef(entryId)]);
     return this.mapInboxEntries(rows)[0] ?? null;
+  }
+
+  getInboxEntryForInbox(inboxId: string, entryId: string): InboxEntry | null {
+    const rows = this.getAll(
+      "select * from inbox_entries where inbox_id = ? and entry_id = ?",
+      [inboxId, parseEntryRef(entryId)],
+    );
+    return this.mapInboxEntries(rows)[0] ?? null;
+  }
+
+  getEmailBodyCache(inboxId: string, entryId: string): EmailBodyCacheRecord | null {
+    const row = this.getOne(
+      "select * from email_body_cache where inbox_id = ? and entry_id = ?",
+      [inboxId, parseEntryRef(entryId)],
+    );
+    return row ? this.mapEmailBodyCache(row) : null;
+  }
+
+  putEmailBodyCache(record: EmailBodyCacheRecord, maxTotalBytes: number): void {
+    this.inTransaction(() => {
+      const entryStillExists = this.getOne(
+        `
+        select 1
+        from inbox_entries e
+        join inbox_entry_items ei on ei.entry_id = e.entry_id
+        join inbox_items i on i.item_id = ei.item_id
+        where e.entry_id = ?
+          and e.inbox_id = ?
+          and ei.item_id = ?
+          and i.source_id = ?
+        limit 1
+        `,
+        [parseEntryRef(record.entryId), record.inboxId, record.itemId, record.sourceId],
+      );
+      if (!entryStillExists) {
+        return;
+      }
+      this.run(
+        `
+        insert into email_body_cache (
+          entry_id, inbox_id, item_id, source_id, content_version, schema_version,
+          parser_version, text, bytes, completeness, reasons_json, created_at,
+          expires_at, last_accessed_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(entry_id) do update set
+          inbox_id = excluded.inbox_id,
+          item_id = excluded.item_id,
+          source_id = excluded.source_id,
+          content_version = excluded.content_version,
+          schema_version = excluded.schema_version,
+          parser_version = excluded.parser_version,
+          text = excluded.text,
+          bytes = excluded.bytes,
+          completeness = excluded.completeness,
+          reasons_json = excluded.reasons_json,
+          created_at = excluded.created_at,
+          expires_at = excluded.expires_at,
+          last_accessed_at = excluded.last_accessed_at
+        `,
+        [
+          parseEntryRef(record.entryId),
+          record.inboxId,
+          record.itemId,
+          record.sourceId,
+          record.contentVersion,
+          record.schemaVersion,
+          record.parserVersion,
+          record.text,
+          record.bytes,
+          record.completeness,
+          JSON.stringify(record.reasons),
+          record.createdAt,
+          record.expiresAt,
+          record.lastAccessedAt,
+        ],
+      );
+      this.deleteExpiredEmailBodyCache(record.lastAccessedAt, false);
+      this.evictEmailBodyCacheToLimit(maxTotalBytes);
+    });
+    this.persist();
+  }
+
+  touchEmailBodyCache(entryId: string, accessedAt: string): void {
+    this.run(
+      "update email_body_cache set last_accessed_at = ? where entry_id = ?",
+      [accessedAt, parseEntryRef(entryId)],
+    );
+    this.persist();
+  }
+
+  deleteExpiredEmailBodyCache(now: string, persist = true): number {
+    const result = this.run("delete from email_body_cache where expires_at <= ?", [now]);
+    if (persist && result.changes > 0) {
+      this.persist();
+    }
+    return result.changes;
   }
 
   ackInboxEntries(inboxId: string, entryIds: string[], ackedAt: string): { ackedEntries: number; ackedItems: number } {
@@ -2695,6 +2793,25 @@ export class AgentInboxStore {
     };
   }
 
+  private mapEmailBodyCache(row: Record<string, unknown>): EmailBodyCacheRecord {
+    return {
+      entryId: formatEntryRef(requiredText(row, "entry_id")),
+      inboxId: requiredText(row, "inbox_id"),
+      itemId: requiredText(row, "item_id"),
+      sourceId: requiredText(row, "source_id"),
+      contentVersion: requiredText(row, "content_version"),
+      schemaVersion: Number(row.schema_version),
+      parserVersion: requiredText(row, "parser_version"),
+      text: requiredText(row, "text"),
+      bytes: Number(row.bytes),
+      completeness: requiredText(row, "completeness") as EmailBodyCacheRecord["completeness"],
+      reasons: parseJson<string[]>(row.reasons_json as string),
+      createdAt: requiredText(row, "created_at"),
+      expiresAt: requiredText(row, "expires_at"),
+      lastAccessedAt: requiredText(row, "last_accessed_at"),
+    };
+  }
+
   private mapInboxEntry(row: Record<string, unknown>, itemIds: string[]): InboxEntry {
     const base = {
       entryId: formatEntryRef(requiredText(row, "entry_id")),
@@ -2967,6 +3084,23 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapInboxEntry(row, itemIdsByEntry.get(String(row.entry_id)) ?? []));
   }
 
+  private evictEmailBodyCacheToLimit(maxTotalBytes: number): void {
+    let total = Number(this.getOne("select coalesce(sum(bytes), 0) as total from email_body_cache")?.total ?? 0);
+    if (total <= maxTotalBytes) {
+      return;
+    }
+    const rows = this.getAll(
+      "select entry_id, bytes from email_body_cache order by last_accessed_at asc, created_at asc, entry_id asc",
+    );
+    for (const row of rows) {
+      if (total <= maxTotalBytes) {
+        break;
+      }
+      this.run("delete from email_body_cache where entry_id = ?", [String(row.entry_id)]);
+      total -= Number(row.bytes);
+    }
+  }
+
   private syncInboxEntryAckState(inboxId: string, ackedAt: string): void {
     this.run(
       `
@@ -3002,6 +3136,10 @@ export class AgentInboxStore {
   private deleteInboxItemsAndEntryArtifacts(itemIds: string[]): void {
     const placeholders = itemIds.map(() => "?").join(", ");
     this.inTransaction(() => {
+      this.run(
+        `delete from email_body_cache where item_id in (${placeholders})`,
+        itemIds,
+      );
       this.run(
         `delete from digest_thread_items where item_id in (${placeholders})`,
         itemIds,

@@ -288,6 +288,7 @@ export function normalizeEmailMailboxEvent(
   const mailbox = asString(payload.mailbox) ?? config.mailbox;
   const uid = stringFromUnknown(message.uid);
   const messageId = asString(message.message_id) ?? uid;
+  const stableKey = asString(message.stable_key);
   if (!uid && !messageId) {
     return null;
   }
@@ -311,7 +312,9 @@ export function normalizeEmailMailboxEvent(
   const date = asString(message.date);
   return {
     sourceId: source.sourceId,
-    sourceNativeId: `email:${provider}:${account}:${mailbox}:${uid ?? messageId}`,
+    sourceNativeId: stableKey
+      ? `email:${stableKey}`
+      : `email:${provider}:${account}:${mailbox}:${uid ?? messageId}`,
     eventVariant: "email.message.received",
     occurredAt: occurredAtFromEmailDate(date),
     metadata: {

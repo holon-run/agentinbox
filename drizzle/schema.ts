@@ -243,6 +243,27 @@ export const inboxEntryItems = sqliteTable("inbox_entry_items", {
   itemIdx: index("idx_inbox_entry_items_item").on(table.itemId),
 }));
 
+export const emailBodyCache = sqliteTable("email_body_cache", {
+  entryId: text("entry_id").primaryKey(),
+  inboxId: text("inbox_id").notNull(),
+  itemId: text("item_id").notNull(),
+  sourceId: text("source_id").notNull(),
+  contentVersion: text("content_version").notNull(),
+  schemaVersion: integer("schema_version").notNull(),
+  parserVersion: text("parser_version").notNull(),
+  text: text("text").notNull(),
+  bytes: integer("bytes").notNull(),
+  completeness: text("completeness").notNull(),
+  reasonsJson: text("reasons_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  lastAccessedAt: text("last_accessed_at").notNull(),
+}, (table) => ({
+  inboxEntryIdx: index("idx_email_body_cache_inbox_entry").on(table.inboxId, table.entryId),
+  expiryIdx: index("idx_email_body_cache_expiry").on(table.expiresAt),
+  accessIdx: index("idx_email_body_cache_access").on(table.lastAccessedAt),
+}));
+
 export const digestThreadItems = sqliteTable("digest_thread_items", {
   threadId: text("thread_id").notNull(),
   itemId: text("item_id").notNull(),
