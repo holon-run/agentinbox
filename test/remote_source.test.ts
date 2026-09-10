@@ -640,7 +640,11 @@ test("telegram_bot builtin module ingests getUpdates messages", async () => {
     assert.equal(spec?.operation_id, "post:/getUpdates");
     assert.equal(spec?.mode, "poll");
     assert.deepEqual(spec?.args, { timeout: 5, allowed_updates: ["message"] });
-    assert.deepEqual(spec?.options, { auth: "telegram-local", artifact_compaction: false });
+    assert.deepEqual(spec?.options, {
+      auth: "telegram-local",
+      schema_url: "https://raw.githubusercontent.com/holon-run/uxc/main/skills/telegram-openapi-skill/references/telegram-bot.openapi.json",
+      artifact_compaction: false,
+    });
     assert.equal(spec?.poll_config?.request_cursor_arg, "offset");
   } finally {
     await service.stop();

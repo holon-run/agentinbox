@@ -54,6 +54,7 @@ import {
 } from "./feishu";
 import {
   TELEGRAM_BOT_API_ENDPOINT,
+  TELEGRAM_BOT_SCHEMA_URL,
   invokeTelegramDeliveryOperation,
   normalizeTelegramBotUpdate,
   parseTelegramSourceConfig,
@@ -829,6 +830,7 @@ const TELEGRAM_BOT_MODULE: RemoteSourceModule = {
       },
       options: {
         auth: config.uxcAuth,
+        schema_url: TELEGRAM_BOT_SCHEMA_URL,
         artifact_compaction: false,
       },
     };
