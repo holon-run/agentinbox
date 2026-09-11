@@ -141,6 +141,20 @@ The daemon downloads into a bounded staging area and stores an immutable,
 content-addressed object. The CLI receives the binary response and creates the
 output path exclusively; it does not overwrite an existing file.
 
+Delete managed access explicitly when the content is no longer needed:
+
+```bash
+agentinbox inbox attachment delete <attachmentRef> --agent-id <agentId>
+```
+
+Deletion leaves a minimal audit tombstone and permanently invalidates that
+attachment reference. Objects shared by hash are reclaimed only after their
+last live reference is gone. `retentionSecs` and the global managed-byte limit
+are enforced by garbage collection; set
+`AGENTINBOX_EMAIL_ATTACHMENT_MAX_TOTAL_BYTES` to override the default 512 MiB
+limit. An embedding service may provide an attachment scanner hook: only clean
+content is readable, while quarantined or rejected content fails closed.
+
 `attachmentsComplete=false` distinguishes an unexpanded or partial provider
 listing from a message that is known to have no attachments.
 

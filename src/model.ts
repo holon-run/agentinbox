@@ -393,6 +393,28 @@ export interface EmailAttachmentMaterialization {
   deletedAt: string | null;
 }
 
+export type EmailAttachmentAuditAction =
+  | "metadata_read"
+  | "materialize"
+  | "content_read"
+  | "delete"
+  | "gc";
+
+export interface EmailAttachmentAuditEvent {
+  auditId: string;
+  attachmentRef: string;
+  claimedAgentId: string;
+  inboxId: string | null;
+  itemId: string | null;
+  sourceId: string | null;
+  action: EmailAttachmentAuditAction;
+  result: string;
+  errorCode: string | null;
+  bytes: number | null;
+  sha256: string | null;
+  createdAt: string;
+}
+
 export interface EmailBodyCacheRecord {
   entryId: string;
   inboxId: string;

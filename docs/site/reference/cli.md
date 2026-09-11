@@ -133,6 +133,7 @@ agentinbox inbox read [--agent-id <agent_id>]
 agentinbox inbox read <entry_id> [--agent-id <agent_id>] [--max-bytes <bytes>] [--no-fetch] [--cursor <token>] [--full]
 agentinbox inbox attachment inspect <attachment_ref> [--agent-id <agent_id>]
 agentinbox inbox attachment get <attachment_ref> [--agent-id <agent_id>] --output <path>
+agentinbox inbox attachment delete <attachment_ref> [--agent-id <agent_id>]
 agentinbox inbox send --agent-id <agent_id> --message "..." [--sender <sender>]
 agentinbox inbox watch [--agent-id <agent_id>]
 agentinbox inbox ack [--agent-id <agent_id>] --through <entry_id>
@@ -154,7 +155,10 @@ metadata. `attachment inspect` reads that metadata without downloading.
 For sources configured with `attachmentPolicy.mode=store_reference`,
 `attachment get` performs bounded on-demand materialization and writes the
 binary response on the client side. The output path is created exclusively and
-is never sent to the daemon.
+is never sent to the daemon. `attachment delete` is ownership-checked and
+idempotently tombstones the reference; managed bytes are removed only after no
+live attachment references share the content-addressed object. Deleted,
+quarantined, and rejected attachments cannot be read.
 
 ## Timers
 

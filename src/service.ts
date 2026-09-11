@@ -99,6 +99,7 @@ import {
 import {
   EmailAttachmentContentManager,
   type EmailAttachmentContent,
+  type EmailAttachmentContentManagerOptions,
 } from "./email_attachment_content";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
@@ -205,6 +206,7 @@ export class AgentInboxService {
     logger: Logger = new NoopLogger(),
     gatingPolicy?: GatingPolicy,
     emailBodyUxcClient?: EmailBodyUxcClient,
+    emailAttachmentOptions?: EmailAttachmentContentManagerOptions,
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
@@ -219,6 +221,7 @@ export class AgentInboxService {
       store,
       `${store.getDataDirectory()}/attachments`,
       emailBodyUxcClient,
+      emailAttachmentOptions,
     );
   }
 
@@ -853,6 +856,7 @@ export class AgentInboxService {
       new Set(this.store.listSubscriptionsForAgent(agentId).map((subscription) => subscription.sourceId)),
     );
     this.store.deleteAgent(agentId);
+    this.emailAttachmentContent.gc();
     for (const sourceId of affectedSourceIds) {
       this.refreshSourceIdleState(sourceId);
     }
@@ -1485,6 +1489,13 @@ export class AgentInboxService {
     return this.emailAttachmentContent.openContent(agentId, attachmentRef);
   }
 
+  deleteInboxEmailAttachmentContent(
+    agentId: string,
+    attachmentRef: string,
+  ): Promise<{ attachmentRef: string; deleted: boolean }> {
+    return this.emailAttachmentContent.delete(agentId, attachmentRef);
+  }
+
   projectPublicInboxEntry<T>(value: T): T {
     return projectPublicInboxEntry(
       value,
@@ -1870,18 +1881,28 @@ export class AgentInboxService {
     return this.ackInboxItems(agentId, input.entryIds ?? []);
   }
 
-  compactInbox(agentId: string): { deleted: number; retentionMs: number } {
+  compactInbox(agentId: string): {
+    deleted: number;
+    retentionMs: number;
+    attachments: ReturnType<EmailAttachmentContentManager["gc"]>;
+  } {
     const inbox = this.ensureInboxForAgent(agentId);
     return {
       deleted: this.store.deleteAckedInboxItems(inbox.inboxId, retentionCutoffIso(this.ackedRetentionMs)),
       retentionMs: this.ackedRetentionMs,
+      attachments: this.emailAttachmentContent.gc(),
     };
   }
 
-  gcAckedInboxItems(): { deleted: number; retentionMs: number } {
+  gcAckedInboxItems(): {
+    deleted: number;
+    retentionMs: number;
+    attachments: ReturnType<EmailAttachmentContentManager["gc"]>;
+  } {
     return {
       deleted: this.store.deleteAckedInboxItemsGlobal(retentionCutoffIso(this.ackedRetentionMs)),
       retentionMs: this.ackedRetentionMs,
+      attachments: this.emailAttachmentContent.gc(),
     };
   }
 
@@ -3648,6 +3669,7 @@ export class AgentInboxService {
     }
     if (agents.length > 0) {
       this.store.save();
+      this.emailAttachmentContent.gc();
     }
     if (agents.length > 0) {
       this.rescheduleTimerSync();
