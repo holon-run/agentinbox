@@ -920,6 +920,31 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "inbox" && normalized[1] === "attachment" && normalized[2] === "delete") {
+    const args = normalized.slice(3);
+    const positionals = positionalArgs(args, ["--agent-id"]);
+    const attachmentRef = positionals[0];
+    if (
+      positionals.length !== 1
+      || unexpectedFlags(args, ["--agent-id"]).length > 0
+      || !attachmentRef
+    ) {
+      throw new Error("usage: agentinbox inbox attachment delete <attachmentRef> [--agent-id ID]");
+    }
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(args, "--agent-id"),
+      autoRegister: false,
+    });
+    const response = await requestRemote<Record<string, unknown>>(
+      client,
+      `/agents/${encodeURIComponent(selection.agentId)}/inbox/attachments/${encodeURIComponent(attachmentRef)}/content`,
+      undefined,
+      "DELETE",
+    );
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
     const positionals = positionalArgs(args, ["--agent-id", "--after-entry", "--limit", "--max-bytes", "--cursor"]);
@@ -2191,6 +2216,7 @@ Usage:
   agentinbox inbox read <entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full]  (read one email body)
   agentinbox inbox attachment inspect <attachmentRef> [--agent-id ID]
   agentinbox inbox attachment get <attachmentRef> [--agent-id ID] --output PATH
+  agentinbox inbox attachment delete <attachmentRef> [--agent-id ID]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N] [--full]
   agentinbox inbox ack [--agent-id ID] (--through <entryId> | --through-entry-id <entryId> | --entry <entryId> | --entry-id <entryId> | --all)

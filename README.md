@@ -179,6 +179,7 @@ agentinbox inbox read --agent-id <agent_id>
 agentinbox inbox read <entry_id> --agent-id <agent_id>
 agentinbox inbox attachment inspect <attachment_ref> --agent-id <agent_id>
 agentinbox inbox attachment get <attachment_ref> --agent-id <agent_id> --output ./attachment.bin
+agentinbox inbox attachment delete <attachment_ref> --agent-id <agent_id>
 agentinbox inbox ack --agent-id <agent_id> --through <last_entry_id>
 ```
 
@@ -194,7 +195,11 @@ Email sources default to `attachmentPolicy.mode=metadata`. Set the source
 policy to `store_reference` to allow explicit, bounded `attachment get`
 requests. AgentInbox stores the bytes under its managed data directory, while
 the CLI writes the returned binary response to `--output` without overwriting
-an existing file.
+an existing file. Explicit `attachment delete` permanently tombstones that
+attachment reference for its owning agent and reclaims the managed object once
+no live attachment references remain. Retention and the global managed-byte
+limit are also enforced during inbox garbage collection; quarantined content
+remains unreadable and is subject to the same lifecycle rules.
 
 The HTTP `POST /subscriptions` endpoint always returns
 `{ "subscriptions": [...] }`, even when only one subscription is created. That

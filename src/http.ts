@@ -1829,6 +1829,30 @@ function buildFastifyServer(service: AgentInboxService) {
       .send(content.stream);
   });
 
+  app.delete("/agents/:agentId/inbox/attachments/:attachmentRef/content", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId", "attachmentRef"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          attachmentRef: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; attachmentRef: string };
+    return service.deleteInboxEmailAttachmentContent(
+      decodeURIComponent(params.agentId),
+      decodeURIComponent(params.attachmentRef),
+    );
+  });
+
   app.get("/agents/:agentId/inbox/entries/:entryId/body", {
     schema: {
       tags: ["inbox"],

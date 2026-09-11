@@ -141,6 +141,8 @@ agentinbox inbox read <entryId> --agent-id <agentId> --cursor <nextCursor>
 agentinbox inbox attachment inspect <attachmentRef> --agent-id <agentId>
 # For a source configured with attachmentPolicy.mode=store_reference:
 agentinbox inbox attachment get <attachmentRef> --agent-id <agentId> --output ./attachment.bin
+# Permanently remove managed access after use:
+agentinbox inbox attachment delete <attachmentRef> --agent-id <agentId>
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 ```
 
@@ -148,6 +150,9 @@ Email attachment refs are selectors, not bearer credentials. Always pass the
 owning `agentId`; AgentInbox rechecks inbox ownership before and after provider
 retrieval. The CLI writes `--output` locally with exclusive creation, while the
 daemon stores only managed content-addressed objects and never accepts caller
+paths. Delete attachment content when it is no longer needed; the reference is
+tombstoned, audit metadata is retained, and shared objects are reclaimed only
+after their last live reference is gone.
 filesystem paths.
 
 Ack discipline:

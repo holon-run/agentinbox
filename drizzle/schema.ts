@@ -286,6 +286,25 @@ export const emailAttachmentMaterializations = sqliteTable("email_attachment_mat
   expiryIdx: index("idx_email_attachment_materializations_expiry").on(table.expiresAt),
 }));
 
+export const emailAttachmentAuditEvents = sqliteTable("email_attachment_audit_events", {
+  auditId: text("audit_id").primaryKey(),
+  attachmentRef: text("attachment_ref").notNull(),
+  claimedAgentId: text("claimed_agent_id").notNull(),
+  inboxId: text("inbox_id"),
+  itemId: text("item_id"),
+  sourceId: text("source_id"),
+  action: text("action").notNull(),
+  result: text("result").notNull(),
+  errorCode: text("error_code"),
+  bytes: integer("bytes"),
+  sha256: text("sha256"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  attachmentIdx: index("idx_email_attachment_audit_attachment").on(table.attachmentRef, table.createdAt),
+  itemIdx: index("idx_email_attachment_audit_item").on(table.itemId, table.createdAt),
+  createdIdx: index("idx_email_attachment_audit_created").on(table.createdAt),
+}));
+
 export const digestThreadItems = sqliteTable("digest_thread_items", {
   threadId: text("thread_id").notNull(),
   itemId: text("item_id").notNull(),
