@@ -10,6 +10,25 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-11
+
+### Added
+
+- Email inbox items can expose local-first message body reads with integrity
+  status, bounded caching, and continuation support without leaking internal
+  provider handles (#245).
+- Email attachments now use opaque, ownership-checked references and can be
+  materialized and read on demand through the UXC daemon while keeping
+  provider-specific handles out of the public model (#246).
+- Attachment materializations now support audit records, quarantine hooks,
+  explicit deletion, retention policies, and garbage collection controls
+  (#247).
+
+### Changed
+
+- Upgraded `@holon-run/uxc-daemon-client` to `^0.21.1` for the attachment
+  materialization and lifecycle RPCs used by this release.
+
 ## [1.7.2] - 2026-09-10
 
 ### Fixed
