@@ -4,6 +4,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AdapterRegistry } from "../src/adapters";
+import { publicEmailAttachmentCollection } from "../src/email_attachment";
 import type { EmailBodyUxcClient } from "../src/email_body";
 import { createServer } from "../src/http";
 import type { InboxItem, SourceStream } from "../src/model";
@@ -51,6 +52,44 @@ class FakeEmailBodyUxcClient implements EmailBodyUxcClient {
     throw new Error(`unexpected UXC method: ${method}`);
   }
 }
+
+test("public email attachment collection distinguishes complete, partial, absent, and unknown metadata", () => {
+  const attachment = {
+    filename: "report.pdf",
+    handle: { type: "email_attachment" },
+  };
+  const cases = [
+    {
+      metadata: { attachments: [attachment], attachmentCount: 1, hasAttachments: true },
+      expected: { hasAttachments: true, attachmentCount: 1, attachmentsComplete: true },
+    },
+    {
+      metadata: { attachments: [attachment], attachmentCount: 2, hasAttachments: true },
+      expected: { hasAttachments: true, attachmentCount: 2, attachmentsComplete: false },
+    },
+    {
+      metadata: { attachments: [], attachmentCount: null, hasAttachments: false },
+      expected: { hasAttachments: false, attachmentCount: null, attachmentsComplete: true },
+    },
+    {
+      metadata: { attachments: [], attachmentCount: null, hasAttachments: null },
+      expected: { hasAttachments: false, attachmentCount: null, attachmentsComplete: false },
+    },
+    {
+      metadata: { attachments: [], attachmentCount: 2, hasAttachments: null },
+      expected: { hasAttachments: true, attachmentCount: 2, attachmentsComplete: false },
+    },
+  ];
+
+  for (const { metadata, expected } of cases) {
+    const collection = publicEmailAttachmentCollection("itm_attachment_state", metadata);
+    assert.deepEqual({
+      hasAttachments: collection.hasAttachments,
+      attachmentCount: collection.attachmentCount,
+      attachmentsComplete: collection.attachmentsComplete,
+    }, expected);
+  }
+});
 
 async function fixture(input: {
   rawPayload: Record<string, unknown>;
@@ -109,10 +148,21 @@ async function fixture(input: {
       subject: "Test message",
       from: "sender@example.com",
       attachments: [{
+        id: "provider-attachment-id",
         filename: "report.pdf",
         content_type: "application/pdf",
         size: 2048,
-        handle: { secret: "not-public" },
+        disposition: "attachment",
+        content_id: "report-content-id",
+        handle: {
+          type: "email_attachment",
+          provider: "imap",
+          account: "user@example.com",
+          mailbox: "INBOX",
+          locator: "not-public",
+        },
+        endpoint: "https://provider.example.test/download",
+        auth_profile: "private-profile",
       }],
       ...input.metadata,
     },
@@ -222,19 +272,44 @@ test("email body read fetches once, caches the snapshot, and hides internal refe
     assert.equal(firstResponse.status, 200);
     const first = await firstResponse.json() as {
       status: string;
-      attachments: Array<{ filename?: string | null; contentType?: string | null; size?: number | null }>;
+      hasAttachments: boolean;
+      attachmentCount: number | null;
+      attachmentsComplete: boolean;
+      attachments: Array<{
+        attachmentRef: string;
+        filename: string | null;
+        contentType: string | null;
+        size: number | null;
+        disposition: "attachment" | "inline" | null;
+        contentId: string | null;
+        status: string;
+        retrievable: boolean;
+      }>;
       body: { text: string; nextCursor?: string; origin: string };
     };
     assert.equal(first.status, "available");
     assert.equal(first.body.text, "abcd");
     assert.equal(first.body.origin, "fetched");
     assert.ok(first.body.nextCursor);
-    assert.deepEqual(first.attachments, [{
+    assert.equal(first.hasAttachments, true);
+    assert.equal(first.attachmentCount, null);
+    assert.equal(first.attachmentsComplete, false);
+    assert.match(first.attachments[0]!.attachmentRef, /^att_v1\.itm_email\.[A-Za-z0-9_-]{22}$/);
+    assert.deepEqual(first.attachments[0], {
+      attachmentRef: first.attachments[0]!.attachmentRef,
       filename: "report.pdf",
       contentType: "application/pdf",
+      detectedContentType: null,
       size: 2048,
-    }]);
+      disposition: "attachment",
+      contentId: "report-content-id",
+      status: "remote_only",
+      retrievable: true,
+    });
     assert.equal(JSON.stringify(first).includes("not-public"), false);
+    assert.equal(JSON.stringify(first).includes("provider-attachment-id"), false);
+    assert.equal(JSON.stringify(first).includes("private-profile"), false);
+    assert.equal(JSON.stringify(first).includes("provider.example.test"), false);
     assert.equal(JSON.stringify(first).includes("message_ref"), false);
     assert.deepEqual(uxc.calls.map((call) => call.method), ["daemon.status", "email.body.read"]);
     assert.deepEqual(uxc.calls[1].params, {
@@ -257,9 +332,42 @@ test("email body read fetches once, caches the snapshot, and hides internal refe
     assert.equal(uxc.calls.length, 2);
 
     const listResponse = await fetch(`${baseUrl}/agents/agent_alpha/inbox/entries`);
-    const listText = await listResponse.text();
+    const list = await listResponse.json() as {
+      entries: Array<{
+        metadata: { attachments: Array<Record<string, unknown>> };
+        item: { metadata: { attachments: Array<Record<string, unknown>> } };
+      }>;
+    };
+    const listText = JSON.stringify(list);
     assert.equal(listText.includes("message_ref"), false);
     assert.equal(listText.includes("very-long-secret-reference"), false);
+    assert.equal(listText.includes("provider-attachment-id"), false);
+    assert.equal(listText.includes("not-public"), false);
+    assert.deepEqual(list.entries[0]!.metadata.attachments[0], first.attachments[0]);
+    assert.deepEqual(list.entries[0]!.item.metadata.attachments[0], first.attachments[0]);
+
+    const attachmentResponse = await fetch(
+      `${baseUrl}/agents/agent_alpha/inbox/attachments/${encodeURIComponent(first.attachments[0]!.attachmentRef)}`,
+    );
+    assert.equal(attachmentResponse.status, 200);
+    assert.deepEqual(await attachmentResponse.json(), first.attachments[0]);
+
+    const crossInboxResponse = await fetch(
+      `${baseUrl}/agents/agent_beta/inbox/attachments/${encodeURIComponent(first.attachments[0]!.attachmentRef)}`,
+    );
+    assert.equal(crossInboxResponse.status, 404);
+    assert.deepEqual(await crossInboxResponse.json(), {
+      error: `unknown inbox attachment: ${first.attachments[0]!.attachmentRef}`,
+    });
+
+    const forgedRef = `${first.attachments[0]!.attachmentRef.slice(0, -1)}x`;
+    const forgedResponse = await fetch(
+      `${baseUrl}/agents/agent_alpha/inbox/attachments/${encodeURIComponent(forgedRef)}`,
+    );
+    assert.equal(forgedResponse.status, 404);
+    assert.deepEqual(await forgedResponse.json(), {
+      error: `unknown inbox attachment: ${forgedRef}`,
+    });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await fx.close();

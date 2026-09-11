@@ -213,6 +213,7 @@ test("normalizeEmailMailboxEvent maps imap email_event to inbox item", () => {
   assert.equal(normalized.metadata.textPreview, "Please review the attached report");
   assert.equal(normalized.metadata.hasAttachments, true);
   assert.equal(normalized.metadata.attachmentCount, 1);
+  assert.equal(normalized.metadata.attachmentsComplete, true);
   assert.equal((normalized.metadata.attachments as Array<Record<string, unknown>>).length, 1);
   assert.deepEqual(normalized.rawPayload, imapEmailEvent());
   assert.equal(normalized.deliveryHandle?.provider, "email");
@@ -246,7 +247,43 @@ test("normalizeEmailMailboxEvent keeps provider objects and nullable attachment 
   assert.equal(normalized.metadata.fromName, "Bob");
   assert.equal(normalized.metadata.attachmentCount, null);
   assert.equal(normalized.metadata.hasAttachments, false);
+  assert.equal(normalized.metadata.attachmentsComplete, false);
   assert.equal(normalized.deliveryHandle?.targetRef, "bob@contoso.com");
+});
+
+test("normalizeEmailMailboxEvent derives attachment state from count and explicit absence", () => {
+  const source = emailSource(imapConfig);
+  const config = parseEmailMailboxSourceConfig(source);
+  const base = imapEmailEvent();
+  const baseMessage = base.message as Record<string, unknown>;
+
+  const countOnly = normalizeEmailMailboxEvent(source, config, imapEmailEvent({
+    message: {
+      ...baseMessage,
+      attachments: [],
+      has_attachments: null,
+      attachment_count: 2,
+    },
+  }));
+  assert.ok(countOnly);
+  assert.ok(countOnly.metadata);
+  assert.equal(countOnly.metadata.hasAttachments, true);
+  assert.equal(countOnly.metadata.attachmentCount, 2);
+  assert.equal(countOnly.metadata.attachmentsComplete, false);
+
+  const explicitNone = normalizeEmailMailboxEvent(source, config, imapEmailEvent({
+    message: {
+      ...baseMessage,
+      attachments: [],
+      has_attachments: false,
+      attachment_count: null,
+    },
+  }));
+  assert.ok(explicitNone);
+  assert.ok(explicitNone.metadata);
+  assert.equal(explicitNone.metadata.hasAttachments, false);
+  assert.equal(explicitNone.metadata.attachmentCount, null);
+  assert.equal(explicitNone.metadata.attachmentsComplete, true);
 });
 
 test("normalizeEmailMailboxEvent guards envelope type, version, and event kind", () => {

@@ -177,6 +177,8 @@ agentinbox source event <source_id> --native-id demo-1 --event local.demo
 agentinbox inbox read
 agentinbox inbox read --agent-id <agent_id>
 agentinbox inbox read <entry_id> --agent-id <agent_id>
+agentinbox inbox attachment inspect <attachment_ref> --agent-id <agent_id>
+agentinbox inbox attachment get <attachment_ref> --agent-id <agent_id> --output ./attachment.bin
 agentinbox inbox ack --agent-id <agent_id> --through <last_entry_id>
 ```
 
@@ -186,8 +188,13 @@ UXC to retrieve missing content unless `--no-fetch` is set. The default page is
 32 KiB; use `--max-bytes <n>` to change the page budget and repeat the command
 with `--cursor <nextCursor>` when `body.hasMore` is true. Body reads do not ack
 the inbox entry, mark the provider message as read, download attachments, or
-expose the internal UXC message reference. Attachment metadata is informational
-until the managed `attachment_ref` lifecycle from #239 is available.
+expose the internal UXC message reference. Public attachment metadata uses an
+opaque `attachmentRef`; provider handles and credentials remain internal.
+Email sources default to `attachmentPolicy.mode=metadata`. Set the source
+policy to `store_reference` to allow explicit, bounded `attachment get`
+requests. AgentInbox stores the bytes under its managed data directory, while
+the CLI writes the returned binary response to `--output` without overwriting
+an existing file.
 
 The HTTP `POST /subscriptions` endpoint always returns
 `{ "subscriptions": [...] }`, even when only one subscription is created. That

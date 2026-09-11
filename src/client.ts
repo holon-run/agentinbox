@@ -8,6 +8,12 @@ export interface AgentInboxResponse<T = unknown> {
   data: T;
 }
 
+export interface AgentInboxBinaryResponse {
+  statusCode: number;
+  data: Buffer;
+  headers: http.IncomingHttpHeaders;
+}
+
 export class AgentInboxClient {
   constructor(private readonly transport: ClientTransport) {}
 
@@ -20,6 +26,16 @@ export class AgentInboxClient {
       return requestViaSocket<T>(this.transport.socketPath, endpoint, body, method);
     }
     return requestViaUrl<T>(this.transport.baseUrl, endpoint, body, method);
+  }
+
+  async requestBytes(
+    endpoint: string,
+    method: "GET" | "POST" = "GET",
+  ): Promise<AgentInboxBinaryResponse> {
+    if (this.transport.kind === "socket") {
+      return requestBytesViaSocket(this.transport.socketPath, endpoint, method);
+    }
+    return requestBytesViaUrl(this.transport.baseUrl, endpoint, method);
   }
 
   watchInbox(agentId: string, options: WatchInboxOptions = {}): AsyncIterable<InboxWatchEvent> {
@@ -40,6 +56,52 @@ export class AgentInboxClient {
     }
     return watchViaUrl(this.transport.baseUrl, endpoint);
   }
+}
+
+function requestBytesViaSocket(
+  socketPath: string,
+  endpoint: string,
+  method: "GET" | "POST",
+): Promise<AgentInboxBinaryResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        socketPath,
+        path: normalizeEndpoint(endpoint),
+        method,
+      },
+      (res) => {
+        void collectBinaryResponse(res).then(resolve, reject);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function requestBytesViaUrl(
+  baseUrl: string,
+  endpoint: string,
+  method: "GET" | "POST",
+): Promise<AgentInboxBinaryResponse> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(normalizeEndpoint(endpoint), baseUrl);
+    const transport = url.protocol === "https:" ? https : http;
+    const req = transport.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port,
+        path: `${url.pathname}${url.search}`,
+        method,
+      },
+      (res) => {
+        void collectBinaryResponse(res).then(resolve, reject);
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 function requestViaSocket<T>(
@@ -147,6 +209,23 @@ function watchViaUrl(baseUrl: string, endpoint: string): AsyncIterable<InboxWatc
     );
     req.end();
     return req;
+  });
+}
+
+function collectBinaryResponse(res: http.IncomingMessage): Promise<AgentInboxBinaryResponse> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    res.on("data", (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+    res.on("end", () => {
+      resolve({
+        statusCode: res.statusCode ?? 500,
+        data: Buffer.concat(chunks),
+        headers: res.headers,
+      });
+    });
+    res.on("error", reject);
   });
 }
 

@@ -14,6 +14,7 @@ const EXPECTED_MIGRATION_TAGS = [
   "0004_provider_raw_payload",
   "0005_operator_transport_bindings",
   "0006_email_body_cache",
+  "0007_email_attachment_materializations",
 ];
 
 async function createLegacyDb(dbPath: string): Promise<void> {

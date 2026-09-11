@@ -893,7 +893,8 @@ const EMAIL_MAILBOX_MODULE: RemoteSourceModule = {
         { name: "textPreview", type: "string|null", description: "Body snippet." },
         { name: "hasAttachments", type: "boolean", description: "Whether the message carries attachments." },
         { name: "attachmentCount", type: "number|null", description: "Attachment count; null when provider metadata was not expanded." },
-        { name: "attachments", type: "object[]", description: "Attachment metadata with opaque retrieval handles." },
+        { name: "attachmentsComplete", type: "boolean", description: "Whether the attachment metadata list is known to be complete." },
+        { name: "attachments", type: "object[]", description: "Safe attachment metadata with an opaque attachmentRef; provider retrieval handles are not exposed." },
       ],
       eventVariantExamples: ["email.message.received"],
     };

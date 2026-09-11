@@ -92,8 +92,15 @@ agentinbox source add <host_id> message_events primary \
 Credentials never go inline: `uxcAuth` references a `uxc` auth profile that
 holds the mailbox credentials. Delivery requires `smtpEndpoint` and a `from`
 address (input, source config `fromAddress`, or an address-like `account`).
-Attachments are exposed as metadata with opaque retrieval handles only;
-binary content never enters inbox items.
+Binary attachment content never enters inbox items. Public entries expose safe
+metadata and an opaque `attachmentRef`; provider retrieval handles remain
+internal.
+
+Attachment content is disabled by default. Configure
+`attachmentPolicy.mode=store_reference` on the source to allow explicit,
+bounded materialization. Policy fields include `maxAttachmentsPerMessage`,
+`maxBytesPerAttachment`, `maxBytesPerMessage`, `allowContentTypes`,
+`denyContentTypes`, and `retentionSecs`.
 
 ### Email first-look backfill depth
 
@@ -112,7 +119,30 @@ Useful normalized `message_events` metadata includes:
 
 - `from` / `fromName` / `to` / `subject` / `textPreview`
 - `messageId` / `threadId` / `providerMessageId`
-- `hasAttachments` / `attachmentCount` / `attachments`
+- `hasAttachments` / `attachmentCount` / `attachmentsComplete` / `attachments`
+
+Public attachment entries contain safe metadata and an opaque,
+versioned `attachmentRef`. Provider retrieval handles, credentials, and
+locators are not exposed. Inspect one attachment without downloading content:
+
+```bash
+agentinbox inbox attachment inspect <attachmentRef> --agent-id <agentId>
+```
+
+For a `store_reference` source, materialize and save one attachment:
+
+```bash
+agentinbox inbox attachment get <attachmentRef> \
+  --agent-id <agentId> \
+  --output ./attachment.bin
+```
+
+The daemon downloads into a bounded staging area and stores an immutable,
+content-addressed object. The CLI receives the binary response and creates the
+output path exclusively; it does not overwrite an existing file.
+
+`attachmentsComplete=false` distinguishes an unexpanded or partial provider
+listing from a message that is known to have no attachments.
 
 ## `remote_source`
 

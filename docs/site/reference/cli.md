@@ -131,6 +131,8 @@ agentinbox inbox list
 agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
 agentinbox inbox read <entry_id> [--agent-id <agent_id>] [--max-bytes <bytes>] [--no-fetch] [--cursor <token>] [--full]
+agentinbox inbox attachment inspect <attachment_ref> [--agent-id <agent_id>]
+agentinbox inbox attachment get <attachment_ref> [--agent-id <agent_id>] --output <path>
 agentinbox inbox send --agent-id <agent_id> --message "..." [--sender <sender>]
 agentinbox inbox watch [--agent-id <agent_id>]
 agentinbox inbox ack [--agent-id <agent_id>] --through <entry_id>
@@ -148,8 +150,11 @@ single-entry mode but never exposes the internal UXC `message_ref`.
 
 The result reports `complete`, `partial`, or `unverified` body completeness
 separately from output pagination. It includes only safe attachment display
-metadata; attachment bytes remain unavailable until the managed
-`attachment_ref` contract is implemented.
+metadata. `attachment inspect` reads that metadata without downloading.
+For sources configured with `attachmentPolicy.mode=store_reference`,
+`attachment get` performs bounded on-demand materialization and writes the
+binary response on the client side. The output path is created exclusively and
+is never sent to the daemon.
 
 ## Timers
 
