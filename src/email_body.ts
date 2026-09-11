@@ -8,6 +8,7 @@ import type {
   InboxItemEntry,
   SourceStream,
 } from "./model";
+import { publicEmailAttachmentCollection } from "./email_attachment";
 import { AgentInboxStore } from "./store";
 import { nowIso } from "./util";
 
@@ -94,12 +95,13 @@ export class EmailBodyReader {
         throw new Error("email body cursor is invalid or expired");
       }
       this.store.touchEmailBodyCache(entry.entryId, nowIso());
+      const attachments = publicEmailAttachmentCollection(entry.itemId, entry.metadata);
       return {
         status: "available",
         entryId: entry.entryId,
         subject: optionalString(entry.metadata?.subject),
         from: optionalString(entry.metadata?.from),
-        attachments: publicAttachments(entry.metadata?.attachments),
+        ...attachments,
         body: pageSnapshot(snapshot, maxBytes, cursor.offset, inboxId, entry.entryId, this.cursorSecret),
       };
     }
@@ -114,12 +116,13 @@ export class EmailBodyReader {
       return snapshot;
     }
 
+    const attachments = publicEmailAttachmentCollection(entry.itemId, entry.metadata);
     return {
       status: "available",
       entryId: entry.entryId,
       subject: optionalString(entry.metadata?.subject),
       from: optionalString(entry.metadata?.from),
-      attachments: publicAttachments(entry.metadata?.attachments),
+      ...attachments,
       body: pageSnapshot(snapshot, maxBytes, 0, inboxId, entry.entryId, this.cursorSecret),
     };
   }
@@ -499,27 +502,6 @@ function unavailable(
   message: string,
 ): UnavailableEmailBodyRead {
   return { status: "unavailable", entryId, code, retryable, message };
-}
-
-function publicAttachments(value: unknown): Array<{
-  filename?: string | null;
-  contentType?: string | null;
-  size?: number | null;
-}> {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.flatMap((item) => {
-    const attachment = objectValue(item);
-    if (Object.keys(attachment).length === 0) {
-      return [];
-    }
-    return [{
-      filename: optionalString(attachment.filename),
-      contentType: optionalString(attachment.content_type) ?? optionalString(attachment.contentType),
-      size: optionalInteger(attachment.size),
-    }];
-  });
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

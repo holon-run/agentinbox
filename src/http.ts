@@ -14,6 +14,7 @@ import {
   WatchInboxOptions,
 } from "./model";
 import { jsonResponse } from "./util";
+import { projectPublicInboxEntry } from "./email_attachment";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
@@ -1747,8 +1748,32 @@ function buildFastifyServer(service: AgentInboxService) {
         afterEntryId: query.after_entry_id,
         includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
         limit: parseOptionalPositiveInteger(query.limit),
-      }).map(redactInternalEmailRefs),
+      }).map(projectPublicInboxEntry),
     };
+  });
+
+  app.get("/agents/:agentId/inbox/attachments/:attachmentRef", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId", "attachmentRef"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          attachmentRef: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; attachmentRef: string };
+    return service.getInboxEmailAttachment(
+      decodeURIComponent(params.agentId),
+      decodeURIComponent(params.attachmentRef),
+    );
   });
 
   app.get("/agents/:agentId/inbox/entries/:entryId/body", {
@@ -1872,13 +1897,13 @@ function buildFastifyServer(service: AgentInboxService) {
 
     const session = service.watchInbox(agentId, watchOptions, (event) => {
       sendSse(raw, event.event, event.event === "items"
-        ? { ...event, entries: event.entries.map(redactInternalEmailRefs) }
+        ? { ...event, entries: event.entries.map(projectPublicInboxEntry) }
         : event);
     });
     sendSse(raw, "items", {
       event: "items",
       agentId,
-      entries: session.initialItems.map(redactInternalEmailRefs),
+      entries: session.initialItems.map(projectPublicInboxEntry),
     });
     session.start();
 
@@ -2296,23 +2321,6 @@ function normalizeValidationMessage(message: string): string {
     return "expected object";
   }
   return message;
-}
-
-function redactInternalEmailRefs<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map(redactInternalEmailRefs) as T;
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  const result: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "message_ref" || key === "messageRef") {
-      continue;
-    }
-    result[key] = redactInternalEmailRefs(child);
-  }
-  return result as T;
 }
 
 function isBadRequestError(message: string): boolean {

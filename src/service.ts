@@ -10,6 +10,7 @@ import {
   DirectInboxTextMessageInput,
   DirectInboxTextMessageResult,
   EmailBodyReadResult,
+  PublicEmailAttachment,
   AppendSourceEventInput,
   AppendSourceEventResult,
   DeliveryAttempt,
@@ -92,6 +93,11 @@ import {
   type EmailBodyReadOptions,
   type EmailBodyUxcClient,
 } from "./email_body";
+import {
+  findPublicEmailAttachment,
+  parseEmailAttachmentRef,
+  projectPublicInboxEntry,
+} from "./email_attachment";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -1451,6 +1457,27 @@ export class AgentInboxService {
       };
     }
     return this.emailBodyReader.read(inbox.inboxId, entry, source, options);
+  }
+
+  getInboxEmailAttachment(agentId: string, attachmentRef: string): PublicEmailAttachment {
+    const inbox = this.store.getInboxByAgentId(agentId);
+    const parsed = inbox ? parseEmailAttachmentRef(attachmentRef) : null;
+    const item = parsed && inbox
+      ? this.store.getInboxItemForInbox(inbox.inboxId, parsed.itemId)
+      : null;
+    const source = item ? this.store.getSource(item.sourceId) : null;
+    if (
+      !item
+      || item.eventVariant !== "email.message.received"
+      || source?.sourceType !== "email_mailbox"
+    ) {
+      throw new Error(`unknown inbox attachment: ${attachmentRef}`);
+    }
+    const attachment = findPublicEmailAttachment(item, attachmentRef);
+    if (!attachment) {
+      throw new Error(`unknown inbox attachment: ${attachmentRef}`);
+    }
+    return attachment;
   }
 
   listRawInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {
@@ -3183,9 +3210,11 @@ export class AgentInboxService {
           items: target.mode === "activation_with_items"
             ? input.entries
               .filter((entry): entry is Extract<InboxEntry, { kind: "item" }> => entry.kind === "item")
-              .map((entry) => entry.item)
+              .map((entry) => projectPublicInboxEntry(entry.item))
             : undefined,
-          entries: target.mode === "activation_with_items" && input.entries.length > 0 ? input.entries : undefined,
+          entries: target.mode === "activation_with_items" && input.entries.length > 0
+            ? input.entries.map(projectPublicInboxEntry)
+            : undefined,
           createdAt: nowIso(),
           deliveredAt: null,
         };

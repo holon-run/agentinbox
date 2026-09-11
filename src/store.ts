@@ -1701,6 +1701,14 @@ export class AgentInboxStore {
     return this.mapInboxEntries(rows)[0] ?? null;
   }
 
+  getInboxItemForInbox(inboxId: string, itemId: string): InboxItem | null {
+    const row = this.getOne(
+      "select * from inbox_items where inbox_id = ? and item_id = ?",
+      [inboxId, itemId],
+    );
+    return row ? this.mapInboxItem(row) : null;
+  }
+
   getEmailBodyCache(inboxId: string, entryId: string): EmailBodyCacheRecord | null {
     const row = this.getOne(
       "select * from email_body_cache where inbox_id = ? and entry_id = ?",

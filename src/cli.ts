@@ -35,6 +35,7 @@ import { AgentInboxService } from "./service";
 import { AgentInboxStore } from "./store";
 import { detectTerminalContext } from "./terminal";
 import { jsonResponse, parseJsonArg } from "./util";
+import { projectPublicInboxEntry } from "./email_attachment";
 
 interface CommandWarning {
   code: "cross_session_agent";
@@ -848,6 +849,31 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "inbox" && normalized[1] === "attachment" && normalized[2] === "inspect") {
+    const args = normalized.slice(3);
+    const positionals = positionalArgs(args, ["--agent-id"]);
+    const attachmentRef = positionals[0];
+    if (
+      positionals.length !== 1
+      || unexpectedFlags(args, ["--agent-id"]).length > 0
+      || !attachmentRef
+    ) {
+      throw new Error("usage: agentinbox inbox attachment inspect <attachmentRef> [--agent-id ID]");
+    }
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: false,
+    });
+    const response = await requestRemote<Record<string, unknown>>(
+      client,
+      `/agents/${encodeURIComponent(selection.agentId)}/inbox/attachments/${encodeURIComponent(attachmentRef)}`,
+      undefined,
+      "GET",
+    );
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
   if (command === "inbox" && normalized[1] === "read") {
     const args = normalized.slice(2);
     const positionals = positionalArgs(args, ["--agent-id", "--after-entry", "--limit", "--max-bytes", "--cursor"]);
@@ -909,7 +935,7 @@ async function main(): Promise<void> {
     if (Array.isArray(data.entries)) {
       data.entries = (data.entries as Array<Record<string, unknown>>).map((entry) =>
         hasFlag(normalized, "--full")
-          ? redactInternalEmailRefs(entry) as Record<string, unknown>
+          ? projectPublicInboxEntry(entry) as Record<string, unknown>
           : compactInboxEntry(entry)
       );
     }
@@ -962,7 +988,7 @@ async function main(): Promise<void> {
       const output = {
         ...event,
         entries: event.entries.map((entry) => fullMode
-          ? redactInternalEmailRefs(entry)
+          ? projectPublicInboxEntry(entry)
           : compactInboxEntry(entry as unknown as Record<string, unknown>)),
       };
       console.log(jsonResponse(output));
@@ -1876,23 +1902,6 @@ function compactInboxEntry(entry: Record<string, unknown>): Record<string, unkno
   return compact;
 }
 
-function redactInternalEmailRefs(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(redactInternalEmailRefs);
-  }
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  const result: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "message_ref" || key === "messageRef") {
-      continue;
-    }
-    result[key] = redactInternalEmailRefs(child);
-  }
-  return result;
-}
-
 function normalizeSubscriptionAddOutput(data: Record<string, unknown>, shortcutUsed: boolean): Record<string, unknown> {
   if (shortcutUsed) {
     return data;
@@ -2100,6 +2109,7 @@ Usage:
   agentinbox inbox show <agentId>
   agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]  (list; aliases: inbox get, inbox entries, inbox peek)
   agentinbox inbox read <entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full]  (read one email body)
+  agentinbox inbox attachment inspect <attachmentRef> [--agent-id ID]
   agentinbox inbox send --agent-id ID --message TEXT [--sender SENDER]
   agentinbox inbox watch [--agent-id ID] [--after-entry ID] [--include-acked] [--heartbeat-ms N] [--full]
   agentinbox inbox ack [--agent-id ID] (--through <entryId> | --through-entry-id <entryId> | --entry <entryId> | --entry-id <entryId> | --all)

@@ -308,6 +308,12 @@ export function normalizeEmailMailboxEvent(
     : [];
   const attachmentCountRaw = message.attachment_count;
   const attachmentCount = numberFromUnknown(attachmentCountRaw) ?? null;
+  const hasAttachments = attachments.length > 0
+    || (attachmentCount !== null && attachmentCount > 0)
+    || message.has_attachments === true;
+  const attachmentsComplete = attachmentCount !== null
+    ? attachmentCount === attachments.length
+    : message.has_attachments === false && attachments.length === 0;
 
   const date = asString(message.date);
   return {
@@ -331,8 +337,9 @@ export function normalizeEmailMailboxEvent(
       subject: asString(message.subject),
       textPreview: asString(message.snippet),
       date,
-      hasAttachments: attachments.length > 0 || message.has_attachments === true,
+      hasAttachments,
       attachmentCount,
+      attachmentsComplete,
       attachments,
     },
     rawPayload: payload,

@@ -112,7 +112,18 @@ Useful normalized `message_events` metadata includes:
 
 - `from` / `fromName` / `to` / `subject` / `textPreview`
 - `messageId` / `threadId` / `providerMessageId`
-- `hasAttachments` / `attachmentCount` / `attachments`
+- `hasAttachments` / `attachmentCount` / `attachmentsComplete` / `attachments`
+
+Public attachment entries contain safe metadata and an opaque,
+versioned `attachmentRef`. Provider retrieval handles, credentials, and
+locators are not exposed. Inspect one attachment without downloading content:
+
+```bash
+agentinbox inbox attachment inspect <attachmentRef> --agent-id <agentId>
+```
+
+`attachmentsComplete=false` distinguishes an unexpanded or partial provider
+listing from a message that is known to have no attachments.
 
 ## `remote_source`
 

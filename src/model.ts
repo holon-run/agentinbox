@@ -347,6 +347,25 @@ export type InboxEntry = InboxItemEntry | DigestSnapshotEntry;
 
 export type EmailBodyCompleteness = "complete" | "partial" | "unverified";
 export type EmailBodyOrigin = "local" | "cache" | "fetched";
+export type EmailAttachmentStatus = "metadata_only" | "remote_only";
+
+export interface PublicEmailAttachment {
+  attachmentRef: string;
+  filename: string | null;
+  contentType: string | null;
+  size: number | null;
+  disposition: "attachment" | "inline" | null;
+  contentId: string | null;
+  status: EmailAttachmentStatus;
+  retrievable: boolean;
+}
+
+export interface PublicEmailAttachmentCollection {
+  hasAttachments: boolean;
+  attachmentCount: number | null;
+  attachmentsComplete: boolean;
+  attachments: PublicEmailAttachment[];
+}
 
 export interface EmailBodyCacheRecord {
   entryId: string;
@@ -383,11 +402,10 @@ export interface AvailableEmailBodyRead {
   entryId: string;
   subject?: string | null;
   from?: string | null;
-  attachments: Array<{
-    filename?: string | null;
-    contentType?: string | null;
-    size?: number | null;
-  }>;
+  hasAttachments: boolean;
+  attachmentCount: number | null;
+  attachmentsComplete: boolean;
+  attachments: PublicEmailAttachment[];
   body: EmailBodyPage;
 }
 

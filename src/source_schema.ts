@@ -205,7 +205,8 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "date", type: "string|null", description: "Message date header value." },
       { name: "hasAttachments", type: "boolean", description: "Whether the message carries attachments." },
       { name: "attachmentCount", type: "number|null", description: "Attachment count; null when the provider did not expand attachment metadata." },
-      { name: "attachments", type: "object[]", description: "Attachment metadata entries with opaque retrieval handles; binary content is never embedded." },
+      { name: "attachmentsComplete", type: "boolean", description: "Whether the attachment metadata list is known to be complete." },
+      { name: "attachments", type: "object[]", description: "Safe attachment metadata with an opaque attachmentRef; provider retrieval handles and binary content are never exposed." },
     ],
     payloadExamples: [
       {

@@ -3375,6 +3375,115 @@ test("direct inbox text messages create inbox items and trigger activation", asy
   }
 });
 
+test("webhook activations project email attachments before dispatch and persistence", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { store, service, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const registered = service.registerAgent({
+      agentId: "email-attachment-projection",
+      webhook: {
+        url: "http://127.0.0.1:9999/email-attachment",
+        activationMode: "activation_with_items",
+      },
+    });
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "email-attachment-projection",
+      config: {},
+    });
+    const subscription = await service.registerSubscription({
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      startPolicy: "earliest",
+    });
+    const internalAttachment = {
+      id: "provider-attachment-id",
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      size: 2048,
+      disposition: "attachment",
+      content_id: "report-content-id",
+      handle: {
+        type: "email_attachment",
+        provider: "imap",
+        account: "private-account",
+        locator: "private-locator",
+      },
+      download_url: "https://provider.example.test/private-download",
+    };
+
+    await service.appendSourceEventByCaller(source.sourceId, {
+      sourceNativeId: "email-attachment-projection-1",
+      eventVariant: "email.message.received",
+      metadata: {
+        hasAttachments: true,
+        attachmentCount: 1,
+        attachmentsComplete: true,
+        attachments: [internalAttachment],
+      },
+      rawPayload: {
+        type: "email_event",
+        message_ref: "uxc-email-v1.private-reference",
+        message: {
+          has_attachments: true,
+          attachment_count: 1,
+          attachments_complete: true,
+          attachments: [internalAttachment],
+        },
+      },
+      providerRawPayload: {
+        provider_secret: "private-provider-payload",
+      },
+    });
+    await service.pollSubscription(subscription.subscriptionId);
+    await sleep(30);
+
+    assert.equal(dispatcher.calls.length, 1);
+    const activation = dispatcher.calls[0]!.activation;
+    const serialized = JSON.stringify(activation);
+    for (const secret of [
+      "message_ref",
+      "private-reference",
+      "provider-attachment-id",
+      "email_attachment",
+      "private-account",
+      "private-locator",
+      "private-download",
+      "private-provider-payload",
+    ]) {
+      assert.equal(serialized.includes(secret), false, `activation leaked ${secret}`);
+    }
+
+    const item = activation.items?.[0];
+    assert.ok(item);
+    const attachment = (item.metadata.attachments as Array<Record<string, unknown>>)[0]!;
+    assert.match(String(attachment.attachmentRef), new RegExp(`^att_v1\\.${item.itemId}\\.[A-Za-z0-9_-]{22}$`));
+    assert.deepEqual(attachment, {
+      attachmentRef: attachment.attachmentRef,
+      filename: "report.pdf",
+      contentType: "application/pdf",
+      size: 2048,
+      disposition: "attachment",
+      contentId: "report-content-id",
+      status: "remote_only",
+      retrievable: true,
+    });
+    assert.deepEqual(
+      (activation.entries?.[0]?.metadata?.attachments as Array<Record<string, unknown>>)[0],
+      attachment,
+    );
+    assert.equal(JSON.stringify(store.listActivations()[0]).includes("private-locator"), false);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("webhook targets merge new items into pending during an active notify lease", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const { store, service, dir } = await makeService({
