@@ -14,12 +14,27 @@ export const EMAIL_DEFAULT_MAILBOX = "INBOX";
 export const EMAIL_MAILBOX_DEFAULT_POLL_INTERVAL_SECS = 60;
 export const EMAIL_MAILBOX_DEFAULT_INITIAL_FETCH_LIMIT = 25;
 export const EMAIL_MAILBOX_MAX_INITIAL_FETCH_LIMIT = 100;
+export const EMAIL_ATTACHMENT_DEFAULT_MAX_COUNT = 20;
+export const EMAIL_ATTACHMENT_DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
+export const EMAIL_ATTACHMENT_DEFAULT_MAX_MESSAGE_BYTES = 50 * 1024 * 1024;
+export const EMAIL_ATTACHMENT_DEFAULT_RETENTION_SECS = 24 * 60 * 60;
 export const EMAIL_EVENT_TYPE = "email_event";
 export const EMAIL_EVENT_VERSION = "v1";
 export const GMAIL_MESSAGES_ENDPOINT = "https://gmail.googleapis.com/gmail/v1/users/me/messages";
 export const GRAPH_MESSAGES_ENDPOINT = "https://graph.microsoft.com/v1.0/me/messages?$expand=attachments";
 
 export type EmailMailboxProvider = "imap" | "gmail" | "graph" | "jmap";
+export type EmailAttachmentPolicyMode = "metadata" | "store_reference";
+
+export interface EmailAttachmentPolicy {
+  mode: EmailAttachmentPolicyMode;
+  maxAttachmentsPerMessage: number;
+  maxBytesPerAttachment: number;
+  maxBytesPerMessage: number;
+  allowContentTypes: string[];
+  denyContentTypes: string[];
+  retentionSecs: number;
+}
 
 const EMAIL_MAILBOX_PROVIDERS = new Set<string>(["imap", "gmail", "graph", "jmap"]);
 const EMAIL_DEFAULT_ENDPOINTS: Partial<Record<EmailMailboxProvider, string>> = {
@@ -39,6 +54,7 @@ export interface EmailMailboxSourceConfig {
   smtpEndpoint?: string;
   fromAddress?: string;
   addressAllowlist?: string[];
+  attachmentPolicy: EmailAttachmentPolicy;
 }
 
 /**
@@ -137,6 +153,7 @@ export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailbo
   }
 
   const addressAllowlist = asStringArray(config.addressAllowlist ?? config.addressAllowList);
+  const attachmentPolicy = parseEmailAttachmentPolicy(config.attachmentPolicy ?? config.attachment_policy);
 
   return {
     provider: provider as EmailMailboxProvider,
@@ -149,6 +166,44 @@ export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailbo
     ...(smtpEndpoint ? { smtpEndpoint } : {}),
     ...(fromAddress ? { fromAddress } : {}),
     ...(addressAllowlist && addressAllowlist.length > 0 ? { addressAllowlist } : {}),
+    attachmentPolicy,
+  };
+}
+
+export function parseEmailAttachmentPolicy(value: unknown): EmailAttachmentPolicy {
+  const input = asRecord(value);
+  const mode = asString(input.mode) ?? "metadata";
+  if (mode !== "metadata" && mode !== "store_reference") {
+    throw new Error(`email_mailbox config.attachmentPolicy.mode must be metadata or store_reference; got ${mode}`);
+  }
+  return {
+    mode,
+    maxAttachmentsPerMessage: positiveIntegerOrDefault(
+      input.maxAttachmentsPerMessage ?? input.max_attachments_per_message,
+      EMAIL_ATTACHMENT_DEFAULT_MAX_COUNT,
+      "maxAttachmentsPerMessage",
+    ),
+    maxBytesPerAttachment: positiveIntegerOrDefault(
+      input.maxBytesPerAttachment ?? input.max_bytes_per_attachment,
+      EMAIL_ATTACHMENT_DEFAULT_MAX_BYTES,
+      "maxBytesPerAttachment",
+    ),
+    maxBytesPerMessage: positiveIntegerOrDefault(
+      input.maxBytesPerMessage ?? input.max_bytes_per_message,
+      EMAIL_ATTACHMENT_DEFAULT_MAX_MESSAGE_BYTES,
+      "maxBytesPerMessage",
+    ),
+    allowContentTypes: normalizedContentTypes(
+      input.allowContentTypes ?? input.allow_content_types,
+    ),
+    denyContentTypes: normalizedContentTypes(
+      input.denyContentTypes ?? input.deny_content_types,
+    ),
+    retentionSecs: positiveIntegerOrDefault(
+      input.retentionSecs ?? input.retention_secs,
+      EMAIL_ATTACHMENT_DEFAULT_RETENTION_SECS,
+      "retentionSecs",
+    ),
   };
 }
 
@@ -675,4 +730,23 @@ function numberFromUnknown(value: unknown): number | undefined {
     }
   }
   return undefined;
+}
+
+function positiveIntegerOrDefault(
+  value: unknown,
+  fallback: number,
+  field: string,
+): number {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  const parsed = numberFromUnknown(value);
+  if (parsed === undefined || !Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`email_mailbox config.attachmentPolicy.${field} must be a positive integer; got ${String(value)}`);
+  }
+  return parsed;
+}
+
+function normalizedContentTypes(value: unknown): string[] {
+  return [...new Set((asStringArray(value) ?? []).map((item) => item.trim().toLowerCase()))];
 }

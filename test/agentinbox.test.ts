@@ -3466,6 +3466,7 @@ test("webhook activations project email attachments before dispatch and persiste
       attachmentRef: attachment.attachmentRef,
       filename: "report.pdf",
       contentType: "application/pdf",
+      detectedContentType: null,
       size: 2048,
       disposition: "attachment",
       contentId: "report-content-id",

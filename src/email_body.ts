@@ -95,7 +95,11 @@ export class EmailBodyReader {
         throw new Error("email body cursor is invalid or expired");
       }
       this.store.touchEmailBodyCache(entry.entryId, nowIso());
-      const attachments = publicEmailAttachmentCollection(entry.itemId, entry.metadata);
+      const attachments = publicEmailAttachmentCollection(
+        entry.itemId,
+        entry.metadata,
+        (itemId, selector) => this.store.getEmailAttachmentMaterialization(itemId, selector),
+      );
       return {
         status: "available",
         entryId: entry.entryId,
@@ -116,7 +120,11 @@ export class EmailBodyReader {
       return snapshot;
     }
 
-    const attachments = publicEmailAttachmentCollection(entry.itemId, entry.metadata);
+    const attachments = publicEmailAttachmentCollection(
+      entry.itemId,
+      entry.metadata,
+      (itemId, selector) => this.store.getEmailAttachmentMaterialization(itemId, selector),
+    );
     return {
       status: "available",
       entryId: entry.entryId,

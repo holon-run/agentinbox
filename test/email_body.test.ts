@@ -299,6 +299,7 @@ test("email body read fetches once, caches the snapshot, and hides internal refe
       attachmentRef: first.attachments[0]!.attachmentRef,
       filename: "report.pdf",
       contentType: "application/pdf",
+      detectedContentType: null,
       size: 2048,
       disposition: "attachment",
       contentId: "report-content-id",

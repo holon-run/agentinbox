@@ -18,6 +18,7 @@ import {
   AppendSourceEventResult,
   CleanupPolicy,
   DeliveryAttempt,
+  EmailAttachmentMaterialization,
   EmailBodyCacheRecord,
   Inbox,
   InboxAggregationPolicy,
@@ -253,6 +254,10 @@ export class AgentInboxStore {
     this.persist();
   }
 
+  getDataDirectory(): string {
+    return path.dirname(this.dbPath);
+  }
+
   getDatabaseHealth(): DatabaseHealth {
     return {
       quickCheck: String(this.db.pragma("quick_check", { simple: true })),
@@ -457,11 +462,12 @@ export class AgentInboxStore {
     // better-sqlite3 persists changes through SQLite's journaling layer.
   }
 
-  private inTransaction(fn: () => void): void {
+  private inTransaction<T>(fn: () => T): T {
     this.db.exec("begin");
     try {
-      fn();
+      const result = fn();
       this.db.exec("commit");
+      return result;
     } catch (error) {
       this.db.exec("rollback");
       throw error;
@@ -1371,6 +1377,10 @@ export class AgentInboxStore {
       this.run("delete from activation_targets where agent_id = ?", [agentId]);
       if (inbox) {
         this.run("delete from email_body_cache where inbox_id = ?", [inbox.inboxId]);
+        this.run(
+          "delete from email_attachment_materializations where item_id in (select item_id from inbox_items where inbox_id = ?)",
+          [inbox.inboxId],
+        );
         this.run("delete from inbox_items where inbox_id = ?", [inbox.inboxId]);
         this.run("delete from activations where agent_id = ? or inbox_id = ?", [agentId, inbox.inboxId]);
         this.run("delete from inboxes where inbox_id = ?", [inbox.inboxId]);
@@ -1715,6 +1725,124 @@ export class AgentInboxStore {
       [inboxId, parseEntryRef(entryId)],
     );
     return row ? this.mapEmailBodyCache(row) : null;
+  }
+
+  getEmailAttachmentMaterialization(
+    itemId: string,
+    attachmentSelector: string,
+  ): EmailAttachmentMaterialization | null {
+    const row = this.getOne(
+      `
+      select *
+      from email_attachment_materializations
+      where item_id = ? and attachment_selector = ?
+      `,
+      [itemId, attachmentSelector],
+    );
+    return row ? this.mapEmailAttachmentMaterialization(row) : null;
+  }
+
+  beginEmailAttachmentMaterialization(
+    inboxId: string,
+    record: EmailAttachmentMaterialization,
+  ): boolean {
+    const written = this.inTransaction(() => {
+      const itemStillExists = this.getOne(
+        "select 1 from inbox_items where inbox_id = ? and item_id = ?",
+        [inboxId, record.itemId],
+      );
+      if (!itemStillExists) {
+        return false;
+      }
+      this.run(
+        `
+        insert into email_attachment_materializations (
+          item_id, attachment_selector, status, last_error_code, object_key,
+          sha256, declared_content_type, detected_content_type, declared_size,
+          stored_size, created_at, updated_at, expires_at, deleted_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(item_id, attachment_selector) do update set
+          status = excluded.status,
+          last_error_code = excluded.last_error_code,
+          object_key = excluded.object_key,
+          sha256 = excluded.sha256,
+          declared_content_type = excluded.declared_content_type,
+          detected_content_type = excluded.detected_content_type,
+          declared_size = excluded.declared_size,
+          stored_size = excluded.stored_size,
+          updated_at = excluded.updated_at,
+          expires_at = excluded.expires_at,
+          deleted_at = excluded.deleted_at
+        `,
+        materializationParams(record),
+      );
+      return true;
+    });
+    if (written) {
+      this.persist();
+    }
+    return written;
+  }
+
+  finishEmailAttachmentMaterialization(
+    inboxId: string,
+    record: EmailAttachmentMaterialization,
+  ): boolean {
+    const written = this.inTransaction(() => {
+      const itemStillExists = this.getOne(
+        "select 1 from inbox_items where inbox_id = ? and item_id = ?",
+        [inboxId, record.itemId],
+      );
+      if (!itemStillExists) {
+        return false;
+      }
+      const result = this.run(
+        `
+        update email_attachment_materializations
+        set status = ?, last_error_code = ?, object_key = ?, sha256 = ?,
+            declared_content_type = ?, detected_content_type = ?,
+            declared_size = ?, stored_size = ?, updated_at = ?, expires_at = ?,
+            deleted_at = ?
+        where item_id = ? and attachment_selector = ?
+        `,
+        [
+          record.status,
+          record.lastErrorCode,
+          record.objectKey,
+          record.sha256,
+          record.declaredContentType,
+          record.detectedContentType,
+          record.declaredSize,
+          record.storedSize,
+          record.updatedAt,
+          record.expiresAt,
+          record.deletedAt,
+          record.itemId,
+          record.attachmentSelector,
+        ],
+      );
+      return result.changes > 0;
+    });
+    if (written) {
+      this.persist();
+    }
+    return written;
+  }
+
+  sumAvailableEmailAttachmentBytes(
+    itemId: string,
+    excludeAttachmentSelector?: string,
+  ): number {
+    const row = this.getOne(
+      `
+      select coalesce(sum(stored_size), 0) as total
+      from email_attachment_materializations
+      where item_id = ? and status = 'available'
+        ${excludeAttachmentSelector ? "and attachment_selector <> ?" : ""}
+      `,
+      excludeAttachmentSelector ? [itemId, excludeAttachmentSelector] : [itemId],
+    );
+    return Number(row?.total ?? 0);
   }
 
   putEmailBodyCache(record: EmailBodyCacheRecord, maxTotalBytes: number): void {
@@ -2820,6 +2948,27 @@ export class AgentInboxStore {
     };
   }
 
+  private mapEmailAttachmentMaterialization(
+    row: Record<string, unknown>,
+  ): EmailAttachmentMaterialization {
+    return {
+      itemId: requiredText(row, "item_id"),
+      attachmentSelector: requiredText(row, "attachment_selector"),
+      status: requiredText(row, "status") as EmailAttachmentMaterialization["status"],
+      lastErrorCode: row.last_error_code ? String(row.last_error_code) : null,
+      objectKey: row.object_key ? String(row.object_key) : null,
+      sha256: row.sha256 ? String(row.sha256) : null,
+      declaredContentType: row.declared_content_type ? String(row.declared_content_type) : null,
+      detectedContentType: row.detected_content_type ? String(row.detected_content_type) : null,
+      declaredSize: row.declared_size == null ? null : Number(row.declared_size),
+      storedSize: row.stored_size == null ? null : Number(row.stored_size),
+      createdAt: requiredText(row, "created_at"),
+      updatedAt: requiredText(row, "updated_at"),
+      expiresAt: row.expires_at ? String(row.expires_at) : null,
+      deletedAt: row.deleted_at ? String(row.deleted_at) : null,
+    };
+  }
+
   private mapInboxEntry(row: Record<string, unknown>, itemIds: string[]): InboxEntry {
     const base = {
       entryId: formatEntryRef(requiredText(row, "entry_id")),
@@ -3149,6 +3298,10 @@ export class AgentInboxStore {
         itemIds,
       );
       this.run(
+        `delete from email_attachment_materializations where item_id in (${placeholders})`,
+        itemIds,
+      );
+      this.run(
         `delete from digest_thread_items where item_id in (${placeholders})`,
         itemIds,
       );
@@ -3266,6 +3419,25 @@ export class AgentInboxStore {
       updatedAt: String(row.updated_at),
     };
   }
+}
+
+function materializationParams(record: EmailAttachmentMaterialization): unknown[] {
+  return [
+    record.itemId,
+    record.attachmentSelector,
+    record.status,
+    record.lastErrorCode,
+    record.objectKey,
+    record.sha256,
+    record.declaredContentType,
+    record.detectedContentType,
+    record.declaredSize,
+    record.storedSize,
+    record.createdAt,
+    record.updatedAt,
+    record.expiresAt,
+    record.deletedAt,
+  ];
 }
 
 function requiredText(row: Record<string, unknown>, key: string): string {

@@ -94,10 +94,12 @@ import {
   type EmailBodyUxcClient,
 } from "./email_body";
 import {
-  findPublicEmailAttachment,
-  parseEmailAttachmentRef,
   projectPublicInboxEntry,
 } from "./email_attachment";
+import {
+  EmailAttachmentContentManager,
+  type EmailAttachmentContent,
+} from "./email_attachment_content";
 
 const DEFAULT_SUBSCRIPTION_POLL_LIMIT = 100;
 const DEFAULT_ACTIVATION_WINDOW_MS = 3_000;
@@ -190,6 +192,7 @@ export class AgentInboxService {
   private lastLifecycleCleanupAt = 0;
   private lastOfflineAgentGcAt = 0;
   private readonly emailBodyReader: EmailBodyReader;
+  private readonly emailAttachmentContent: EmailAttachmentContentManager;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -212,6 +215,11 @@ export class AgentInboxService {
     this.logger = logger;
     this.activationGate = activationGate ?? new DefaultActivationGate(undefined, undefined, this.logger.child("gate"), gatingPolicy);
     this.emailBodyReader = new EmailBodyReader(store, emailBodyUxcClient);
+    this.emailAttachmentContent = new EmailAttachmentContentManager(
+      store,
+      `${store.getDataDirectory()}/attachments`,
+      emailBodyUxcClient,
+    );
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
@@ -1460,24 +1468,28 @@ export class AgentInboxService {
   }
 
   getInboxEmailAttachment(agentId: string, attachmentRef: string): PublicEmailAttachment {
-    const inbox = this.store.getInboxByAgentId(agentId);
-    const parsed = inbox ? parseEmailAttachmentRef(attachmentRef) : null;
-    const item = parsed && inbox
-      ? this.store.getInboxItemForInbox(inbox.inboxId, parsed.itemId)
-      : null;
-    const source = item ? this.store.getSource(item.sourceId) : null;
-    if (
-      !item
-      || item.eventVariant !== "email.message.received"
-      || source?.sourceType !== "email_mailbox"
-    ) {
-      throw new Error(`unknown inbox attachment: ${attachmentRef}`);
-    }
-    const attachment = findPublicEmailAttachment(item, attachmentRef);
-    if (!attachment) {
-      throw new Error(`unknown inbox attachment: ${attachmentRef}`);
-    }
-    return attachment;
+    return this.emailAttachmentContent.inspect(agentId, attachmentRef);
+  }
+
+  async materializeInboxEmailAttachment(
+    agentId: string,
+    attachmentRef: string,
+  ): Promise<PublicEmailAttachment> {
+    return this.emailAttachmentContent.materialize(agentId, attachmentRef);
+  }
+
+  openInboxEmailAttachmentContent(
+    agentId: string,
+    attachmentRef: string,
+  ): EmailAttachmentContent {
+    return this.emailAttachmentContent.openContent(agentId, attachmentRef);
+  }
+
+  projectPublicInboxEntry<T>(value: T): T {
+    return projectPublicInboxEntry(
+      value,
+      (itemId, selector) => this.store.getEmailAttachmentMaterialization(itemId, selector),
+    );
   }
 
   listRawInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {
@@ -3210,10 +3222,10 @@ export class AgentInboxService {
           items: target.mode === "activation_with_items"
             ? input.entries
               .filter((entry): entry is Extract<InboxEntry, { kind: "item" }> => entry.kind === "item")
-              .map((entry) => projectPublicInboxEntry(entry.item))
+              .map((entry) => this.projectPublicInboxEntry(entry.item))
             : undefined,
           entries: target.mode === "activation_with_items" && input.entries.length > 0
-            ? input.entries.map(projectPublicInboxEntry)
+            ? input.entries.map((entry) => this.projectPublicInboxEntry(entry))
             : undefined,
           createdAt: nowIso(),
           deliveredAt: null,

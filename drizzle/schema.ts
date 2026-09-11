@@ -264,6 +264,28 @@ export const emailBodyCache = sqliteTable("email_body_cache", {
   accessIdx: index("idx_email_body_cache_access").on(table.lastAccessedAt),
 }));
 
+export const emailAttachmentMaterializations = sqliteTable("email_attachment_materializations", {
+  itemId: text("item_id").notNull(),
+  attachmentSelector: text("attachment_selector").notNull(),
+  status: text("status").notNull(),
+  lastErrorCode: text("last_error_code"),
+  objectKey: text("object_key"),
+  sha256: text("sha256"),
+  declaredContentType: text("declared_content_type"),
+  detectedContentType: text("detected_content_type"),
+  declaredSize: integer("declared_size"),
+  storedSize: integer("stored_size"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  expiresAt: text("expires_at"),
+  deletedAt: text("deleted_at"),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.itemId, table.attachmentSelector] }),
+  objectIdx: index("idx_email_attachment_materializations_object").on(table.objectKey),
+  statusIdx: index("idx_email_attachment_materializations_status").on(table.status, table.updatedAt),
+  expiryIdx: index("idx_email_attachment_materializations_expiry").on(table.expiresAt),
+}));
+
 export const digestThreadItems = sqliteTable("digest_thread_items", {
   threadId: text("thread_id").notNull(),
   itemId: text("item_id").notNull(),

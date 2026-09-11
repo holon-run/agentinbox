@@ -14,7 +14,6 @@ import {
   WatchInboxOptions,
 } from "./model";
 import { jsonResponse } from "./util";
-import { projectPublicInboxEntry } from "./email_attachment";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
@@ -1748,7 +1747,7 @@ function buildFastifyServer(service: AgentInboxService) {
         afterEntryId: query.after_entry_id,
         includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
         limit: parseOptionalPositiveInteger(query.limit),
-      }).map(projectPublicInboxEntry),
+      }).map((entry) => service.projectPublicInboxEntry(entry)),
     };
   });
 
@@ -1774,6 +1773,60 @@ function buildFastifyServer(service: AgentInboxService) {
       decodeURIComponent(params.agentId),
       decodeURIComponent(params.attachmentRef),
     );
+  });
+
+  app.post("/agents/:agentId/inbox/attachments/:attachmentRef/materialize", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId", "attachmentRef"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          attachmentRef: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema,
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string; attachmentRef: string };
+    return service.materializeInboxEmailAttachment(
+      decodeURIComponent(params.agentId),
+      decodeURIComponent(params.attachmentRef),
+    );
+  });
+
+  app.get("/agents/:agentId/inbox/attachments/:attachmentRef/content", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId", "attachmentRef"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+          attachmentRef: { type: "string", minLength: 1 },
+        },
+      },
+      response: {
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request, reply) => {
+    const params = request.params as { agentId: string; attachmentRef: string };
+    const content = service.openInboxEmailAttachmentContent(
+      decodeURIComponent(params.agentId),
+      decodeURIComponent(params.attachmentRef),
+    );
+    return reply
+      .type(content.contentType)
+      .header("content-length", String(content.size))
+      .header("content-disposition", attachmentContentDisposition(content.attachment.filename))
+      .header("cache-control", "private, no-store")
+      .send(content.stream);
   });
 
   app.get("/agents/:agentId/inbox/entries/:entryId/body", {
@@ -1897,13 +1950,13 @@ function buildFastifyServer(service: AgentInboxService) {
 
     const session = service.watchInbox(agentId, watchOptions, (event) => {
       sendSse(raw, event.event, event.event === "items"
-        ? { ...event, entries: event.entries.map(projectPublicInboxEntry) }
+        ? { ...event, entries: event.entries.map((entry) => service.projectPublicInboxEntry(entry)) }
         : event);
     });
     sendSse(raw, "items", {
       event: "items",
       agentId,
-      entries: session.initialItems.map(projectPublicInboxEntry),
+      entries: session.initialItems.map((entry) => service.projectPublicInboxEntry(entry)),
     });
     session.start();
 
@@ -2221,6 +2274,16 @@ function buildFastifyServer(service: AgentInboxService) {
       void reply.code(403).send({ error: message });
       return;
     }
+    const statusCode = (error as { statusCode?: unknown }).statusCode;
+    if (
+      typeof statusCode === "number"
+      && Number.isInteger(statusCode)
+      && statusCode >= 400
+      && statusCode < 600
+    ) {
+      void reply.code(statusCode).send({ error: message });
+      return;
+    }
     if (isBadRequestError(message)) {
       void reply.code(400).send({ error: message });
       return;
@@ -2272,6 +2335,19 @@ function optionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function attachmentContentDisposition(filename: string | null): string {
+  if (!filename) {
+    return "attachment";
+  }
+  const sanitized = filename.replace(/[\r\n]/g, "").trim();
+  if (!sanitized) {
+    return "attachment";
+  }
+  const encoded = encodeURIComponent(sanitized)
+    .replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename*=UTF-8''${encoded}`;
 }
 
 function assertDeliveryRouteAuthorized(

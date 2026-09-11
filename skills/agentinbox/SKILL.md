@@ -137,8 +137,18 @@ agentinbox inbox read --agent-id <agentId>
 agentinbox inbox read <entryId> --agent-id <agentId>
 # Continue only when body.hasMore is true:
 agentinbox inbox read <entryId> --agent-id <agentId> --cursor <nextCursor>
+# Inspect safe email attachment metadata without downloading:
+agentinbox inbox attachment inspect <attachmentRef> --agent-id <agentId>
+# For a source configured with attachmentPolicy.mode=store_reference:
+agentinbox inbox attachment get <attachmentRef> --agent-id <agentId> --output ./attachment.bin
 agentinbox inbox ack --agent-id <agentId> --through <lastEntryId>
 ```
+
+Email attachment refs are selectors, not bearer credentials. Always pass the
+owning `agentId`; AgentInbox rechecks inbox ownership before and after provider
+retrieval. The CLI writes `--output` locally with exclusive creation, while the
+daemon stores only managed content-addressed objects and never accepts caller
+filesystem paths.
 
 Ack discipline:
 
