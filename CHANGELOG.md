@@ -10,6 +10,14 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-15
+
+### Added
+
+- Email provider polling can now use POST requests with a structured JSON
+  request body, enabling providers such as JMAP while preserving existing GET
+  and IMAP behavior (#249).
+
 ## [1.8.0] - 2026-09-11
 
 ### Added
