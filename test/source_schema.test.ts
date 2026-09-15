@@ -20,3 +20,10 @@ test("getSourceSchema exposes local and remote source schemas", () => {
   assert.equal(remote.sourceType, "remote_source");
   assert.ok(remote.configFields.some((field) => field.name === "modulePath" && field.required === true));
 });
+
+test("getSourceSchema exposes email provider poll request fields", () => {
+  const email = getSourceSchema("email_mailbox");
+
+  assert.ok(email.configFields.some((field) => field.name === "method" && field.type === "string"));
+  assert.ok(email.configFields.some((field) => field.name === "requestBody" && field.type === "object"));
+});

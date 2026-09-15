@@ -24,6 +24,7 @@ export const GMAIL_MESSAGES_ENDPOINT = "https://gmail.googleapis.com/gmail/v1/us
 export const GRAPH_MESSAGES_ENDPOINT = "https://graph.microsoft.com/v1.0/me/messages?$expand=attachments";
 
 export type EmailMailboxProvider = "imap" | "gmail" | "graph" | "jmap";
+export type EmailProviderPollMethod = "get" | "post";
 export type EmailAttachmentPolicyMode = "metadata" | "store_reference";
 
 export interface EmailAttachmentPolicy {
@@ -51,6 +52,8 @@ export interface EmailMailboxSourceConfig {
   pollIntervalSecs: number;
   /** First-look backfill depth: 0 = new mail only, 1..100, default 25. */
   initialFetchLimit: number;
+  method: EmailProviderPollMethod;
+  requestBody?: Record<string, unknown>;
   smtpEndpoint?: string;
   fromAddress?: string;
   addressAllowlist?: string[];
@@ -154,6 +157,26 @@ export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailbo
 
   const addressAllowlist = asStringArray(config.addressAllowlist ?? config.addressAllowList);
   const attachmentPolicy = parseEmailAttachmentPolicy(config.attachmentPolicy ?? config.attachment_policy);
+  const methodRaw = config.method;
+  let method: EmailProviderPollMethod = "get";
+  if (methodRaw !== undefined && methodRaw !== null) {
+    if (typeof methodRaw !== "string" || !["get", "post"].includes(methodRaw.trim().toLowerCase())) {
+      throw new Error(`email_mailbox config.method must be get or post; got ${String(methodRaw)}`);
+    }
+    method = methodRaw.trim().toLowerCase() as EmailProviderPollMethod;
+  }
+
+  const requestBodyRaw = config.requestBody;
+  let requestBody: Record<string, unknown> | undefined;
+  if (requestBodyRaw !== undefined && requestBodyRaw !== null) {
+    if (typeof requestBodyRaw !== "object" || Array.isArray(requestBodyRaw)) {
+      throw new Error("email_mailbox config.requestBody must be a JSON object when provided");
+    }
+    if (method !== "post") {
+      throw new Error("email_mailbox config.requestBody requires config.method=post");
+    }
+    requestBody = requestBodyRaw as Record<string, unknown>;
+  }
 
   return {
     provider: provider as EmailMailboxProvider,
@@ -163,6 +186,8 @@ export function parseEmailMailboxSourceConfig(source: SourceStream): EmailMailbo
     mailbox,
     pollIntervalSecs,
     initialFetchLimit,
+    method,
+    ...(requestBody ? { requestBody } : {}),
     ...(smtpEndpoint ? { smtpEndpoint } : {}),
     ...(fromAddress ? { fromAddress } : {}),
     ...(addressAllowlist && addressAllowlist.length > 0 ? { addressAllowlist } : {}),
@@ -244,7 +269,9 @@ export function buildEmailMailboxSourceSpec(config: EmailMailboxSourceConfig): M
     transport_hint: "email_provider_poll",
     args: {
       provider: config.provider,
+      method: config.method,
       ...args,
+      ...(config.requestBody ? { body: config.requestBody } : {}),
     },
     poll_config: pollConfig,
     options: {

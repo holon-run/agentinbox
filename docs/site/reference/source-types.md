@@ -115,6 +115,18 @@ when the source is created (integer `0..100`, default `25`):
 The setting applies to both transports (`imap` and `gmail`/`graph`/`jmap`
 polling). Later polls are unaffected: they always deliver new mail.
 
+Provider polling uses `method: "get"` by default. POST-only APIs such as JMAP
+can set `method: "post"` and provide a JSON object in `requestBody`; AgentInbox
+passes both values to the UXC `email-provider-poll` transport:
+
+```bash
+agentinbox source add <host_id> message_events jmap-primary \
+  --config-json '{"provider":"jmap","endpoint":"https://mail.example.com/jmap/api","uxcAuth":"jmap-primary","account":"user@example.com","method":"post","requestBody":{"using":["urn:ietf:params:jmap:core","urn:ietf:params:jmap:mail"],"methodCalls":[["Email/get",{"accountId":"account-1","ids":["email-1"]},"fetch"]]}}'
+```
+
+`requestBody` requires `method: "post"`. Both fields apply only to provider
+polling and are ignored by the IMAP idle transport.
+
 Useful normalized `message_events` metadata includes:
 
 - `from` / `fromName` / `to` / `subject` / `textPreview`
