@@ -142,6 +142,8 @@ test("parseEmailMailboxSourceConfig validates provider, endpoint, and auth", () 
   assert.equal(config.uxcAuth, "email-primary");
   assert.equal(config.mailbox, "INBOX");
   assert.equal(config.pollIntervalSecs, 60);
+  assert.equal(config.method, "get");
+  assert.equal(config.requestBody, undefined);
   assert.equal(config.smtpEndpoint, "smtp://localhost:2525");
   assert.equal(config.fromAddress, "bot@example.com");
 
@@ -155,6 +157,15 @@ test("parseEmailMailboxSourceConfig validates provider, endpoint, and auth", () 
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, initialFetchLimit: 2.5 })), /initialFetchLimit/);
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, smtpEndpoint: "smtps://x:465" })), /smtp:\/\//);
   assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ provider: "jmap", uxcAuth: "x" })), /jmap requires config\.endpoint/);
+  assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, method: "put" })), /config\.method/);
+  assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, requestBody: {} })), /requires config\.method=post/);
+  assert.throws(() => parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, method: "post", requestBody: [] })), /JSON object/);
+
+  const postConfig = parseEmailMailboxSourceConfig(
+    emailSource({ ...imapConfig, method: "POST", requestBody: { methodCalls: [] } }),
+  );
+  assert.equal(postConfig.method, "post");
+  assert.deepEqual(postConfig.requestBody, { methodCalls: [] });
 
   const gmailDefaults = parseEmailMailboxSourceConfig(emailSource({ provider: "gmail", uxcAuth: "gmail-oauth" }));
   assert.equal(gmailDefaults.endpoint, "https://gmail.googleapis.com/gmail/v1/users/me/messages");
@@ -175,6 +186,17 @@ test("buildEmailMailboxSourceSpec emits imap idle stream spec", () => {
     parseEmailMailboxSourceConfig(emailSource({ ...imapConfig, initialFetchLimit: 0 })),
   );
   assert.equal(zeroBackfill.args?.initial_fetch_limit, 0);
+
+  const ignoredProviderPollConfig = buildEmailMailboxSourceSpec(
+    parseEmailMailboxSourceConfig(
+      emailSource({ ...imapConfig, method: "post", requestBody: { methodCalls: [] } }),
+    ),
+  );
+  assert.deepEqual(ignoredProviderPollConfig.args, {
+    mailbox: "INBOX",
+    account: "user@example.com",
+    initial_fetch_limit: 25,
+  });
 });
 
 test("buildEmailMailboxSourceSpec emits provider poll spec with uid checkpointing", () => {
@@ -183,7 +205,7 @@ test("buildEmailMailboxSourceSpec emits provider poll spec with uid checkpointin
   );
   assert.equal(spec.mode, "poll");
   assert.equal(spec.transport_hint, "email_provider_poll");
-  assert.deepEqual(spec.args, { provider: "gmail", mailbox: "INBOX" });
+  assert.deepEqual(spec.args, { provider: "gmail", method: "get", mailbox: "INBOX" });
   const pollConfig = spec.poll_config as EmailPollSubscriptionConfig | undefined;
   assert.equal(pollConfig?.initial_items_limit, 25);
   assert.deepEqual(spec.poll_config, {
@@ -193,6 +215,33 @@ test("buildEmailMailboxSourceSpec emits provider poll spec with uid checkpointin
     checkpoint_strategy: { type: "item_key", item_key_pointer: "/message/uid" },
   });
   assert.deepEqual(spec.options, { auth: "gmail-oauth", artifact_compaction: false });
+});
+
+test("buildEmailMailboxSourceSpec passes POST method and request body to provider poll", () => {
+  const requestBody = {
+    using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+    methodCalls: [["Email/get", { accountId: "account-1", ids: ["email-1"] }, "fetch"]],
+  };
+  const spec = buildEmailMailboxSourceSpec(
+    parseEmailMailboxSourceConfig(
+      emailSource({
+        provider: "jmap",
+        endpoint: "https://mail.example.com/jmap/api",
+        uxcAuth: "jmap-primary",
+        account: "user@example.com",
+        method: "post",
+        requestBody,
+      }),
+    ),
+  );
+
+  assert.deepEqual(spec.args, {
+    provider: "jmap",
+    method: "post",
+    mailbox: "INBOX",
+    account: "user@example.com",
+    body: requestBody,
+  });
 });
 
 test("normalizeEmailMailboxEvent maps imap email_event to inbox item", () => {

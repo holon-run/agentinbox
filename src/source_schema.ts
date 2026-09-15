@@ -235,6 +235,8 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "mailbox", type: "string", required: false, description: "Mailbox to watch; defaults to INBOX." },
       { name: "pollIntervalSecs", type: "number", required: false, description: "Provider poll interval in seconds (min 15, default 60)." },
       { name: "initialFetchLimit", type: "number", required: false, description: "First-look backfill depth: 0 = new mail only, max 100, default 25." },
+      { name: "method", type: "string", required: false, description: "Provider poll HTTP method: get (default) or post; ignored for imap." },
+      { name: "requestBody", type: "object", required: false, description: "JSON request body for provider polling; requires method=post and is ignored for imap." },
       { name: "smtpEndpoint", type: "string", required: false, description: "Default smtp:// endpoint for outbound reply/send delivery." },
       { name: "fromAddress", type: "string", required: false, description: "Default outbound From address for delivery." },
       { name: "addressAllowlist", type: "string[]", required: false, description: "Optional from/to address allowlist applied before inbox routing." },
