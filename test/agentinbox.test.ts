@@ -3250,6 +3250,68 @@ test("github bursts materialize digest snapshot entries when inbox aggregation i
   }
 });
 
+test("github activation summaries include actionable pull request details", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { service, store, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const agent = await service.registerAgent({
+      runtimeKind: "codex",
+      backend: "tmux",
+      tmuxPaneId: "%github-summary",
+    });
+    service.addWebhookActivationTarget(agent.agent.agentId, {
+      url: "http://127.0.0.1:9999/github-summary",
+      activationMode: "activation_with_items",
+    });
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/holon",
+      config: { owner: "holon-run", repo: "holon" },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: {},
+      cleanupPolicy: { mode: "manual" },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "github-pr-42-opened",
+      eventVariant: "PullRequestEvent.opened",
+      metadata: {
+        repoFullName: "holon-run/holon",
+        number: 42,
+        isPullRequest: true,
+        action: "opened",
+        title: "Add detailed activation summaries",
+        author: "alice",
+        url: "https://github.com/holon-run/holon/pull/42",
+      },
+      rawPayload: { id: "github-pr-42-opened", type: "PullRequestEvent", action: "opened" },
+    });
+
+    await service.pollSubscription(subscription.subscriptionId);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.equal(dispatcher.calls.length, 1);
+    const summary = dispatcher.calls[0]?.activation.summary ?? "";
+    assert.match(summary, new RegExp(`^1 new item for agent ${agent.agent.agentId} from `));
+    assert.match(summary, /github_repo:holon-run\/holon PR #42 opened/);
+    assert.match(summary, /"Add detailed activation summaries" by @alice/);
+    assert.match(summary, /https:\/\/github\.com\/holon-run\/holon\/pull\/42$/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("acking an older digest snapshot rematerializes a newer visible snapshot", async () => {
   const { service, store } = await makeService();
   try {
