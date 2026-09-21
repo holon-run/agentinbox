@@ -256,6 +256,32 @@ test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha a
   assert.match(timedOutDecision.reason ?? "", /hard timeout/);
 });
 
+test("decideGithubCiDigestFlush keeps a run terminal when later items arrive out of order", () => {
+  const items = [
+    ciActivationItem({
+      itemId: "itm_ci_terminal_first",
+      occurredAt: "2026-04-06T10:00:10Z",
+      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+    }),
+    ciActivationItem({
+      itemId: "itm_ci_stale_queued",
+      occurredAt: "2026-04-06T10:00:40Z",
+      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "queued" },
+    }),
+  ];
+  const decision = decideGithubCiDigestFlush(items, CI_DIGEST_CONFIG, {
+    threadCreatedAt: "2026-04-06T10:00:00Z",
+    lastItemAt: "2026-04-06T10:00:40Z",
+    now: "2026-04-06T10:01:00Z",
+  });
+  assert.equal(decision.flush, true);
+  assert.match(decision.reason ?? "", /all runs terminal/);
+
+  const summary = summarizeGithubCiDigestThread(items);
+  assert.match(summary ?? "", /1 passed/);
+  assert.doesNotMatch(summary ?? "", /still running/);
+});
+
 test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
   const summary = summarizeGithubCiDigestThread([
     ciActivationItem({

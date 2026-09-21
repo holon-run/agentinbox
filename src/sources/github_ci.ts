@@ -513,7 +513,11 @@ export function decideGithubCiDigestFlush(
       }
       const status = asString(item.metadata.status);
       const conclusion = asString(item.metadata.conclusion);
-      runTerminal.set(runId, status === "completed" || Boolean(conclusion));
+      // Sticky terminal: out-of-order delivery or timestamp skew must never
+      // downgrade a run that was already observed terminal back to pending,
+      // which would defer the flush until the hard timeout.
+      const observedTerminal = status === "completed" || Boolean(conclusion);
+      runTerminal.set(runId, (runTerminal.get(runId) ?? false) || observedTerminal);
     }
     let pending = 0;
     for (const terminal of runTerminal.values()) {
@@ -561,7 +565,9 @@ export function summarizeGithubCiDigestThread(items: ActivationItem[]): string |
     const previous = runs.get(runId) ?? { name: null, conclusion: null };
     runs.set(runId, {
       name: asString(item.metadata.name) ?? previous.name,
-      conclusion: asString(item.metadata.conclusion) ?? previous.conclusion,
+      // Sticky conclusion: keep the first observed terminal conclusion so
+      // out-of-order items cannot rewrite a run's reported outcome.
+      conclusion: previous.conclusion ?? asString(item.metadata.conclusion),
     });
   }
   const failed: string[] = [];
