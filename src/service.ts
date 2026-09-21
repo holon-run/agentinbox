@@ -2006,7 +2006,12 @@ export class AgentInboxService {
             source,
             subscriptionId: subscription.subscriptionId,
             item,
-            summary: summarizeSourceEvent(source.sourceType, source.sourceKey, event.eventVariant),
+            summary: summarizeSourceEvent(
+              source.sourceType,
+              source.sourceKey,
+              event.eventVariant,
+              event.metadata,
+            ),
           });
           insertedEntries.push(...entries);
           for (const entry of entries) {
@@ -4572,7 +4577,32 @@ function extractHttpStatus(error: unknown): number | null {
   return null;
 }
 
-function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVariant: string): string {
+function summarizeSourceEvent(
+  sourceType: string,
+  sourceKey: string,
+  eventVariant: string,
+  metadata: Record<string, unknown> = {},
+): string {
+  if (sourceType === "github_repo") {
+    const repo = asNonEmptyString(metadata.repoFullName) ?? sourceKey;
+    const number = typeof metadata.number === "number" && Number.isInteger(metadata.number)
+      ? metadata.number
+      : null;
+    const isPullRequest = metadata.isPullRequest === true;
+    const resource = number == null ? null : `${isPullRequest ? "PR" : "Issue"} #${number}`;
+    const action = asNonEmptyString(metadata.action) ?? eventVariant.split(".")[1] ?? "updated";
+    const title = asNonEmptyString(metadata.title);
+    const author = asNonEmptyString(metadata.author);
+    const url = asNonEmptyString(metadata.url);
+    const details = [
+      resource,
+      action,
+      title ? `"${truncateSummary(title, 160)}"` : null,
+      author ? `by @${author}` : null,
+      url,
+    ].filter((value): value is string => value != null);
+    return `${sourceType}:${repo}${details.length > 0 ? ` ${details.join(" ")}` : `:${eventVariant}`}`;
+  }
   if (sourceType === "github_repo_ci") {
     const parts = eventVariant.split(".");
     const [, second, third, fourth] = parts;
@@ -4593,6 +4623,21 @@ function summarizeSourceEvent(sourceType: string, sourceKey: string, eventVarian
     return summaryParts.join(":");
   }
   return `${sourceType}:${sourceKey}:${eventVariant}`;
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function truncateSummary(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
 function summarizeDirectInboxMessage(sender: string | null): string {
