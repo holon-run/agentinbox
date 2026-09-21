@@ -473,6 +473,28 @@ export interface NotificationGrouping {
   eventFamily?: string | null;
   summaryHint?: string | null;
   flushClass?: "normal" | "immediate";
+  /**
+   * Per-family quiet window hint (milliseconds) used when re-arming the digest
+   * thread flush deadline after an append. Falls back to the inbox aggregation
+   * window when absent.
+   */
+  flushDelayMs?: number | null;
+}
+
+export interface DigestThreadFlushContext {
+  threadCreatedAt: string;
+  lastItemAt: string;
+  now: string;
+}
+
+export interface DigestFlushDecision {
+  flush: boolean;
+  reason?: string | null;
+  /**
+   * When `flush` is false, how long the service should wait before checking
+   * this thread again.
+   */
+  recheckAfterMs?: number | null;
 }
 
 export interface Activation {

@@ -5,6 +5,8 @@ import {
   DeliveryRequest,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  DigestFlushDecision,
+  DigestThreadFlushContext,
   FollowTemplateSpec,
   NotificationGrouping,
   ResolvedSourceIdentity,
@@ -293,6 +295,17 @@ export class AdapterRegistry {
       return null;
     }
     return this.remoteSource.summarizeDigestThread(source, items, grouping);
+  }
+
+  async shouldFlushDigestThread(
+    source: SourceStream,
+    items: ActivationItem[],
+    context: DigestThreadFlushContext,
+  ): Promise<DigestFlushDecision | null> {
+    if (source.sourceType === "local_event") {
+      return null;
+    }
+    return this.remoteSource.shouldFlushDigestThread(source, items, context);
   }
 
   async listDeliveryOperations(

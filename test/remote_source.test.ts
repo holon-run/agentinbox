@@ -324,6 +324,8 @@ test("github_repo source uses remote runtime builtin module mapping", async () =
       runtimeSessionId: "remote-github-thread",
       tmuxPaneId: "%901",
     });
+    // Raw item materialization assertions; opt out of the now-default digest aggregation.
+    service.updateInboxAggregationPolicy(agent.agent.agentId, { enabled: false });
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
@@ -402,6 +404,8 @@ test("github_repo source materializes PullRequestReviewEvent items for PR filter
       runtimeSessionId: "remote-github-review-thread",
       tmuxPaneId: "%903",
     });
+    // Raw review event assertions; opt out of digest aggregation.
+    service.updateInboxAggregationPolicy(agent.agent.agentId, { enabled: false });
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
@@ -464,6 +468,8 @@ test("github_repo pull request subscriptions retire through the generic lifecycl
       runtimeSessionId: "remote-github-lifecycle-thread",
       tmuxPaneId: "%904",
     });
+    // Terminal lifecycle assertions read the raw closed event; opt out of digest aggregation.
+    service.updateInboxAggregationPolicy(agent.agent.agentId, { enabled: false });
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
