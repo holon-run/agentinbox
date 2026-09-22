@@ -6,9 +6,16 @@ import assert from "node:assert/strict";
 import { AgentInboxStore } from "../src/store";
 import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
-import { AppendSourceEventInput, SourceStream } from "../src/model";
+import { ActivationItem, AppendSourceEventInput, SourceStream } from "../src/model";
 import { nowIso } from "../src/util";
-import { GithubActionsUxcClient, GithubCiSourceRuntime, normalizeGithubWorkflowRunEvent } from "../src/sources/github_ci";
+import {
+  GithubActionsUxcClient,
+  GithubCiSourceRuntime,
+  decideGithubCiDigestFlush,
+  deriveGithubCiNotificationGrouping,
+  normalizeGithubWorkflowRunEvent,
+  summarizeGithubCiDigestThread,
+} from "../src/sources/github_ci";
 import { TerminalDispatcher } from "../src/terminal";
 
 class FakeGithubActionsClient {
@@ -124,6 +131,200 @@ test("normalizeGithubWorkflowRunEvent falls back to observed status and display 
   assert.deepEqual(normalized?.metadata?.pullRequestNumbers, []);
 });
 
+function ciActivationItem(overrides: {
+  itemId?: string;
+  occurredAt?: string;
+  metadata?: Record<string, unknown>;
+}): ActivationItem {
+  return {
+    itemId: overrides.itemId ?? "itm_ci_digest",
+    sourceId: "src_ci_digest",
+    sourceNativeId: "workflow_run:1001",
+    eventVariant: "workflow_run.ci.completed.failure",
+    inboxId: "inb_ci_digest",
+    occurredAt: overrides.occurredAt ?? "2026-04-06T10:00:00Z",
+    metadata: overrides.metadata ?? {},
+    rawPayload: {},
+  };
+}
+
+const CI_DIGEST_CONFIG = {
+  owner: "holon-run",
+  repo: "agentinbox",
+  uxcAuth: "github-default",
+  perPage: 20,
+};
+
+test("deriveGithubCiNotificationGrouping groups workflow runs at the pull request level", () => {
+  const prGrouping = deriveGithubCiNotificationGrouping(
+    ciActivationItem({
+      metadata: {
+        workflowRunId: 1001,
+        repoFullName: "holon-run/agentinbox",
+        headSha: "sha-pr-72",
+        pullRequestNumbers: [72],
+        status: "completed",
+        conclusion: "failure",
+      },
+    }),
+    CI_DIGEST_CONFIG,
+  );
+  assert.ok(prGrouping?.groupable);
+  assert.equal(prGrouping?.resourceRef, "pr:holon-run/agentinbox#72");
+  assert.equal(prGrouping?.eventFamily, "ci_updates");
+  assert.equal(prGrouping?.flushClass, "immediate");
+  assert.equal(prGrouping?.flushDelayMs, 120_000);
+
+  const successGrouping = deriveGithubCiNotificationGrouping(
+    ciActivationItem({
+      metadata: {
+        workflowRunId: 1002,
+        repoFullName: "holon-run/agentinbox",
+        headSha: "sha-pr-72",
+        pullRequestNumbers: [72],
+        status: "queued",
+      },
+    }),
+    CI_DIGEST_CONFIG,
+  );
+  assert.equal(successGrouping?.flushClass, "normal");
+
+  const pushGrouping = deriveGithubCiNotificationGrouping(
+    ciActivationItem({
+      metadata: {
+        workflowRunId: 1003,
+        repoFullName: "holon-run/agentinbox",
+        headSha: "sha-main",
+        pullRequestNumbers: [],
+      },
+    }),
+    CI_DIGEST_CONFIG,
+  );
+  assert.equal(pushGrouping?.resourceRef, "push:holon-run/agentinbox:sha-main");
+  assert.equal(pushGrouping?.summaryHint, "CI updates for holon-run/agentinbox@sha-mai");
+
+  assert.equal(
+    deriveGithubCiNotificationGrouping(ciActivationItem({ metadata: { headSha: "sha-orphan" } }), CI_DIGEST_CONFIG),
+    null,
+  );
+});
+
+test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha and honors the hard timeout", () => {
+  const pendingItems = [
+    ciActivationItem({
+      itemId: "itm_ci_completed",
+      occurredAt: "2026-04-06T10:00:00Z",
+      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+    }),
+    ciActivationItem({
+      itemId: "itm_ci_running",
+      occurredAt: "2026-04-06T10:00:30Z",
+      metadata: { workflowRunId: 1002, headSha: "sha-pr-72", status: "in_progress" },
+    }),
+  ];
+  const pendingDecision = decideGithubCiDigestFlush(pendingItems, CI_DIGEST_CONFIG, {
+    threadCreatedAt: "2026-04-06T10:00:00Z",
+    lastItemAt: "2026-04-06T10:00:30Z",
+    now: "2026-04-06T10:01:00Z",
+  });
+  assert.equal(pendingDecision.flush, false);
+  assert.match(pendingDecision.reason ?? "", /1 run\(s\) still pending/);
+  assert.equal(pendingDecision.recheckAfterMs, 30_000);
+
+  const terminalDecision = decideGithubCiDigestFlush(
+    pendingItems.map((item) =>
+      item.itemId === "itm_ci_running"
+        ? { ...item, metadata: { ...item.metadata, status: "completed", conclusion: "success" } }
+        : item,
+    ),
+    CI_DIGEST_CONFIG,
+    {
+      threadCreatedAt: "2026-04-06T10:00:00Z",
+      lastItemAt: "2026-04-06T10:00:30Z",
+      now: "2026-04-06T10:01:00Z",
+    },
+  );
+  assert.equal(terminalDecision.flush, true);
+  assert.match(terminalDecision.reason ?? "", /all runs terminal/);
+
+  const timedOutDecision = decideGithubCiDigestFlush(pendingItems, CI_DIGEST_CONFIG, {
+    threadCreatedAt: "2026-04-06T09:00:00Z",
+    lastItemAt: "2026-04-06T10:00:30Z",
+    now: "2026-04-06T10:10:00Z",
+  });
+  assert.equal(timedOutDecision.flush, true);
+  assert.match(timedOutDecision.reason ?? "", /hard timeout/);
+});
+
+test("decideGithubCiDigestFlush keeps a run terminal when later items arrive out of order", () => {
+  const items = [
+    ciActivationItem({
+      itemId: "itm_ci_terminal_first",
+      occurredAt: "2026-04-06T10:00:10Z",
+      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+    }),
+    ciActivationItem({
+      itemId: "itm_ci_stale_queued",
+      occurredAt: "2026-04-06T10:00:40Z",
+      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "queued" },
+    }),
+  ];
+  const decision = decideGithubCiDigestFlush(items, CI_DIGEST_CONFIG, {
+    threadCreatedAt: "2026-04-06T10:00:00Z",
+    lastItemAt: "2026-04-06T10:00:40Z",
+    now: "2026-04-06T10:01:00Z",
+  });
+  assert.equal(decision.flush, true);
+  assert.match(decision.reason ?? "", /all runs terminal/);
+
+  const summary = summarizeGithubCiDigestThread(items);
+  assert.match(summary ?? "", /1 passed/);
+  assert.doesNotMatch(summary ?? "", /still running/);
+});
+
+test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
+  const summary = summarizeGithubCiDigestThread([
+    ciActivationItem({
+      metadata: {
+        workflowRunId: 1001,
+        repoFullName: "holon-run/agentinbox",
+        headSha: "sha-pr-72",
+        pullRequestNumbers: [72],
+        name: "CI",
+        status: "completed",
+        conclusion: "success",
+      },
+    }),
+    ciActivationItem({
+      itemId: "itm_ci_fail",
+      occurredAt: "2026-04-06T10:00:30Z",
+      metadata: {
+        workflowRunId: 1002,
+        repoFullName: "holon-run/agentinbox",
+        headSha: "sha-pr-72",
+        pullRequestNumbers: [72],
+        name: "Web E2E",
+        status: "completed",
+        conclusion: "failure",
+      },
+    }),
+    ciActivationItem({
+      itemId: "itm_ci_skip",
+      occurredAt: "2026-04-06T10:01:00Z",
+      metadata: {
+        workflowRunId: 1003,
+        repoFullName: "holon-run/agentinbox",
+        headSha: "sha-pr-72",
+        pullRequestNumbers: [72],
+        name: "Docs",
+        status: "completed",
+        conclusion: "skipped",
+      },
+    }),
+  ]);
+  assert.equal(summary, "CI for holon-run/agentinbox#72: 3 workflow runs on sha-pr-, 1 failed: Web E2E (failure), 2 passed");
+});
+
 test("github_repo_ci subscriptions can filter by pull request numbers", async () => {
   const { store, service, dir } = await makeService();
   try {
@@ -150,6 +351,9 @@ test("github_repo_ci subscriptions can filter by pull request numbers", async ()
       runtimeSessionId: "github-ci-pr-filter-thread",
       tmuxPaneId: "%203",
     });
+    // These assertions verify raw item metadata for subscription filtering;
+    // opt out of the now-default digest aggregation.
+    service.updateInboxAggregationPolicy(agent.agent.agentId, { enabled: false });
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
@@ -237,6 +441,8 @@ test("github_repo_ci subscriptions can fall back to head branch and repository w
       runtimeSessionId: "github-ci-expr-filter-thread",
       tmuxPaneId: "%204",
     });
+    // Raw metadata fallback assertions; opt out of digest aggregation.
+    service.updateInboxAggregationPolicy(agent.agent.agentId, { enabled: false });
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,
@@ -317,6 +523,8 @@ test("github_repo_ci source runtime appends workflow run events and subscription
       runtimeSessionId: "github-ci-thread",
       tmuxPaneId: "%202",
     });
+    // Raw event materialization assertions; opt out of digest aggregation.
+    service.updateInboxAggregationPolicy(agent.agent.agentId, { enabled: false });
     const subscription = await service.registerSubscription({
       agentId: agent.agent.agentId,
       sourceId: source.sourceId,

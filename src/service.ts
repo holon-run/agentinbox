@@ -118,6 +118,7 @@ const DEFAULT_IDLE_SOURCE_GRACE_MS = 30 * 60 * 1000;
 const DEFAULT_INBOX_AGGREGATION_WINDOW_MS = 30 * 1000;
 const DEFAULT_INBOX_AGGREGATION_MAX_ITEMS = 20;
 const DEFAULT_INBOX_AGGREGATION_MAX_THREAD_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_DIGEST_THREAD_RECHECK_MS = 30_000;
 const DIRECT_INBOX_SOURCE_ID = "__agentinbox_direct_text__";
 const DIRECT_INBOX_EVENT_VARIANT = "agentinbox.direct_text_message";
 const TIMER_INBOX_SOURCE_ID = "__agentinbox_timer__";
@@ -1673,7 +1674,12 @@ export class AgentInboxService {
       this.store.closeDigestThread(thread.threadId, now);
       thread = null;
     }
-    const flushAfterAt = new Date(Date.now() + (policy.windowMs ?? DEFAULT_INBOX_AGGREGATION_WINDOW_MS)).toISOString();
+    const groupingFlushDelayMs = grouping.flushDelayMs != null && grouping.flushDelayMs >= 0
+      ? grouping.flushDelayMs
+      : null;
+    const flushAfterAt = new Date(
+      Date.now() + (groupingFlushDelayMs ?? policy.windowMs ?? DEFAULT_INBOX_AGGREGATION_WINDOW_MS),
+    ).toISOString();
     if (!thread) {
       thread = this.store.createDigestThread({
         inboxId: input.inbox.inboxId,
@@ -2383,6 +2389,7 @@ export class AgentInboxService {
     const inbox: Inbox = {
       inboxId: generateCanonicalId("inb"),
       ownerAgentId: agentId,
+      aggregationEnabled: true,
       createdAt: nowIso(),
     };
     this.store.insertInbox(inbox);
@@ -3742,6 +3749,28 @@ export class AgentInboxService {
         if (!source) {
           this.store.closeDigestThread(thread.threadId, now);
           continue;
+        }
+        const pendingItems = this.store.listUnackedInboxItemsForDigestThread(thread.threadId);
+        if (pendingItems.length > 0) {
+          const decision = await this.adapters.shouldFlushDigestThread(
+            source,
+            pendingItems.map((item) => activationItemFromInboxItem(item)),
+            {
+              threadCreatedAt: thread.createdAt,
+              lastItemAt: thread.lastItemAt,
+              now,
+            },
+          );
+          if (decision && !decision.flush) {
+            const recheckAfterMs = decision.recheckAfterMs != null && decision.recheckAfterMs > 0
+              ? decision.recheckAfterMs
+              : DEFAULT_DIGEST_THREAD_RECHECK_MS;
+            this.store.updateDigestThreadFlushAfterAt(
+              thread.threadId,
+              new Date(Date.parse(now) + recheckAfterMs).toISOString(),
+            );
+            continue;
+          }
         }
         const entry = await this.flushDigestThread(source, thread.threadId);
         if (!entry) {

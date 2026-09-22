@@ -2289,6 +2289,18 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapDigestThread(row));
   }
 
+  updateDigestThreadFlushAfterAt(threadId: string, flushAfterAt: string | null): void {
+    this.run(
+      `
+      update digest_threads
+      set flush_after_at = ?, updated_at = ?
+      where thread_id = ? and status = 'open'
+      `,
+      [flushAfterAt, nowIso(), threadId],
+    );
+    this.persist();
+  }
+
   materializeDigestSnapshot(input: {
     threadId: string;
     inboxId: string;

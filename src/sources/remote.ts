@@ -8,6 +8,8 @@ import {
 import {
   ActivationItem,
   AppendSourceEventInput,
+  DigestFlushDecision,
+  DigestThreadFlushContext,
   FollowTemplateSpec,
   NotificationGrouping,
   SourceOperationDescriptor,
@@ -407,6 +409,21 @@ export class RemoteSourceRuntime {
       return null;
     }
     return module.deriveNotificationGrouping(item, moduleInputSource(source));
+  }
+
+  async shouldFlushDigestThread(
+    source: SourceStream,
+    items: ActivationItem[],
+    context: DigestThreadFlushContext,
+  ): Promise<DigestFlushDecision | null> {
+    if (!REMOTE_SOURCE_TYPES.has(source.sourceType)) {
+      return null;
+    }
+    const module = await this.moduleRegistry.resolve(source, this.homeDir);
+    if (typeof module.shouldFlushDigestThread !== "function") {
+      return null;
+    }
+    return module.shouldFlushDigestThread(items, moduleInputSource(source), context);
   }
 
   async summarizeDigestThread(

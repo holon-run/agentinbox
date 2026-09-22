@@ -9,6 +9,8 @@ import {
   DeliveryAttempt,
   DeliveryHandle,
   DeliveryOperationDescriptor,
+  DigestFlushDecision,
+  DigestThreadFlushContext,
   FollowTemplateSpec,
   NotificationGrouping,
   RegisterSourceInput,
@@ -37,9 +39,12 @@ import {
 import {
   DEFAULT_GITHUB_CI_PER_PAGE,
   DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS,
+  decideGithubCiDigestFlush,
+  deriveGithubCiNotificationGrouping,
   GITHUB_CI_ENDPOINT,
   normalizeGithubWorkflowRunEvent,
   parseGithubCiSourceConfig,
+  summarizeGithubCiDigestThread,
 } from "./github_ci";
 import {
   FEISHU_OPENAPI_ENDPOINT,
@@ -202,6 +207,11 @@ export interface RemoteSourceModule {
   projectLifecycleSignal?(rawPayload: Record<string, unknown>, source: SourceStream): LifecycleSignal | null;
   deriveInlinePreview?(item: ActivationItem, source: SourceStream): string | null;
   deriveNotificationGrouping?(item: ActivationItem, source: SourceStream): NotificationGrouping | null;
+  shouldFlushDigestThread?(
+    items: ActivationItem[],
+    source: SourceStream,
+    context: DigestThreadFlushContext,
+  ): DigestFlushDecision | null | Promise<DigestFlushDecision | null>;
   listDeliveryOperations?(input: ListDeliveryOperationsInput): DeliveryOperationDescriptor[];
   invokeDeliveryOperation?(input: InvokeDeliveryOperationInput): Promise<{ status: DeliveryAttempt["status"]; note: string }>;
   listSourceOperations?(input: ListSourceOperationsInput): SourceOperationDescriptor[];
@@ -325,6 +335,7 @@ function validateModuleContract(module: RemoteSourceModule, sourcePath: string):
   validateOptionalHook(module.projectLifecycleSignal, "projectLifecycleSignal", sourcePath);
   validateOptionalHook(module.deriveInlinePreview, "deriveInlinePreview", sourcePath);
   validateOptionalHook(module.deriveNotificationGrouping, "deriveNotificationGrouping", sourcePath);
+  validateOptionalHook(module.shouldFlushDigestThread, "shouldFlushDigestThread", sourcePath);
   validateOptionalHook(module.listDeliveryOperations, "listDeliveryOperations", sourcePath);
   validateOptionalHook(module.invokeDeliveryOperation, "invokeDeliveryOperation", sourcePath);
   validateOptionalHook(module.listSourceOperations, "listSourceOperations", sourcePath);
@@ -611,26 +622,22 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
 
     return parts.join(" ");
   },
-  deriveNotificationGrouping(item: ActivationItem): NotificationGrouping | null {
-    const workflowRunId = typeof item.metadata.workflowRunId === "number" ? item.metadata.workflowRunId : null;
-    if (!workflowRunId) {
-      return null;
-    }
-    const conclusion = asNonEmptyString(item.metadata.conclusion);
-    const status = asNonEmptyString(item.metadata.status);
-    return {
-      groupable: true,
-      resourceRef: `workflow_run:${workflowRunId}`,
-      eventFamily: "ci_updates",
-      summaryHint: `CI updates for run #${workflowRunId}`,
-      flushClass: conclusion || status === "completed" ? "immediate" : "normal",
-    };
+  deriveNotificationGrouping(item: ActivationItem, source: SourceStream): NotificationGrouping | null {
+    return deriveGithubCiNotificationGrouping(item, parseGithubCiSourceConfig(source));
+  },
+  shouldFlushDigestThread(
+    items: ActivationItem[],
+    source: SourceStream,
+    context: DigestThreadFlushContext,
+  ): DigestFlushDecision | null {
+    return decideGithubCiDigestFlush(items, parseGithubCiSourceConfig(source), context);
   },
   summarizeDigestThread(items: ActivationItem[], _source: SourceStream, grouping: NotificationGrouping): string | null {
-    if (!grouping.summaryHint || items.length === 0) {
+    if (items.length === 0) {
       return null;
     }
-    return `${items.length} ${grouping.summaryHint}`;
+    return summarizeGithubCiDigestThread(items)
+      ?? (grouping.summaryHint ? `${items.length} ${grouping.summaryHint}` : null);
   },
   validateConfig(source: SourceStream): void {
     parseGithubCiSourceConfig(source);

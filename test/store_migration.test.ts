@@ -16,6 +16,7 @@ const EXPECTED_MIGRATION_TAGS = [
   "0006_email_body_cache",
   "0007_email_attachment_materializations",
   "0008_email_attachment_audit",
+  "0009_inbox_aggregation_default_on",
 ];
 
 async function createLegacyDb(dbPath: string): Promise<void> {
@@ -415,10 +416,11 @@ test("store prunes old pre-migration backups beyond AGENTINBOX_MIGRATION_BACKUP_
     store = await AgentInboxStore.open(dbPath, {
       env: { ...process.env, AGENTINBOX_MIGRATION_BACKUP_KEEP: "3" },
     });
+    const backupVersion = (name: string) =>
+      Number(name.match(/\.pre-migrate-v(\d+)\.bak$/)?.[1] ?? 0);
     const remaining = fs.readdirSync(dir)
       .filter((name) => name.includes(".pre-migrate-v"))
-      .sort()
-      .reverse();
+      .sort((a, b) => backupVersion(b) - backupVersion(a));
     assert.deepEqual(remaining, [
       `${baseName}.pre-migrate-v${EXPECTED_MIGRATION_TAGS.length}.bak`,
       `${baseName}.pre-migrate-v5.bak`,

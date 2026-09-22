@@ -1,10 +1,22 @@
 import { UxcDaemonClient } from "@holon-run/uxc-daemon-client";
-import { AppendSourceEventInput, SourcePollResult, SourceStream } from "../model";
+import {
+  ActivationItem,
+  AppendSourceEventInput,
+  DigestFlushDecision,
+  DigestThreadFlushContext,
+  NotificationGrouping,
+  SourcePollResult,
+  SourceStream,
+} from "../model";
 import { AgentInboxStore } from "../store";
 
 export const GITHUB_CI_ENDPOINT = "https://api.github.com";
 export const DEFAULT_GITHUB_CI_POLL_INTERVAL_SECS = 30;
 export const DEFAULT_GITHUB_CI_PER_PAGE = 20;
+export const DEFAULT_GITHUB_CI_DIGEST_QUIET_WINDOW_SECS = 120;
+export const DEFAULT_GITHUB_CI_DIGEST_FLUSH_TIMEOUT_SECS = 60 * 60;
+const GITHUB_CI_DIGEST_RECHECK_MS = 30_000;
+const GITHUB_CI_DIGEST_MIN_RECHECK_MS = 1_000;
 const MAX_PAGES_PER_SYNC = 10;
 const MAX_SEEN_KEYS = 512;
 const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
@@ -18,6 +30,8 @@ export interface GithubCiSourceConfig {
   eventFilter?: string;
   branch?: string;
   statusFilter?: string;
+  digestQuietWindowSecs?: number;
+  digestFlushTimeoutSecs?: number;
 }
 
 interface GithubCiSourceCheckpoint {
@@ -385,6 +399,8 @@ export function parseGithubCiSourceConfig(source: SourceStream): GithubCiSourceC
       eventFilter: asString(config.eventFilter) ?? undefined,
       branch: asString(config.branch) ?? undefined,
       statusFilter: asString(config.statusFilter) ?? undefined,
+      digestQuietWindowSecs: asNumber(config.digestQuietWindowSecs) ?? undefined,
+      digestFlushTimeoutSecs: asNumber(config.digestFlushTimeoutSecs) ?? undefined,
     };
   }
   return {
@@ -396,7 +412,220 @@ export function parseGithubCiSourceConfig(source: SourceStream): GithubCiSourceC
     eventFilter: asString(config.eventFilter) ?? undefined,
     branch: asString(config.branch) ?? undefined,
     statusFilter: asString(config.statusFilter) ?? undefined,
+    digestQuietWindowSecs: asNumber(config.digestQuietWindowSecs) ?? undefined,
+    digestFlushTimeoutSecs: asNumber(config.digestFlushTimeoutSecs) ?? undefined,
   };
+}
+
+export function githubCiDigestQuietWindowMs(config: GithubCiSourceConfig): number {
+  return Math.max(0, (config.digestQuietWindowSecs ?? DEFAULT_GITHUB_CI_DIGEST_QUIET_WINDOW_SECS) * 1000);
+}
+
+export function githubCiDigestFlushTimeoutMs(config: GithubCiSourceConfig): number {
+  return Math.max(0, (config.digestFlushTimeoutSecs ?? DEFAULT_GITHUB_CI_DIGEST_FLUSH_TIMEOUT_SECS) * 1000);
+}
+
+function firstPullRequestNumber(item: ActivationItem): number | null {
+  const numbers = item.metadata.pullRequestNumbers;
+  if (!Array.isArray(numbers)) {
+    return null;
+  }
+  for (const number of numbers) {
+    if (typeof number === "number" && Number.isInteger(number) && number > 0) {
+      return number;
+    }
+  }
+  return null;
+}
+
+/**
+ * Groups workflow-run notifications at the pull-request level so a push that
+ * fans out into many workflow runs produces one digest thread per PR instead
+ * of one per run. Runs without a PR association fall back to per-push grouping
+ * by head sha.
+ */
+export function deriveGithubCiNotificationGrouping(
+  item: ActivationItem,
+  config: GithubCiSourceConfig,
+): NotificationGrouping | null {
+  const workflowRunId = asNumber(item.metadata.workflowRunId);
+  if (!workflowRunId) {
+    return null;
+  }
+  const repoFullName = asString(item.metadata.repoFullName) ?? `${config.owner}/${config.repo}`;
+  const headSha = asString(item.metadata.headSha);
+  const prNumber = firstPullRequestNumber(item);
+  const resourceRef = prNumber != null
+    ? `pr:${repoFullName}#${prNumber}`
+    : headSha
+      ? `push:${repoFullName}:${headSha}`
+      : null;
+  if (!resourceRef) {
+    return null;
+  }
+  const conclusion = asString(item.metadata.conclusion);
+  const actionableFailure = Boolean(conclusion) && conclusion !== "success" && conclusion !== "skipped";
+  return {
+    groupable: true,
+    resourceRef,
+    eventFamily: "ci_updates",
+    summaryHint: prNumber != null
+      ? `CI updates for ${repoFullName}#${prNumber}`
+      : `CI updates for ${repoFullName}@${shortSha(headSha)}`,
+    flushClass: actionableFailure ? "immediate" : "normal",
+    flushDelayMs: githubCiDigestQuietWindowMs(config),
+  };
+}
+
+/**
+ * Post-hoc flush decision for a PR-level CI digest thread: flush once every
+ * workflow run observed for the thread's latest head sha has reached a
+ * terminal state (or the hard timeout expires). GitHub exposes no prior about
+ * how many runs a push will create, so readiness is judged from the observed
+ * event stream itself.
+ */
+export function decideGithubCiDigestFlush(
+  items: ActivationItem[],
+  config: GithubCiSourceConfig,
+  context: DigestThreadFlushContext,
+): DigestFlushDecision {
+  if (items.length === 0) {
+    return { flush: true, reason: "no pending items" };
+  }
+  const ordered = orderItemsByOccurredAt(items);
+  const latestSha = latestHeadSha(ordered);
+  if (!latestSha) {
+    return { flush: true, reason: "no head sha" };
+  }
+  const nowMs = Date.parse(context.now);
+  const createdMs = Date.parse(context.threadCreatedAt);
+  const timeoutMs = githubCiDigestFlushTimeoutMs(config);
+  const timedOut = Number.isFinite(nowMs) && Number.isFinite(createdMs) && nowMs - createdMs >= timeoutMs;
+  if (!timedOut) {
+    const runTerminal = new Map<number, boolean>();
+    for (const item of ordered) {
+      if (asString(item.metadata.headSha) !== latestSha) {
+        continue;
+      }
+      const runId = asNumber(item.metadata.workflowRunId);
+      if (!runId) {
+        continue;
+      }
+      const status = asString(item.metadata.status);
+      const conclusion = asString(item.metadata.conclusion);
+      // Sticky terminal: out-of-order delivery or timestamp skew must never
+      // downgrade a run that was already observed terminal back to pending,
+      // which would defer the flush until the hard timeout.
+      const observedTerminal = status === "completed" || Boolean(conclusion);
+      runTerminal.set(runId, (runTerminal.get(runId) ?? false) || observedTerminal);
+    }
+    let pending = 0;
+    for (const terminal of runTerminal.values()) {
+      if (!terminal) {
+        pending += 1;
+      }
+    }
+    if (pending > 0) {
+      const remaining = createdMs + timeoutMs - nowMs;
+      const recheckAfterMs = Number.isFinite(remaining)
+        ? Math.min(GITHUB_CI_DIGEST_RECHECK_MS, Math.max(GITHUB_CI_DIGEST_MIN_RECHECK_MS, remaining))
+        : GITHUB_CI_DIGEST_RECHECK_MS;
+      return {
+        flush: false,
+        reason: `${pending} run(s) still pending on ${shortSha(latestSha)}`,
+        recheckAfterMs,
+      };
+    }
+  }
+  return {
+    flush: true,
+    reason: timedOut ? `hard timeout on ${shortSha(latestSha)}` : `all runs terminal on ${shortSha(latestSha)}`,
+  };
+}
+
+export function summarizeGithubCiDigestThread(items: ActivationItem[]): string | null {
+  if (items.length === 0) {
+    return null;
+  }
+  const ordered = orderItemsByOccurredAt(items);
+  let repoFullName: string | null = null;
+  let prNumber: number | null = null;
+  let latestSha: string | null = null;
+  for (const item of ordered) {
+    repoFullName = asString(item.metadata.repoFullName) ?? repoFullName;
+    prNumber = firstPullRequestNumber(item) ?? prNumber;
+    latestSha = asString(item.metadata.headSha) ?? latestSha;
+  }
+  const runs = new Map<number, { name: string | null; conclusion: string | null }>();
+  for (const item of ordered) {
+    const runId = asNumber(item.metadata.workflowRunId);
+    if (!runId) {
+      continue;
+    }
+    const previous = runs.get(runId) ?? { name: null, conclusion: null };
+    runs.set(runId, {
+      name: asString(item.metadata.name) ?? previous.name,
+      // Sticky conclusion: keep the first observed terminal conclusion so
+      // out-of-order items cannot rewrite a run's reported outcome.
+      conclusion: previous.conclusion ?? asString(item.metadata.conclusion),
+    });
+  }
+  const failed: string[] = [];
+  let passed = 0;
+  let running = 0;
+  for (const run of runs.values()) {
+    if (run.conclusion === "success" || run.conclusion === "skipped") {
+      passed += 1;
+    } else if (run.conclusion) {
+      failed.push(run.name ? `${run.name} (${run.conclusion})` : run.conclusion);
+    } else {
+      running += 1;
+    }
+  }
+  const target = repoFullName
+    ? prNumber != null
+      ? `${repoFullName}#${prNumber}`
+      : latestSha
+        ? `${repoFullName}@${shortSha(latestSha)}`
+        : repoFullName
+    : "repository";
+  const parts = [`${runs.size} workflow runs on ${shortSha(latestSha)}`];
+  if (failed.length > 0) {
+    const shown = failed.slice(0, 3).join(", ");
+    parts.push(`${failed.length} failed: ${shown}${failed.length > 3 ? ", …" : ""}`);
+  }
+  if (passed > 0) {
+    parts.push(`${passed} passed`);
+  }
+  if (running > 0) {
+    parts.push(`${running} still running`);
+  }
+  return `CI for ${target}: ${parts.join(", ")}`;
+}
+
+function orderItemsByOccurredAt(items: ActivationItem[]): ActivationItem[] {
+  return [...items].sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+}
+
+function latestHeadSha(orderedItems: ActivationItem[]): string | null {
+  let latestSha: string | null = null;
+  let latestAt = Number.NaN;
+  for (const item of orderedItems) {
+    const sha = asString(item.metadata.headSha);
+    if (!sha) {
+      continue;
+    }
+    const at = Date.parse(item.occurredAt);
+    if (latestSha == null || (!Number.isNaN(at) && (Number.isNaN(latestAt) || at >= latestAt))) {
+      latestSha = sha;
+      latestAt = at;
+    }
+  }
+  return latestSha;
+}
+
+function shortSha(sha: string | null): string {
+  return sha ? sha.slice(0, 7) : "unknown";
 }
 
 function parseGithubCiCheckpoint(checkpoint: string | null | undefined): GithubCiSourceCheckpoint {
