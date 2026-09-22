@@ -10,6 +10,23 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-22
+
+### Added
+
+- GitHub CI events for the same pull request or commit now converge into a
+  single digest activation per cycle instead of one activation per workflow
+  status transition; raw inbox items are still persisted in full and digest
+  threads stay open for incremental updates (#254).
+- GitHub activation notifications now include an actionable summary with
+  repository, PR or issue number, action, title, author, and URL, with safe
+  fallbacks for malformed metadata (#253).
+
+### Changed
+
+- Success-path CI digests now wait for a short quiet window before flushing so
+  multi-workflow runs settle into one notification per cycle (#254).
+
 ## [1.8.1] - 2026-09-15
 
 ### Added
