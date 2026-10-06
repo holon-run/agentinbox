@@ -4651,6 +4651,35 @@ function summarizeSourceEvent(
     }
     return summaryParts.join(":");
   }
+  if (sourceType === "email_mailbox") {
+    const sender = asNonEmptyString(metadata.from);
+    const senderName = asNonEmptyString(metadata.fromName);
+    const senderLabel = senderName && sender
+      ? `${senderName} <${sender}>`
+      : senderName ?? sender;
+    const subject = asNonEmptyString(metadata.subject);
+    const textPreview = asNonEmptyString(metadata.textPreview);
+    const attachmentCount = typeof metadata.attachmentCount === "number"
+      && Number.isInteger(metadata.attachmentCount)
+      && metadata.attachmentCount > 0
+      ? metadata.attachmentCount
+      : null;
+    const hasAttachments = metadata.hasAttachments === true || attachmentCount !== null;
+    const attachmentLabel = hasAttachments
+      ? attachmentCount === 1
+        ? "1 attachment"
+        : attachmentCount !== null
+          ? `${attachmentCount} attachments`
+          : "attachments"
+      : null;
+    const details = [
+      senderLabel ? `from ${senderLabel}` : null,
+      subject ? `"${truncateSummary(compactSummaryText(subject), 160)}"` : null,
+      textPreview ? `— ${truncateSummary(compactSummaryText(textPreview), 240)}` : null,
+      attachmentLabel ? `with ${attachmentLabel}` : null,
+    ].filter((value): value is string => value != null);
+    return `${sourceType}:${sourceKey}${details.length > 0 ? ` ${details.join(" ")}` : `:${eventVariant}`}`;
+  }
   return `${sourceType}:${sourceKey}:${eventVariant}`;
 }
 
@@ -4667,6 +4696,10 @@ function truncateSummary(value: string, maxChars: number): string {
     return value;
   }
   return `${value.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function compactSummaryText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function summarizeDirectInboxMessage(sender: string | null): string {
