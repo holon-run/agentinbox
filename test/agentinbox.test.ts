@@ -3312,6 +3312,72 @@ test("github activation summaries include actionable pull request details", asyn
   }
 });
 
+test("email activation summaries include actionable message details", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { service, store, dir } = await makeService({
+    dispatcher,
+    activationWindowMs: 10,
+    activationMaxItems: 1,
+  });
+  try {
+    const agent = await service.registerAgent({
+      runtimeKind: "codex",
+      backend: "tmux",
+      tmuxPaneId: "%email-summary",
+    });
+    service.addWebhookActivationTarget(agent.agent.agentId, {
+      url: "http://127.0.0.1:9999/email-summary",
+      activationMode: "activation_with_items",
+    });
+    const source = await service.registerSource({
+      sourceType: "email_mailbox",
+      sourceKey: "email-primary",
+      config: {
+        provider: "imap",
+        endpoint: "imaps://imap.example.com:993",
+        uxcAuth: "email-primary",
+        account: "user@example.com",
+      },
+    });
+    const subscription = await service.registerSubscription({
+      agentId: agent.agent.agentId,
+      sourceId: source.sourceId,
+      filter: {},
+      cleanupPolicy: { mode: "manual" },
+      startPolicy: "earliest",
+    });
+
+    await service.appendSourceEvent({
+      sourceId: source.sourceId,
+      sourceNativeId: "email-message-42",
+      eventVariant: "email.message.received",
+      metadata: {
+        from: "alice@example.org",
+        fromName: "Alice",
+        subject: "Quarterly report",
+        textPreview: "Please review the attached report",
+        hasAttachments: true,
+        attachmentCount: 1,
+      },
+      rawPayload: { type: "email_event", event_kind: "message_received" },
+    });
+
+    await service.pollSubscription(subscription.subscriptionId);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    assert.equal(dispatcher.calls.length, 1);
+    const summary = dispatcher.calls[0]?.activation.summary ?? "";
+    assert.match(summary, new RegExp(`^1 new item for agent ${agent.agent.agentId} from `));
+    assert.match(summary, /email_mailbox:email-primary from Alice <alice@example\.org>/);
+    assert.match(summary, /"Quarterly report"/);
+    assert.match(summary, /— Please review the attached report with 1 attachment$/);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("acking an older digest snapshot rematerializes a newer visible snapshot", async () => {
   const { service, store } = await makeService();
   try {
