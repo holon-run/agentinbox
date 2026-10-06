@@ -10,6 +10,13 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-10-06
+
+### Added
+
+- Email activation notifications now include the sender, subject, body
+  preview, and attachment count when available (#256).
+
 ## [1.9.0] - 2026-09-22
 
 ### Added
