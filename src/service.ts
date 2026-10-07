@@ -4658,7 +4658,6 @@ function summarizeSourceEvent(
       ? `${senderName} <${sender}>`
       : senderName ?? sender;
     const subject = asNonEmptyString(metadata.subject);
-    const textPreview = asNonEmptyString(metadata.textPreview);
     const attachmentCount = typeof metadata.attachmentCount === "number"
       && Number.isInteger(metadata.attachmentCount)
       && metadata.attachmentCount > 0
@@ -4675,7 +4674,6 @@ function summarizeSourceEvent(
     const details = [
       senderLabel ? `from ${senderLabel}` : null,
       subject ? `"${truncateSummary(compactSummaryText(subject), 160)}"` : null,
-      textPreview ? `— ${truncateSummary(compactSummaryText(textPreview), 240)}` : null,
       attachmentLabel ? `with ${attachmentLabel}` : null,
     ].filter((value): value is string => value != null);
     return `${sourceType}:${sourceKey}${details.length > 0 ? ` ${details.join(" ")}` : `:${eventVariant}`}`;

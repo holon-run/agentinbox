@@ -3370,7 +3370,8 @@ test("email activation summaries include actionable message details", async () =
     assert.match(summary, new RegExp(`^1 new item for agent ${agent.agent.agentId} from `));
     assert.match(summary, /email_mailbox:email-primary from Alice <alice@example\.org>/);
     assert.match(summary, /"Quarterly report"/);
-    assert.match(summary, /— Please review the attached report with 1 attachment$/);
+    assert.match(summary, /with 1 attachment$/);
+    assert.doesNotMatch(summary, /Please review the attached report/);
   } finally {
     await service.stop();
     store.close();
