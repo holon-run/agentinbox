@@ -80,7 +80,7 @@ async function fixture(config: Record<string, unknown> = {}) {
     instance: AgentInboxService,
     workflowId: number,
     conclusion: string | null,
-    options: { attempt?: number; sha?: string; status?: string } = {},
+    options: { attempt?: number; sha?: string; status?: string; createdAt?: string; updatedAt?: string } = {},
   ) {
     sequence += 1;
     const event = normalizeGithubWorkflowRunEvent(source, sourceConfig, {
@@ -92,8 +92,8 @@ async function fixture(config: Record<string, unknown> = {}) {
       conclusion,
       name: `workflow-${workflowId}`,
       pull_requests: [{ number: 42 }],
-      created_at: now,
-      updated_at: new Date(Date.parse(now) + sequence).toISOString(),
+      created_at: options.createdAt ?? now,
+      updated_at: options.updatedAt ?? new Date(Date.parse(now) + sequence).toISOString(),
     });
     assert.ok(event);
     await instance.appendSourceEvent(event);
@@ -343,6 +343,38 @@ test("CI materialization failure does not consume first-failure notification eli
     fs.rmSync(f.dir, { recursive: true, force: true });
   }
 });
+
+for (const generation of ["new SHA", "rerun"] as const) {
+  test(`CI ${generation} without a committed snapshot gets its own timeout`, async () => {
+    const f = await fixture({ digestFlushTimeoutSecs: 1 });
+    try {
+      await f.append(f.service, 11, null);
+      await f.internal.syncPendingDigestThreads(true);
+      const thread = f.store.listOpenDigestThreads()[0]!;
+      assert.equal(f.store.getDigestNotificationState(thread.inboxId, thread.groupKey), null);
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const startedAt = new Date().toISOString();
+      await f.append(f.service, generation === "new SHA" ? 22 : 11, null,
+        generation === "new SHA"
+          ? { sha: "nextsha123456", createdAt: startedAt, updatedAt: startedAt }
+          : { attempt: 2, updatedAt: startedAt });
+      await f.internal.syncPendingDigestThreads(true);
+      assert.equal(f.service.listInboxItems(f.agentId).length, 0,
+        "an uncommitted generation must not inherit the old thread's timeout");
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      await f.internal.syncPendingDigestThreads(true);
+      const entries = f.service.listInboxItems(f.agentId);
+      assert.equal(entries.length, 1, "rechecks must not keep resetting the generation timeout");
+      assert.match(entries[0]!.summary, /incomplete/);
+      await f.internal.syncPendingDigestThreads(true);
+      assert.equal(f.service.listInboxItems(f.agentId)[0]!.entryId, entries[0]!.entryId);
+    } finally {
+      await f.service.stop();
+      f.store.close();
+      fs.rmSync(f.dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("CI unknown expected set reports incomplete at timeout, never complete success", async () => {
   const f = await fixture({ expectedWorkflowIds: undefined, digestFlushTimeoutSecs: 1 });

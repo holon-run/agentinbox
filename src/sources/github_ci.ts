@@ -699,6 +699,7 @@ function mergeGithubCiEvidence(
   let state: GithubCiNotificationState | null = persisted.version === 1 && typeof persisted.headSha === "string"
       && Array.isArray(persisted.runs)
     ? structuredClone(persisted) as GithubCiNotificationState : null;
+  const uncommitted = !state;
   const incoming = items.map(evidenceFromItem).filter((run): run is GithubCiRunEvidence => Boolean(run))
     .sort((a, b) => timestamp(a.createdAt) - timestamp(b.createdAt)
       || a.runId - b.runId || a.attempt - b.attempt || timestamp(a.updatedAt) - timestamp(b.updatedAt));
@@ -713,13 +714,25 @@ function mergeGithubCiEvidence(
     state = {
       version: 1, headSha: newest.headSha, headCreatedAt: newest.createdAt,
       headRunId: newest.runId,
-      generation: 1, startedAt: state ? newest.createdAt : context.threadCreatedAt, runs: [],
+      generation: 1,
+      startedAt: state ? newest.createdAt
+        : incoming.find((run) => run.headSha === newest.headSha)?.createdAt || context.threadCreatedAt,
+      runs: [],
     };
   }
   if (!state) {
     return null;
   }
   const baseline = new Map(state.runs.map((run) => [evidenceKey(run), run]));
+  // Before any snapshot is committed, unacked evidence is the only baseline.
+  // Replay it from the first observation to recover SHA/run/attempt changes.
+  if (uncommitted) {
+    for (const run of incoming) {
+      if (run.headSha === state.headSha && !baseline.has(evidenceKey(run))) {
+        baseline.set(evidenceKey(run), run);
+      }
+    }
+  }
   const runs = new Map(baseline);
   for (const next of incoming) {
     if (next.headSha !== state.headSha) {
@@ -750,22 +763,21 @@ function mergeGithubCiEvidence(
       state.headRunId = next.runId;
     }
   }
-  const rerun = [...runs].some(([key, run]) => {
-    const previous = baseline.get(key);
-    return previous && (run.runId !== previous.runId || run.attempt > previous.attempt);
+  const generationEvents = incoming.filter((run) => {
+    const previous = baseline.get(evidenceKey(run));
+    const selected = runs.get(evidenceKey(run));
+    return run.headSha === state.headSha && selected?.runId === run.runId
+      && selected.attempt === run.attempt && previous
+      && (run.runId !== previous.runId || run.attempt > previous.attempt
+        || (uncommitted && run.attempt > 1));
   });
-  if (rerun) {
+  if (generationEvents.length > 0) {
     state.generation += 1;
     // Pending decisions do not persist state. Use the first evidence of this
     // generation, not evaluation time, or every recheck resets the timeout.
-    const generationEvents = incoming.filter((run) => {
-      const previous = baseline.get(evidenceKey(run));
-      const selected = runs.get(evidenceKey(run));
-      return selected?.runId === run.runId && selected.attempt === run.attempt && previous
-        && (run.runId !== previous.runId || run.attempt > previous.attempt);
-    });
     state.startedAt = generationEvents.map((run) =>
-      baseline.get(evidenceKey(run))?.runId === run.runId ? run.updatedAt : run.createdAt)
+      (uncommitted ? run.attempt > 1 : baseline.get(evidenceKey(run))?.runId === run.runId)
+        ? run.updatedAt : run.createdAt)
       .sort((a, b) => timestamp(a) - timestamp(b))[0] ?? context.threadCreatedAt;
     delete state.phase;
     delete state.firstFingerprint;

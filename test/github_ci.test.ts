@@ -406,6 +406,68 @@ test("CI policy timeout is stable while a new attempt or SHA waits without a com
   assert.match(shaTimeout.summary ?? "", /incomplete.*missing workflows: 20/);
 });
 
+for (const scenario of ["new SHA", "new attempt", "new attempt without prior evidence"]) {
+  test(`CI policy starts the timeout from ${scenario} when no snapshot was committed`, () => {
+    const oldRun = policyRun(1, 10, null);
+    const context = { ...CI_CONTEXT, notificationState: null };
+    const oldPending = decideGithubCiDigestFlush([oldRun], CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T10:58:00Z",
+    });
+    assert.equal(oldPending.flush, false);
+    assert.equal(oldPending.notificationState, undefined);
+    const generationStartedAt = "2026-04-06T10:59:00Z";
+    const metadata = scenario === "new SHA"
+      ? { headSha: "sha-next", createdAt: generationStartedAt, updatedAt: generationStartedAt }
+      : { runAttempt: 2, updatedAt: generationStartedAt };
+    const newRun = policyRun(scenario === "new SHA" ? 2 : 1, 10, null, metadata);
+    const items = scenario === "new attempt without prior evidence" ? [newRun] : [oldRun, newRun];
+    const pending = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:00:00Z",
+    });
+    assert.equal(pending.flush, false, "a new generation must not inherit the old thread's timeout");
+    assert.equal(pending.recheckAfterMs, 30_000);
+    const updatedItems = [...items, policyRun(scenario === "new SHA" ? 2 : 1, 10, null, {
+      ...metadata, updatedAt: "2026-04-06T11:01:00Z",
+    })];
+    assert.equal(decideGithubCiDigestFlush(updatedItems, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:58:00Z",
+    }).flush, false);
+    const timeout = decideGithubCiDigestFlush(updatedItems, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:59:00Z",
+    });
+    assert.equal(timeout.flush, true, "rechecks must not reset the generation's own hard timeout");
+    assert.match(timeout.summary ?? "", /incomplete/);
+    assert.equal(timeout.notificationState?.startedAt, generationStartedAt);
+  });
+}
+
+for (const attempt of [1, 2]) {
+  test(`CI policy reconstructs same-SHA replacement run attempt ${attempt} before a snapshot exists`, () => {
+    const startedAt = "2026-04-06T10:59:00Z";
+    const replacement = policyRun(2, 10, null, {
+      runAttempt: attempt,
+      createdAt: attempt === 1 ? startedAt : "2026-04-06T10:30:00Z",
+      updatedAt: startedAt,
+    });
+    const items = [policyRun(1, 10, null), replacement];
+    const context = { ...CI_CONTEXT, notificationState: null };
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:00:00Z",
+    }).flush, false, "multiple run IDs must not inherit the original run's timeout");
+    const updatedItems = [...items, policyRun(2, 10, null, {
+      ...replacement.metadata, updatedAt: "2026-04-06T11:01:00Z",
+    })];
+    const timeout = decideGithubCiDigestFlush(updatedItems, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:59:00Z",
+    });
+    assert.equal(timeout.flush, true, "rechecks must not reset the reconstructed timeout");
+    assert.equal(timeout.notificationState?.startedAt, startedAt);
+    assert.equal(timeout.notificationState?.generation, 2);
+    assert.deepEqual((timeout.notificationState?.runs as Array<Record<string, unknown>>)
+      .map((run) => [run.runId, run.attempt]), [[2, attempt]]);
+  });
+}
+
 test("CI policy can advance SHA cycles created within the same timestamp second", () => {
   const first = decideGithubCiDigestFlush(
     [policyRun(1, 10, "failure"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
