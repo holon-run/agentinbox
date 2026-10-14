@@ -81,6 +81,12 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
   github_repo_ci: {
     sourceType: "github_repo_ci",
     metadataFields: [
+      { name: "workflowRunId", type: "number", description: "GitHub workflow run ID." },
+      { name: "workflowId", type: "number|null", description: "GitHub workflow ID used by the explicit notification scope." },
+      { name: "runAttempt", type: "number|null", description: "Workflow run attempt; later attempts supersede earlier outcomes." },
+      { name: "runCreatedAt", type: "string|null", description: "Workflow run creation timestamp; the ordering proof for SHA generations. occurredAt/updated_at alone never prove which SHA is current." },
+      { name: "createdAt", type: "string|null", description: "Compatibility alias of runCreatedAt." },
+      { name: "updatedAt", type: "string|null", description: "Workflow run update timestamp." },
       { name: "name", type: "string|null", description: "Workflow run name." },
       { name: "status", type: "string", description: "Normalized workflow run status." },
       { name: "conclusion", type: "string|null", description: "Workflow run conclusion when completed." },
@@ -107,7 +113,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
         head_commit: { message: "fix ci" },
       },
     ],
-    eventVariantExamples: ["workflow_run.ci.completed.failure", "workflow_run.nightly_checks.observed"],
+    eventVariantExamples: ["workflow_run.ci.completed.failure", "workflow_run.ci.completed.failure.attempt_2", "workflow_run.nightly_checks.observed"],
     configFields: [
       { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
       { name: "repo", type: "string", required: true, description: "GitHub repository name." },
@@ -117,6 +123,9 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "eventFilter", type: "string", required: false, description: "Optional GitHub workflow event filter." },
       { name: "branch", type: "string", required: false, description: "Optional branch filter for workflow runs." },
       { name: "statusFilter", type: "string", required: false, description: "Optional workflow status filter." },
+      { name: "expectedWorkflowIds", type: "number[]", required: false, description: "Unique positive workflow IDs defining the minimum notification completion barrier; all observed runs also participate, and no success claim is made without this explicit set." },
+      { name: "digestQuietWindowSecs", type: "number", required: false, description: "Digest scheduling hint, not proof that all expected workflows were observed." },
+      { name: "digestFlushTimeoutSecs", type: "number", required: false, description: "Hard timeout for an incomplete workflow digest (default 3600 seconds)." },
     ],
   },
   feishu_bot: {

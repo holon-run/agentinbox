@@ -256,6 +256,38 @@ test("CI policy waits for observed extra workflows before certifying success", (
   assert.match(final.summary ?? "", /all expected workflows succeeded.*3 passed/);
 });
 
+test("CI policy corrects a final result for late observed workflows and deduplicates replays", () => {
+  const expected = [policyRun(1, 10, "success"), policyRun(2, 20, "success")];
+  const first = decideGithubCiDigestFlush(expected, CI_BARRIER_CONFIG, CI_CONTEXT);
+  assert.equal(first.flush, true);
+  for (const conclusion of ["success", "failure"]) {
+    for (const timeoutFirst of [false, true]) {
+      let notificationState = JSON.parse(JSON.stringify(first.notificationState));
+      if (timeoutFirst) {
+        const timeout = decideGithubCiDigestFlush(
+          [policyRun(3, 30, null)], CI_BARRIER_CONFIG,
+          { ...CI_CONTEXT, now: "2026-04-06T11:01:00Z", notificationState },
+        );
+        assert.equal(timeout.flush, true);
+        assert.match(timeout.summary ?? "", /incomplete.*1 still running/);
+        notificationState = JSON.parse(JSON.stringify(timeout.notificationState));
+      }
+      const late = policyRun(3, 30, conclusion);
+      const corrected = decideGithubCiDigestFlush(
+        [late], CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState },
+      );
+      assert.equal(corrected.flush, true, `late ${conclusion}, timeout=${timeoutFirst}`);
+      assert.match(corrected.summary ?? "", conclusion === "success" ? /3 passed/ : /1 failed.*2 passed/);
+      const restarted = JSON.parse(JSON.stringify(corrected.notificationState));
+      for (const replay of [[late], [...expected, late], [late, expected[1], expected[0], late]]) {
+        assert.equal(decideGithubCiDigestFlush(
+          replay, CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState: restarted },
+        ).flush, false, "unchanged evidence must not notify again");
+      }
+    }
+  }
+});
+
 test("CI policy admits first actionable failure immediately and retains running evidence across ack", () => {
   const config = { ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10, 20, 30] };
   for (const conclusion of ["failure", "timed_out", "action_required", "startup_failure"]) {

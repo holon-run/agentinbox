@@ -570,7 +570,7 @@ export function decideGithubCiDigestFlush(
       notificationState: state, summary: summarizeCiEvidence(state, "first failure"),
     };
   }
-  if (complete && !state.finalFingerprint) {
+  if (complete && state.finalFingerprint !== fingerprint) {
     state.phase = "final";
     state.finalFingerprint = fingerprint;
     state.notifiedFailures = failures.map(failureEvidenceKey);

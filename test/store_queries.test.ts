@@ -187,7 +187,9 @@ test("digest pending and notification state: existing databases migrate with emp
     const db = new BetterSqlite3(fx.dbPath);
     try {
       db.exec("drop table digest_notification_states");
-      db.prepare("delete from __drizzle_migrations where tag = ?").run("0010_digest_notification_states");
+      db.prepare("delete from __drizzle_migrations where tag in (?, ?)").run(
+        "0010_digest_notification_states", "0011_digest_notification_state_lifecycle",
+      );
       db.pragma("user_version = 10");
     } finally {
       db.close();
@@ -197,6 +199,26 @@ test("digest pending and notification state: existing databases migrate with emp
     assert.equal(store.getDigestNotificationState("digest-inbox", fx.thread.groupKey), null);
     assert.deepEqual(store.getInboxEntry(entry.entryId)!.itemIds, ["one"]);
     assert.equal(store.countPendingInboxItemsForDigestThread(fx.thread.threadId), 0);
+    const state = { phase: "final", fingerprint: "migrated" };
+    store.storeDigestNotificationState("digest-inbox", fx.thread.groupKey, state, "digest-source", fx.now);
+    assert.deepEqual(store.getDigestNotificationState("digest-inbox", fx.thread.groupKey), state);
+    const activityStartedAt = new Date().toISOString();
+    store.addItemToDigestThread(
+      fx.thread.threadId, "one", "2026-10-14T00:02:00.000Z", "activity", fx.now,
+    );
+    store.close();
+    closed = true;
+    const upgraded = new BetterSqlite3(fx.dbPath);
+    try {
+      const row = upgraded.prepare("select source_id, updated_at from digest_notification_states").get() as {
+        source_id: string; updated_at: string;
+      };
+      assert.equal(row.source_id, "digest-source");
+      assert.ok(row.updated_at >= activityStartedAt);
+      assert.ok(row.updated_at > fx.now);
+    } finally {
+      upgraded.close();
+    }
   } finally {
     if (!closed) store.close();
     fs.rmSync(fx.dir, { recursive: true, force: true });
