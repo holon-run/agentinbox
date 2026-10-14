@@ -312,12 +312,31 @@ This is what allows cross-time grouping while still keeping stable snapshots.
 
 ## 7. Flush Rules
 
-The pending burst buffer should flush when any of these happen:
+The pending burst buffer requests a flush when any of these happen:
 
 - `windowMs` expires
 - `maxItems` is reached
 - source/module marks an event as `immediate`
 - host/subscription/agent lifecycle requires cleanup
+
+`maxItems` counts unacked items that have never appeared in a committed
+snapshot of that thread, not its entire unacked backlog. Every snapshot still
+contains the full unacked read set; materialization is not consumption or ack.
+Historical snapshot membership survives superseding and GC while the raw item
+is retained, so restart or partial ack does not turn old items into a new burst.
+
+Both size-triggered and timer-triggered normal flushes consult the source's
+`shouldFlushDigestThread` gate. A forced sweep ignores the due time, not the
+source gate. A denied request preserves pending items and schedules a recheck.
+Explicit `immediate` hints retain their bypass semantics; a normal size
+threshold is not an immediate hint.
+
+Flush attempts for the same inbox/group key are serialized across asynchronous
+source hooks. Before committing, the service revalidates the candidate read
+set. Items arriving during a hook remain pending with a future deadline rather
+than being lost when an older snapshot commits. Ack reconciliation is a
+separate read-model repair path, not permission to publish previously
+unmaterialized items or consume a source notification phase.
 
 The logical thread itself should roll over and start a new thread when:
 
@@ -339,6 +358,7 @@ deriveNotificationGrouping?(item, source, subscription) => {
   eventFamily?: string | null;
   summaryHint?: string | null;
   flushClass?: "normal" | "immediate";
+  evaluateOnAppend?: boolean;
 }
 ```
 
@@ -347,6 +367,41 @@ Later, modules may also provide:
 ```ts
 summarizeDigestThread?(items, context) => string | null
 ```
+
+### Business notification eligibility
+
+A module can request evaluation on every append without bypassing its gate.
+The gate receives optional opaque `notificationState` and can return an
+updated state plus an explicit summary when granting a flush. The service
+persists that state atomically with the snapshot, scoped to inbox/group key
+and independent of thread rollover or raw-item ack. A failed materialization
+must not advance the module's notification boundary. The core does not
+interpret provider-specific phases or status enums.
+
+The GitHub CI module uses this contract for workflow-run notifications:
+
+- the first actionable failure is eligible immediately, even while other
+  workflows are running;
+- a success summary requires an explicitly declared `expectedWorkflowIds`
+  set, all declared workflows present and successful, and no observed
+  outstanding or non-successful run;
+- subsequent failures in the same evaluation are coalesced until the final
+  result; a rerun starts a fresh evaluation and can report recovery;
+- missing or unknown membership cannot be advertised as complete success;
+  the timeout fallback explicitly reports incomplete state;
+- cancelled, skipped and neutral outcomes are not successes;
+- latest-attempt evidence and notification phases survive restart, ack and
+  raw-item GC, and previous head SHAs do not contaminate current results.
+
+The declared set defines this source's success barrier. It does not discover
+every possible conditional workflow or third-party check, and workflow-run
+notification is not per-job real-time monitoring. Existing sources without a
+declared set use the conservative incomplete-timeout path, not the former
+observed-runs-only success inference.
+
+Business eligibility commits a readable snapshot, not successful delivery.
+Existing activation leases may defer a notification: it remains dirty pending
+state and retries at ack/lease expiry, including after daemon restart.
 
 This keeps source semantics at the edge:
 

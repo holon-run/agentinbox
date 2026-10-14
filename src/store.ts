@@ -814,6 +814,7 @@ export class AgentInboxStore {
         this.run("delete from streams where stream_id = ?", [stream.streamId]);
       }
       this.run("delete from source_idle_states where source_id = ?", [sourceId]);
+      this.run("delete from digest_notification_states where source_id = ?", [sourceId]);
       this.run("delete from sources where source_id = ?", [sourceId]);
       const hostId = source.hostId ?? null;
       const siblings = hostId
@@ -2239,6 +2240,18 @@ export class AgentInboxStore {
         `,
         [summary, occurredAt, flushAfterAt, nowIso(), threadId],
       );
+      // Activity belongs to the logical group, not the lifetime of one thread.
+      // Refresh existing deduplication state even when the adapter stays silent.
+      this.run(
+        `
+        update digest_notification_states
+        set updated_at = ?
+        where (inbox_id, group_key) = (
+          select inbox_id, group_key from digest_threads where thread_id = ?
+        )
+        `,
+        [nowIso(), threadId],
+      );
     });
     this.persist();
     return this.getDigestThread(threadId)!;
@@ -2272,6 +2285,113 @@ export class AgentInboxStore {
       [threadId],
     );
     return rows.map((row) => this.mapInboxItem(row));
+  }
+
+  countPendingInboxItemsForDigestThread(threadId: string): number {
+    const row = this.getOne(
+      `
+      select count(*) as count
+      from digest_thread_items t
+      join inbox_items i on i.item_id = t.item_id
+      where t.thread_id = ? and i.acked_at is null
+        and not exists (
+          select 1 from inbox_entry_items ei
+          join inbox_entries e on e.entry_id = ei.entry_id
+          where ei.item_id = i.item_id
+            and e.thread_id = t.thread_id and e.kind = 'digest_snapshot'
+        )
+      `,
+      [threadId],
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  /** Read-model repair may include published items, but never unpublished pending items. */
+  listSnapshottedUnackedInboxItemsForDigestThread(threadId: string): InboxItem[] {
+    const rows = this.getAll(
+      `
+      select i.*
+      from digest_thread_items t
+      join inbox_items i on i.item_id = t.item_id
+      where t.thread_id = ? and i.acked_at is null
+        and exists (
+          select 1 from inbox_entry_items ei
+          join inbox_entries e on e.entry_id = ei.entry_id
+          where ei.item_id = i.item_id
+            and e.thread_id = t.thread_id and e.kind = 'digest_snapshot'
+        )
+      order by coalesce(i.inbox_sequence, i.rowid) asc
+      `,
+      [threadId],
+    );
+    return rows.map((row) => this.mapInboxItem(row));
+  }
+
+  getDigestNotificationState(inboxId: string, groupKey: string): Record<string, unknown> | null {
+    const row = this.getOne(
+      "select notification_state_json from digest_notification_states where inbox_id = ? and group_key = ?",
+      [inboxId, groupKey],
+    );
+    return row ? JSON.parse(requiredText(row, "notification_state_json")) as Record<string, unknown> : null;
+  }
+
+  storeDigestNotificationState(
+    inboxId: string,
+    groupKey: string,
+    state: Record<string, unknown>,
+    sourceId: string | null = null,
+    updatedAt = nowIso(),
+  ): void {
+    this.run(
+      `
+      insert into digest_notification_states (inbox_id, group_key, source_id, updated_at, notification_state_json)
+      values (?, ?, ?, ?, ?)
+      on conflict (inbox_id, group_key) do update set
+        source_id = coalesce(excluded.source_id, digest_notification_states.source_id),
+        updated_at = excluded.updated_at,
+        notification_state_json = excluded.notification_state_json
+      `,
+      [inboxId, groupKey, sourceId, updatedAt, JSON.stringify(state)],
+    );
+    this.persist();
+  }
+
+  private deleteInactiveDigestNotificationStates(olderThan: string, inboxId?: string): void {
+    // Published historical backlog alone is not activity. Keep recent groups
+    // and unpublished evidence (including rotated threads) until it can flush.
+    const result = this.run(
+      `
+      delete from digest_notification_states
+      where updated_at < ?
+        ${inboxId === undefined ? "" : "and inbox_id = ?"}
+        and not exists (
+          select 1 from digest_threads t
+          where t.inbox_id = digest_notification_states.inbox_id
+            and t.group_key = digest_notification_states.group_key
+            and (
+              t.updated_at >= ?
+              or exists (
+                select 1 from digest_thread_items ti
+                join inbox_items i on i.item_id = ti.item_id
+                where ti.thread_id = t.thread_id
+                  and (
+                    i.acked_at >= ?
+                    or (i.acked_at is null and not exists (
+                      select 1 from inbox_entry_items ei
+                      join inbox_entries e on e.entry_id = ei.entry_id
+                      where ei.item_id = i.item_id
+                        and e.thread_id = t.thread_id and e.kind = 'digest_snapshot'
+                    ))
+                  )
+              )
+            )
+        )
+      `,
+      inboxId === undefined
+        ? [olderThan, olderThan, olderThan]
+        : [olderThan, inboxId, olderThan, olderThan],
+    );
+    if (result.changes > 0) this.persist();
   }
 
   listOpenDigestThreadsForInbox(inboxId: string): DigestThreadRecord[] {
@@ -2315,6 +2435,7 @@ export class AgentInboxStore {
     lastItemAt: string;
     deliveryHandleJson?: string | null;
     createdAt: string;
+    notificationState?: Record<string, unknown>;
   }): InboxEntry {
     const thread = this.getDigestThread(input.threadId);
     if (!thread) {
@@ -2354,14 +2475,24 @@ export class AgentInboxStore {
           [entryId, itemId],
         );
       }
+      if (input.notificationState !== undefined) {
+        this.storeDigestNotificationState(
+          input.inboxId, input.groupKey, input.notificationState, thread.sourceId, input.createdAt,
+        );
+      }
+      // Reconciliation or an append during async summarization can leave items
+      // outside this snapshot. Their quiet-window deadline must not be erased.
+      const flushAfterAt = this.countPendingInboxItemsForDigestThread(input.threadId) > 0
+        ? this.getDigestThread(input.threadId)!.flushAfterAt ?? input.createdAt
+        : null;
       this.run(
         `
         update digest_threads
         set latest_revision = ?, latest_entry_id = ?, summary = ?, first_item_at = ?, last_item_at = ?,
-            flush_after_at = null, updated_at = ?
+            flush_after_at = ?, updated_at = ?
         where thread_id = ?
         `,
-        [nextRevision, entryId, input.summary, input.firstItemAt, input.lastItemAt, input.createdAt, input.threadId],
+        [nextRevision, entryId, input.summary, input.firstItemAt, input.lastItemAt, flushAfterAt, input.createdAt, input.threadId],
       );
     });
     this.persist();
@@ -2456,6 +2587,8 @@ export class AgentInboxStore {
   }
 
   deleteAckedInboxItems(inboxId: string, olderThan: string): number {
+    // Run before deleting thread/item evidence, and even if no items need GC.
+    this.deleteInactiveDigestNotificationStates(olderThan, inboxId);
     const itemIds = this.getAll(
       `
       select item_id
@@ -2474,6 +2607,7 @@ export class AgentInboxStore {
   }
 
   deleteAckedInboxItemsGlobal(olderThan: string): number {
+    this.deleteInactiveDigestNotificationStates(olderThan);
     const itemIds = this.getAll(
       `
       select item_id

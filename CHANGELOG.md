@@ -10,6 +10,38 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-14
+
+### Added
+
+- GitHub CI digests support an explicit `expectedWorkflowIds` success barrier,
+  durable first-failure/final-result notifications, and rerun recovery.
+  Evaluation state survives restart, ack and raw-item retention cleanup.
+
+### Fixed
+
+- Digest `maxItems` now counts items not yet materialized, rather than the
+  entire unacked backlog, avoiding one snapshot per event after the threshold
+  is reached (#258).
+- Normal size and timer flushes share the source eligibility gate.
+  Concurrent appends, asynchronous hooks and ack reconciliation preserve
+  pending items and stable snapshot boundaries.
+- Email activation summaries omit body previews, which could expose encoded
+  content, while retaining sender, subject and attachment information.
+
+### Upgrade notes
+
+- GitHub CI notification is workflow-run based, not per-job monitoring.
+  Configure `expectedWorkflowIds` with the workflow IDs this source must wait
+  for. Without a declared set, or while declared workflows are missing, the
+  timeout fallback explicitly reports incomplete state rather than claiming
+  that every CI workflow passed.
+- Cancelled, skipped and neutral CI conclusions are not counted as passed.
+  Existing activation leases can defer eligible notifications; dirty pending
+  delivery retries at ack or lease expiry.
+- The database automatically adds an internal notification-state table.
+  Existing inbox items, immutable snapshots and ack boundaries are retained.
+
 ## [1.9.1] - 2026-10-06
 
 ### Added

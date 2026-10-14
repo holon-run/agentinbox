@@ -3,6 +3,7 @@
 - [CLI](./cli.md)
 - [HTTP API](./http-api.md)
 - [Source Types](./source-types.md)
+- [GitHub CI Notification Policy](./github-ci-notification-policy.md)
 
 <!-- INDEX:START -->
 
@@ -12,6 +13,10 @@
 
 - [HTTP API](./http-api.md)
   `AgentInbox` exposes a local control-plane HTTP API over either:
+  <!-- mdorigin:index kind=article -->
+
+- [GitHub CI Notification Policy](./github-ci-notification-policy.md)
+  Completion barriers, first failures, reruns, and acknowledgement for GitHub Actions workflow notifications.
   <!-- mdorigin:index kind=article -->
 
 - [Source Types](./source-types.md)

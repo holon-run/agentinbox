@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { AgentInboxStore } from "../src/store";
 import { AgentInboxService } from "../src/service";
 import { AdapterRegistry } from "../src/adapters";
-import { ActivationItem, AppendSourceEventInput, SourceStream } from "../src/model";
+import { ActivationItem, AppendSourceEventInput, DigestThreadFlushContext, SourceStream } from "../src/model";
 import { nowIso } from "../src/util";
 import {
   GithubActionsUxcClient,
@@ -14,9 +14,11 @@ import {
   decideGithubCiDigestFlush,
   deriveGithubCiNotificationGrouping,
   normalizeGithubWorkflowRunEvent,
+  parseGithubCiSourceConfig,
   summarizeGithubCiDigestThread,
 } from "../src/sources/github_ci";
 import { TerminalDispatcher } from "../src/terminal";
+import { RemoteSourceModuleRegistry } from "../src/sources/remote_modules";
 
 class FakeGithubActionsClient {
   public calls: Array<Record<string, unknown>> = [];
@@ -95,14 +97,43 @@ test("normalizeGithubWorkflowRunEvent extracts workflow run metadata", () => {
 
   assert.ok(normalized);
   assert.equal(normalized?.sourceNativeId, "workflow_run:987");
-  assert.equal(normalized?.eventVariant, "workflow_run.ci.completed.failure");
+  assert.equal(normalized?.eventVariant, "workflow_run.ci.completed.failure.attempt_2");
   assert.equal(normalized?.metadata?.headBranch, "main");
   assert.equal(normalized?.metadata?.headRepositoryFullName, "holon-run/agentinbox");
   assert.equal(normalized?.metadata?.conclusion, "failure");
+  assert.equal(normalized?.metadata?.workflowId, 321);
+  assert.equal(normalized?.metadata?.runAttempt, 2);
+  assert.equal(normalized?.metadata?.createdAt, "2026-04-06T10:00:00Z");
+  assert.equal(normalized?.metadata?.runCreatedAt, "2026-04-06T10:00:00Z");
+  assert.equal(normalized?.rawPayload?.created_at, "2026-04-06T10:00:00Z");
+  assert.equal(normalized?.rawPayload?.updated_at, "2026-04-06T10:05:00Z");
   assert.deepEqual(normalized?.metadata?.pullRequestNumbers, [91, 93]);
   assert.deepEqual(normalized?.rawPayload?.head_repository, { full_name: "holon-run/agentinbox" });
   assert.deepEqual(normalized?.rawPayload?.pull_requests, [{ number: 91 }, { number: 93 }]);
   assert.equal(normalized?.deliveryHandle, null);
+});
+
+test("normalizeGithubWorkflowRunEvent distinguishes rerun attempts while preserving first-attempt identities", () => {
+  const source = { sourceId: "src_ci" } as SourceStream;
+  const config = { owner: "holon-run", repo: "agentinbox" };
+  for (const [status, conclusion] of [
+    ["in_progress", null], ["completed", "success"], ["completed", "failure"],
+  ] as const) {
+    const run = { id: 987, name: "CI", status, conclusion };
+    const normalize = (attempt?: number) => normalizeGithubWorkflowRunEvent(
+      source, config, { ...run, run_attempt: attempt },
+    )!;
+    const first = normalize(1);
+    const second = normalize(2);
+    assert.equal(first.eventVariant, `workflow_run.ci.${status}${conclusion ? `.${conclusion}` : ""}`);
+    assert.equal(normalize().eventVariant, first.eventVariant);
+    assert.equal(second.sourceNativeId, first.sourceNativeId);
+    assert.equal(second.eventVariant, `${first.eventVariant}.attempt_2`);
+    assert.equal(normalize(2).eventVariant, second.eventVariant);
+    assert.equal(normalize(3).eventVariant, `${first.eventVariant}.attempt_3`);
+    assert.equal(second.metadata?.runAttempt, 2);
+    assert.equal(second.rawPayload?.run_attempt, 2);
+  }
 });
 
 test("normalizeGithubWorkflowRunEvent falls back to observed status and display title", () => {
@@ -155,6 +186,525 @@ const CI_DIGEST_CONFIG = {
   perPage: 20,
 };
 
+const CI_BARRIER_CONFIG = { ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10, 20] };
+const CI_CONTEXT: DigestThreadFlushContext = {
+  threadCreatedAt: "2026-04-06T10:00:00Z",
+  lastItemAt: "2026-04-06T10:00:30Z",
+  now: "2026-04-06T10:01:00Z",
+};
+
+function policyRun(
+  runId: number, workflowId: number, conclusion: string | null,
+  extra: Record<string, unknown> = {},
+): ActivationItem {
+  return ciActivationItem({
+    itemId: `run-${runId}`,
+    metadata: {
+      workflowRunId: runId, workflowId, runAttempt: 1,
+      headSha: "sha-current", repoFullName: "holon-run/agentinbox", pullRequestNumbers: [72],
+      name: `Workflow ${workflowId}`, createdAt: "2026-04-06T10:00:00Z",
+      updatedAt: "2026-04-06T10:00:30Z",
+      status: conclusion ? "completed" : "in_progress", conclusion, ...extra,
+    },
+  });
+}
+
+test("CI policy requires an explicit complete workflow barrier, never a quiet window", () => {
+  const success = policyRun(1, 10, "success");
+  assert.equal(decideGithubCiDigestFlush([success], CI_DIGEST_CONFIG, CI_CONTEXT).flush, false);
+  assert.equal(decideGithubCiDigestFlush([success], CI_BARRIER_CONFIG, CI_CONTEXT).flush, false);
+  const complete = decideGithubCiDigestFlush([success, policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT);
+  assert.equal(complete.flush, true);
+  assert.match(complete.summary ?? "", /all expected workflows succeeded/);
+  const timeout = decideGithubCiDigestFlush([success], CI_DIGEST_CONFIG, {
+    ...CI_CONTEXT, now: "2026-04-06T11:01:00Z",
+  });
+  assert.equal(timeout.flush, true);
+  assert.match(timeout.summary ?? "", /incomplete.*expected workflow set unknown/);
+  assert.doesNotMatch(timeout.summary ?? "", /all expected workflows succeeded/);
+});
+
+test("CI policy includes observed workflows outside the expected set in failure alerts", () => {
+  const first = decideGithubCiDigestFlush([policyRun(3, 30, "failure")], CI_BARRIER_CONFIG, CI_CONTEXT);
+  assert.equal(first.flush, true);
+  assert.match(first.summary ?? "", /first failure.*1 failed/);
+  assert.ok(first.notificationState);
+  const final = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success"), policyRun(2, 20, "success")],
+    CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState: first.notificationState },
+  );
+  assert.equal(final.flush, true);
+  assert.match(final.summary ?? "", /final.*1 failed/);
+  assert.doesNotMatch(final.summary ?? "", /all expected workflows succeeded/);
+});
+
+test("CI policy waits for observed extra workflows before certifying success", () => {
+  const expected = [policyRun(1, 10, "success"), policyRun(2, 20, "success")];
+  const pending = [...expected, policyRun(3, 30, null)];
+  assert.equal(decideGithubCiDigestFlush(pending, CI_BARRIER_CONFIG, CI_CONTEXT).flush, false);
+  const timeout = decideGithubCiDigestFlush(pending, CI_BARRIER_CONFIG, {
+    ...CI_CONTEXT, now: "2026-04-06T11:01:00Z",
+  });
+  assert.equal(timeout.flush, true);
+  assert.match(timeout.summary ?? "", /incomplete.*1 still running/);
+  assert.ok(timeout.notificationState);
+  const final = decideGithubCiDigestFlush(
+    [policyRun(3, 30, "success")], CI_BARRIER_CONFIG,
+    { ...CI_CONTEXT, notificationState: timeout.notificationState },
+  );
+  assert.equal(final.flush, true);
+  assert.match(final.summary ?? "", /all expected workflows succeeded.*3 passed/);
+});
+
+test("CI policy corrects a final result for late observed workflows and deduplicates replays", () => {
+  const expected = [policyRun(1, 10, "success"), policyRun(2, 20, "success")];
+  const first = decideGithubCiDigestFlush(expected, CI_BARRIER_CONFIG, CI_CONTEXT);
+  assert.equal(first.flush, true);
+  for (const conclusion of ["success", "failure"]) {
+    for (const timeoutFirst of [false, true]) {
+      let notificationState = JSON.parse(JSON.stringify(first.notificationState));
+      if (timeoutFirst) {
+        const timeout = decideGithubCiDigestFlush(
+          [policyRun(3, 30, null)], CI_BARRIER_CONFIG,
+          { ...CI_CONTEXT, now: "2026-04-06T11:01:00Z", notificationState },
+        );
+        assert.equal(timeout.flush, true);
+        assert.match(timeout.summary ?? "", /incomplete.*1 still running/);
+        notificationState = JSON.parse(JSON.stringify(timeout.notificationState));
+      }
+      const late = policyRun(3, 30, conclusion);
+      const corrected = decideGithubCiDigestFlush(
+        [late], CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState },
+      );
+      assert.equal(corrected.flush, true, `late ${conclusion}, timeout=${timeoutFirst}`);
+      assert.match(corrected.summary ?? "", conclusion === "success" ? /3 passed/ : /1 failed.*2 passed/);
+      const restarted = JSON.parse(JSON.stringify(corrected.notificationState));
+      for (const replay of [[late], [...expected, late], [late, expected[1], expected[0], late]]) {
+        assert.equal(decideGithubCiDigestFlush(
+          replay, CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState: restarted },
+        ).flush, false, "unchanged evidence must not notify again");
+      }
+    }
+  }
+});
+
+test("CI policy admits first actionable failure immediately and retains running evidence across ack", () => {
+  const config = { ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10, 20, 30] };
+  for (const conclusion of ["failure", "timed_out", "action_required", "startup_failure"]) {
+    const first = decideGithubCiDigestFlush(
+      [policyRun(1, 10, conclusion), policyRun(2, 20, null), policyRun(3, 30, null)], config, CI_CONTEXT,
+    );
+    assert.equal(first.flush, true, conclusion);
+    assert.match(first.summary ?? "", /first failure/);
+    assert.ok(first.notificationState);
+    const afterAck = { ...CI_CONTEXT, notificationState: first.notificationState };
+    assert.equal(decideGithubCiDigestFlush([policyRun(2, 20, "failure")], config, afterAck).flush, false);
+    const final = decideGithubCiDigestFlush([policyRun(2, 20, "failure"), policyRun(3, 30, "success")], config, afterAck);
+    assert.equal(final.flush, true);
+    assert.match(final.summary ?? "", /final.*2 failed/);
+    const replay = { ...CI_CONTEXT, notificationState: final.notificationState };
+    assert.equal(decideGithubCiDigestFlush([policyRun(2, 20, "failure")], config, replay).flush, false);
+  }
+});
+
+test("CI policy treats cancelled, skipped and neutral as non-success, non-urgent", () => {
+  for (const conclusion of ["cancelled", "skipped", "neutral"]) {
+    assert.equal(decideGithubCiDigestFlush([policyRun(1, 10, conclusion)], CI_BARRIER_CONFIG, CI_CONTEXT).flush, false);
+    const final = decideGithubCiDigestFlush(
+      [policyRun(1, 10, conclusion), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+    );
+    assert.equal(final.flush, true);
+    assert.match(final.summary ?? "", new RegExp(conclusion));
+    assert.doesNotMatch(final.summary ?? "", /all expected workflows succeeded|failed:/);
+  }
+});
+
+test("CI policy rerun attempts and replacement runs open a new generation without accepting stale outcomes", () => {
+  const first = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "failure"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  const context = { ...CI_CONTEXT, notificationState: first.notificationState };
+  const retry = policyRun(1, 10, null, { runAttempt: 2, updatedAt: "2026-04-06T10:01:00Z" });
+  assert.equal(decideGithubCiDigestFlush([retry], CI_BARRIER_CONFIG, context).flush, false);
+  const recovered = decideGithubCiDigestFlush(
+    [retry, policyRun(1, 10, "success", { runAttempt: 2 }), policyRun(1, 10, "failure")],
+    CI_BARRIER_CONFIG, context,
+  );
+  assert.equal(recovered.flush, true);
+  assert.match(recovered.summary ?? "", /all expected workflows succeeded/);
+  const replacement = decideGithubCiDigestFlush(
+    [policyRun(3, 10, "failure", { createdAt: "2026-04-06T10:02:00Z" })],
+    CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState: recovered.notificationState },
+  );
+  assert.equal(replacement.flush, true);
+  assert.match(replacement.summary ?? "", /first failure/);
+  assert.equal(decideGithubCiDigestFlush(
+    [policyRun(1, 10, "failure")], CI_BARRIER_CONFIG,
+    { ...CI_CONTEXT, notificationState: replacement.notificationState },
+  ).flush, false);
+});
+
+test("CI policy ranks SHA cycles by run creation, not old runs finishing late", () => {
+  const previous = policyRun(1, 10, "failure", { headSha: "sha-old", createdAt: "2026-04-06T09:00:00Z" });
+  const current = policyRun(2, 10, "success");
+  const other = policyRun(3, 20, "success");
+  const final = decideGithubCiDigestFlush([previous, current, other], CI_BARRIER_CONFIG, CI_CONTEXT);
+  assert.equal(final.flush, true);
+  assert.match(final.summary ?? "", /sha-cur/);
+  assert.doesNotMatch(final.summary ?? "", /failed|sha-old/);
+  const delayed = { ...previous, occurredAt: "2026-04-06T12:00:00Z" };
+  assert.equal(decideGithubCiDigestFlush([delayed], CI_BARRIER_CONFIG, {
+    ...CI_CONTEXT, notificationState: final.notificationState,
+  }).flush, false);
+});
+
+test("CI policy starts a new SHA timeout at its earliest workflow after a committed snapshot", () => {
+  const previous = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  assert.equal(previous.flush, true);
+  const early = policyRun(3, 10, "success", {
+    headSha: "sha-next", createdAt: "2026-04-06T10:10:00Z", updatedAt: "2026-04-06T10:11:00Z",
+  });
+  const late = policyRun(4, 20, null, {
+    headSha: "sha-next", createdAt: "2026-04-06T10:30:00Z", updatedAt: "2026-04-06T10:31:00Z",
+  });
+  const context = { ...CI_CONTEXT, notificationState: previous.notificationState };
+  for (const items of [[early, late], [late, early]]) {
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:09:00Z",
+    }).flush, false, "the new SHA must not inherit the previous SHA's deadline");
+    const timeout = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:11:00Z",
+    });
+    assert.equal(timeout.flush, true, "later workflows must not extend the new SHA's deadline");
+    assert.equal(timeout.notificationState?.startedAt, "2026-04-06T10:10:00Z");
+    assert.match(timeout.summary ?? "", /incomplete.*1 still running/);
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:12:00Z", notificationState: timeout.notificationState,
+    }).flush, false, "the committed incomplete snapshot must suppress replay");
+  }
+});
+
+test("CI policy keeps the persisted SHA when a late completion cannot prove creation order", () => {
+  const current = decideGithubCiDigestFlush(
+    [policyRun(2, 10, "success"), policyRun(3, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  assert.equal(current.flush, true);
+  const lateCompletion = (metadata: Record<string, unknown>) => ciActivationItem({
+    itemId: "late-completion",
+    occurredAt: "2026-04-06T12:00:00Z",
+    metadata: {
+      workflowRunId: 1, workflowId: 10, runAttempt: 1, headSha: "sha-old",
+      status: "completed", conclusion: "failure", name: "Workflow 10",
+      repoFullName: "holon-run/agentinbox", pullRequestNumbers: [72],
+      updatedAt: "2026-04-06T12:00:00Z", ...metadata,
+    },
+  });
+  const withOlderRunCreatedAt = decideGithubCiDigestFlush(
+    [lateCompletion({ runCreatedAt: "2026-04-06T09:00:00Z" })], CI_BARRIER_CONFIG,
+    { ...CI_CONTEXT, notificationState: current.notificationState },
+  );
+  assert.equal(withOlderRunCreatedAt.flush, false,
+    "a late old-SHA completion whose runCreatedAt predates the persisted head must not switch back");
+  const withoutCreationProof = decideGithubCiDigestFlush(
+    [lateCompletion({})], CI_BARRIER_CONFIG,
+    { ...CI_CONTEXT, notificationState: current.notificationState },
+  );
+  assert.equal(withoutCreationProof.flush, false,
+    "an old-SHA completion with no runCreatedAt must stay conservative instead of notifying");
+  const unprovenNewSha = ciActivationItem({
+    itemId: "unproven-new-sha",
+    occurredAt: "2026-04-06T12:00:00Z",
+    metadata: {
+      workflowRunId: 5, workflowId: 10, runAttempt: 1, headSha: "sha-next",
+      status: "completed", conclusion: "failure", name: "Workflow 10",
+      repoFullName: "holon-run/agentinbox", pullRequestNumbers: [72],
+      updatedAt: "2026-04-06T12:00:00Z",
+    },
+  });
+  assert.equal(decideGithubCiDigestFlush([unprovenNewSha], CI_BARRIER_CONFIG, {
+    ...CI_CONTEXT, notificationState: current.notificationState,
+  }).flush, false, "a failure that cannot prove it belongs to the current generation must not notify");
+});
+
+test("CI policy rejects timestamp-less evidence when initializing a notification head", () => {
+  for (const createdAt of [undefined, "", "invalid-date"]) {
+    for (const conclusion of ["failure", "success"]) {
+      const items = [10, 20].map((workflowId) =>
+        policyRun(workflowId, workflowId, conclusion, { createdAt }));
+      for (const now of [CI_CONTEXT.now, "2026-04-06T12:00:00Z"]) {
+        const decision = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, { ...CI_CONTEXT, now });
+        assert.equal(decision.flush, false, `${createdAt}/${conclusion}/${now} cannot establish a head`);
+        assert.equal(decision.notificationState, undefined);
+      }
+    }
+  }
+});
+
+test("CI policy merges timestamp-less evidence only after a head is proven", () => {
+  const proven = policyRun(1, 10, "success");
+  const unproven = policyRun(99, 20, "failure", { createdAt: "invalid-date", headSha: "sha-other" });
+  const initial = decideGithubCiDigestFlush([proven, unproven], {
+    ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10],
+  }, CI_CONTEXT);
+  assert.equal(initial.flush, true);
+  assert.match(initial.summary ?? "", /1 workflow runs.*1 passed/);
+  assert.doesNotMatch(initial.summary ?? "", /failed/);
+  const failure = policyRun(2, 20, "failure", { createdAt: undefined });
+  const merged = decideGithubCiDigestFlush([failure], CI_BARRIER_CONFIG, {
+    ...CI_CONTEXT, notificationState: initial.notificationState,
+  });
+  assert.equal(merged.flush, true, "timestamp-less evidence for a persisted head remains actionable");
+  assert.match(merged.summary ?? "", /1 failed/);
+  const alias = policyRun(3, 10, "failure", { runCreatedAt: "2026-04-06T10:00:00Z", createdAt: undefined });
+  assert.equal(decideGithubCiDigestFlush([alias], CI_BARRIER_CONFIG, CI_CONTEXT).flush, true);
+});
+
+test("CI config validates non-empty unique positive integer expected workflow ids", () => {
+  const source = {
+    sourceId: "ci-config", sourceKey: "holon-run/agentinbox",
+    config: { expectedWorkflowIds: [10, 20] },
+  } as unknown as SourceStream;
+  assert.deepEqual(parseGithubCiSourceConfig(source).expectedWorkflowIds, [10, 20]);
+  for (const invalid of [[], [10, 10], [0], [-1], [1.5], ["10"], "10"]) {
+    assert.throws(() => parseGithubCiSourceConfig({
+      ...source, config: { owner: "holon-run", repo: "agentinbox", expectedWorkflowIds: invalid },
+    }), /expectedWorkflowIds/);
+  }
+});
+
+test("CI policy rerun does not urgently re-notify an unchanged failure in another workflow", () => {
+  const first = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "failure"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  const rerun = policyRun(2, 20, null, { runAttempt: 2, updatedAt: "2026-04-06T10:02:00Z" });
+  assert.equal(decideGithubCiDigestFlush([rerun], CI_BARRIER_CONFIG, {
+    ...CI_CONTEXT, notificationState: first.notificationState,
+  }).flush, false);
+});
+
+test("CI policy timeout is stable while a new attempt or SHA waits without a committed snapshot", () => {
+  const first = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "failure"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  const context = { ...CI_CONTEXT, notificationState: first.notificationState, now: "2026-04-06T11:03:00Z" };
+  const retry = policyRun(1, 10, null, { runAttempt: 2, updatedAt: "2026-04-06T10:02:00Z" });
+  const retryTimeout = decideGithubCiDigestFlush([retry], CI_BARRIER_CONFIG, context);
+  assert.equal(retryTimeout.flush, true);
+  assert.match(retryTimeout.summary ?? "", /incomplete/);
+  const newerSha = policyRun(3, 10, null, { headSha: "sha-new", createdAt: "2026-04-06T10:02:00Z" });
+  const shaTimeout = decideGithubCiDigestFlush([newerSha], CI_BARRIER_CONFIG, context);
+  assert.equal(shaTimeout.flush, true);
+  assert.match(shaTimeout.summary ?? "", /incomplete.*missing workflows: 20/);
+});
+
+for (const scenario of ["new SHA", "new attempt", "new attempt without prior evidence"]) {
+  test(`CI policy starts the timeout from ${scenario} when no snapshot was committed`, () => {
+    const oldRun = policyRun(1, 10, null);
+    const context = { ...CI_CONTEXT, notificationState: null };
+    const oldPending = decideGithubCiDigestFlush([oldRun], CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T10:58:00Z",
+    });
+    assert.equal(oldPending.flush, false);
+    assert.equal(oldPending.notificationState, undefined);
+    const generationStartedAt = "2026-04-06T10:59:00Z";
+    const metadata = scenario === "new SHA"
+      ? { headSha: "sha-next", createdAt: generationStartedAt, updatedAt: generationStartedAt }
+      : { runAttempt: 2, updatedAt: generationStartedAt };
+    const newRun = policyRun(scenario === "new SHA" ? 2 : 1, 10, null, metadata);
+    const items = scenario === "new attempt without prior evidence" ? [newRun] : [oldRun, newRun];
+    const pending = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:00:00Z",
+    });
+    assert.equal(pending.flush, false, "a new generation must not inherit the old thread's timeout");
+    assert.equal(pending.recheckAfterMs, 30_000);
+    const updatedItems = [...items, policyRun(scenario === "new SHA" ? 2 : 1, 10, null, {
+      ...metadata, updatedAt: "2026-04-06T11:01:00Z",
+    })];
+    assert.equal(decideGithubCiDigestFlush(updatedItems, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:58:00Z",
+    }).flush, false);
+    const timeout = decideGithubCiDigestFlush(updatedItems, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:59:00Z",
+    });
+    assert.equal(timeout.flush, true, "rechecks must not reset the generation's own hard timeout");
+    assert.match(timeout.summary ?? "", /incomplete/);
+    assert.equal(timeout.notificationState?.startedAt, generationStartedAt);
+  });
+}
+
+for (const attempt of [1, 2]) {
+  test(`CI policy times replacement attempt ${attempt} independently of the committed run`, () => {
+    const first = decideGithubCiDigestFlush(
+      [policyRun(1, 10, "failure"), policyRun(3, 20, "success")],
+      CI_BARRIER_CONFIG, CI_CONTEXT,
+    );
+    assert.ok(first.notificationState);
+    const replacement = policyRun(2, 10, null, {
+      createdAt: "2026-04-06T10:30:00Z",
+      updatedAt: "2026-04-06T10:58:00Z",
+    });
+    const retry = policyRun(2, 10, null, {
+      ...replacement.metadata, runAttempt: attempt, updatedAt: "2026-04-06T10:59:00Z",
+    });
+    const items = [replacement, retry, policyRun(2, 10, null, {
+      ...retry.metadata, updatedAt: "2026-04-06T11:01:00Z",
+    })];
+    const context = { ...CI_CONTEXT, notificationState: first.notificationState };
+    const startedAt = attempt === 1 ? "2026-04-06T10:30:00Z" : "2026-04-06T10:59:00Z";
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: attempt === 1 ? "2026-04-06T11:29:00Z" : "2026-04-06T11:30:00Z",
+    }).flush, false, "the selected attempt must receive its own timeout");
+    const timeout = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: attempt === 1 ? "2026-04-06T11:30:00Z" : "2026-04-06T11:59:00Z",
+    });
+    assert.equal(timeout.flush, true, "later observations must not restart the timeout");
+    assert.match(timeout.summary ?? "", /incomplete/);
+    assert.equal(timeout.notificationState?.startedAt, startedAt);
+    assert.equal(first.notificationState?.generation, 1, "pending decisions must not mutate the baseline");
+  });
+
+  test(`CI policy reconstructs same-SHA replacement run attempt ${attempt} before a snapshot exists`, () => {
+    const startedAt = "2026-04-06T10:59:00Z";
+    const replacement = policyRun(2, 10, null, {
+      runAttempt: attempt,
+      createdAt: attempt === 1 ? startedAt : "2026-04-06T10:30:00Z",
+      updatedAt: startedAt,
+    });
+    const items = [policyRun(1, 10, null), replacement];
+    const context = { ...CI_CONTEXT, notificationState: null };
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:00:00Z",
+    }).flush, false, "multiple run IDs must not inherit the original run's timeout");
+    const updatedItems = [...items, policyRun(2, 10, null, {
+      ...replacement.metadata, updatedAt: "2026-04-06T11:01:00Z",
+    })];
+    const timeout = decideGithubCiDigestFlush(updatedItems, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:59:00Z",
+    });
+    assert.equal(timeout.flush, true, "rechecks must not reset the reconstructed timeout");
+    assert.equal(timeout.notificationState?.startedAt, startedAt);
+    assert.equal(timeout.notificationState?.generation, 2);
+    assert.deepEqual((timeout.notificationState?.runs as Array<Record<string, unknown>>)
+      .map((run) => [run.runId, run.attempt]), [[2, attempt]]);
+  });
+}
+
+test("CI policy can advance SHA cycles created within the same timestamp second", () => {
+  const first = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "failure"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  const next = decideGithubCiDigestFlush([
+    policyRun(3, 10, "success", { headSha: "sha-next" }), policyRun(4, 20, "success", { headSha: "sha-next" }),
+  ], CI_BARRIER_CONFIG, { ...CI_CONTEXT, notificationState: first.notificationState });
+  assert.equal(next.flush, true);
+  assert.match(next.summary ?? "", /sha-nex.*all expected workflows succeeded/);
+});
+
+test("CI provider module exposes policy config and preserves generation metadata without forwarding policy to GitHub", async () => {
+  const source: SourceStream = {
+    sourceId: "ci-module", sourceType: "github_repo_ci", sourceKey: "holon-run/agentinbox",
+    config: CI_BARRIER_CONFIG, configRef: null, status: "active", checkpoint: null,
+    createdAt: CI_CONTEXT.threadCreatedAt, updatedAt: CI_CONTEXT.now,
+  };
+  const module = await new RemoteSourceModuleRegistry().resolve(source, "");
+  const capabilities = module.describeCapabilities!(source);
+  assert.ok(capabilities.configSchema?.some((field) => field.name === "expectedWorkflowIds"));
+  for (const name of ["workflowRunId", "workflowId", "runAttempt", "runCreatedAt", "createdAt", "updatedAt"]) {
+    assert.ok(capabilities.metadataFields?.some((field) => field.name === name), name);
+  }
+  module.validateConfig(source);
+  assert.throws(() => module.validateConfig({ ...source, config: { ...CI_BARRIER_CONFIG, expectedWorkflowIds: [10, 10] } }), /expectedWorkflowIds/);
+  const spec = module.buildManagedSourceSpec(source);
+  assert.ok(spec.args);
+  assert.equal(spec.args.expectedWorkflowIds, undefined);
+  const mapped = await module.mapRawEvent({
+    id: 1, workflow_id: 10, run_attempt: 2, status: "completed", conclusion: "failure",
+    head_sha: "sha-current", created_at: CI_CONTEXT.threadCreatedAt,
+    updated_at: CI_CONTEXT.now, pull_requests: [{ number: 72 }],
+  }, source);
+  assert.equal(mapped?.metadata.workflowId, 10);
+  assert.equal(mapped?.metadata.runAttempt, 2);
+  assert.equal(mapped?.metadata.createdAt, CI_CONTEXT.threadCreatedAt);
+  assert.equal(mapped?.metadata.runCreatedAt, CI_CONTEXT.threadCreatedAt);
+  assert.equal(mapped?.rawPayload.created_at, CI_CONTEXT.threadCreatedAt);
+  const item = ciActivationItem({ metadata: mapped!.metadata });
+  const grouping = module.deriveNotificationGrouping!(item, source)!;
+  assert.equal(grouping.evaluateOnAppend, true);
+  assert.equal(grouping.flushClass, "normal");
+  const decision = await module.shouldFlushDigestThread!([item], source, CI_CONTEXT);
+  assert.equal(decision?.flush, true);
+  assert.match(decision?.summary ?? "", /first failure/);
+  const summary = module.summarizeDigestThread!([
+    policyRun(1, 10, "success"), policyRun(2, 20, "success"), policyRun(3, 30, "failure"),
+  ], source, grouping);
+  assert.match(summary ?? "", /2 passed/);
+  assert.match(summary ?? "", /1 failed: Workflow 30/);
+});
+
+test("CI policy persists first/final/incomplete phases through JSON restart and leaves caller state immutable", () => {
+  const failure = policyRun(1, 10, "failure");
+  const running = policyRun(2, 20, null);
+  const first = decideGithubCiDigestFlush([failure, running], CI_BARRIER_CONFIG, CI_CONTEXT);
+  const state = JSON.parse(JSON.stringify(first.notificationState)) as Record<string, unknown>;
+  const original = JSON.stringify(state);
+  const context = { ...CI_CONTEXT, notificationState: state };
+  assert.equal(state.phase, "first");
+  assert.ok(state.firstFingerprint);
+  assert.equal(decideGithubCiDigestFlush([running, failure, failure], CI_BARRIER_CONFIG, context).flush, false);
+  assert.equal(JSON.stringify(state), original);
+  const timeout = decideGithubCiDigestFlush([running], CI_BARRIER_CONFIG, { ...context, now: "2026-04-06T11:01:00Z" });
+  assert.equal(timeout.notificationState?.phase, "incomplete");
+  assert.ok(timeout.notificationState?.incompleteFingerprint);
+  assert.match(timeout.summary ?? "", /incomplete.*1 still running/);
+  const timeoutContext = { ...context, now: "2026-04-06T11:02:00Z", notificationState: JSON.parse(JSON.stringify(timeout.notificationState)) };
+  assert.equal(decideGithubCiDigestFlush([running], CI_BARRIER_CONFIG, timeoutContext).flush, false);
+  const final = decideGithubCiDigestFlush([policyRun(2, 20, "success")], CI_BARRIER_CONFIG, timeoutContext);
+  assert.equal(final.notificationState?.phase, "final");
+  assert.ok(final.notificationState?.finalFingerprint);
+  assert.match(final.summary ?? "", /final.*1 failed.*1 passed/);
+  assert.equal(decideGithubCiDigestFlush([failure], CI_BARRIER_CONFIG, {
+    ...context, notificationState: JSON.parse(JSON.stringify(final.notificationState)),
+  }).flush, false);
+});
+
+test("CI policy unknown scope still sends first failure, but later terminal events cannot certify success", () => {
+  const first = decideGithubCiDigestFlush([policyRun(1, 10, "failure")], CI_DIGEST_CONFIG, CI_CONTEXT);
+  assert.equal(first.flush, true);
+  const context = { ...CI_CONTEXT, notificationState: first.notificationState };
+  assert.equal(decideGithubCiDigestFlush([policyRun(2, 20, "failure")], CI_DIGEST_CONFIG, context).flush, false);
+  const timeout = decideGithubCiDigestFlush([policyRun(2, 20, "success")], CI_DIGEST_CONFIG, {
+    ...context, now: "2026-04-06T11:01:00Z",
+  });
+  assert.equal(timeout.flush, true);
+  assert.match(timeout.summary ?? "", /incomplete.*expected workflow set unknown/);
+  assert.doesNotMatch(timeout.summary ?? "", /all expected workflows succeeded/);
+});
+
+test("CI policy waits for terminal conclusions and accepts completion enrichment without regression", () => {
+  const unknown = policyRun(1, 10, null, { status: "completed" });
+  assert.equal(decideGithubCiDigestFlush([unknown, policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT).flush, false);
+  const final = decideGithubCiDigestFlush([
+    unknown, policyRun(1, 10, "success", { updatedAt: "2026-04-06T10:00:40Z" }),
+    policyRun(1, 10, null, { status: "queued", updatedAt: "2026-04-06T10:00:50Z" }),
+    policyRun(2, 20, "success"),
+  ], CI_BARRIER_CONFIG, CI_CONTEXT);
+  assert.equal(final.flush, true);
+  assert.match(final.summary ?? "", /all expected workflows succeeded/);
+});
+
+test("CI summary ignores history and selects the highest attempt rather than an old failure", () => {
+  const summary = summarizeGithubCiDigestThread([
+    policyRun(1, 10, "failure", { headSha: "sha-old", createdAt: "2026-04-06T09:00:00Z" }),
+    policyRun(2, 10, "failure"),
+    policyRun(2, 10, "success", { runAttempt: 2 }),
+    policyRun(3, 20, "neutral"),
+  ]);
+  assert.match(summary ?? "", /sha-cur.*1 passed.*neutral/);
+  assert.doesNotMatch(summary ?? "", /sha-old|failed/);
+});
+
 test("deriveGithubCiNotificationGrouping groups workflow runs at the pull request level", () => {
   const prGrouping = deriveGithubCiNotificationGrouping(
     ciActivationItem({
@@ -172,7 +722,8 @@ test("deriveGithubCiNotificationGrouping groups workflow runs at the pull reques
   assert.ok(prGrouping?.groupable);
   assert.equal(prGrouping?.resourceRef, "pr:holon-run/agentinbox#72");
   assert.equal(prGrouping?.eventFamily, "ci_updates");
-  assert.equal(prGrouping?.flushClass, "immediate");
+  assert.equal(prGrouping?.flushClass, "normal");
+  assert.equal(prGrouping?.evaluateOnAppend, true);
   assert.equal(prGrouping?.flushDelayMs, 120_000);
 
   const successGrouping = deriveGithubCiNotificationGrouping(
@@ -214,15 +765,15 @@ test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha a
     ciActivationItem({
       itemId: "itm_ci_completed",
       occurredAt: "2026-04-06T10:00:00Z",
-      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "completed", conclusion: "success" },
     }),
     ciActivationItem({
       itemId: "itm_ci_running",
       occurredAt: "2026-04-06T10:00:30Z",
-      metadata: { workflowRunId: 1002, headSha: "sha-pr-72", status: "in_progress" },
+      metadata: { workflowRunId: 1002, workflowId: 20, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "in_progress" },
     }),
   ];
-  const pendingDecision = decideGithubCiDigestFlush(pendingItems, CI_DIGEST_CONFIG, {
+  const pendingDecision = decideGithubCiDigestFlush(pendingItems, CI_BARRIER_CONFIG, {
     threadCreatedAt: "2026-04-06T10:00:00Z",
     lastItemAt: "2026-04-06T10:00:30Z",
     now: "2026-04-06T10:01:00Z",
@@ -237,7 +788,7 @@ test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha a
         ? { ...item, metadata: { ...item.metadata, status: "completed", conclusion: "success" } }
         : item,
     ),
-    CI_DIGEST_CONFIG,
+    CI_BARRIER_CONFIG,
     {
       threadCreatedAt: "2026-04-06T10:00:00Z",
       lastItemAt: "2026-04-06T10:00:30Z",
@@ -245,12 +796,12 @@ test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha a
     },
   );
   assert.equal(terminalDecision.flush, true);
-  assert.match(terminalDecision.reason ?? "", /all runs terminal/);
+  assert.match(terminalDecision.reason ?? "", /all expected runs terminal/);
 
-  const timedOutDecision = decideGithubCiDigestFlush(pendingItems, CI_DIGEST_CONFIG, {
+  const timedOutDecision = decideGithubCiDigestFlush(pendingItems, CI_BARRIER_CONFIG, {
     threadCreatedAt: "2026-04-06T09:00:00Z",
     lastItemAt: "2026-04-06T10:00:30Z",
-    now: "2026-04-06T10:10:00Z",
+    now: "2026-04-06T11:00:00Z",
   });
   assert.equal(timedOutDecision.flush, true);
   assert.match(timedOutDecision.reason ?? "", /hard timeout/);
@@ -261,21 +812,21 @@ test("decideGithubCiDigestFlush keeps a run terminal when later items arrive out
     ciActivationItem({
       itemId: "itm_ci_terminal_first",
       occurredAt: "2026-04-06T10:00:10Z",
-      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "completed", conclusion: "success" },
     }),
     ciActivationItem({
       itemId: "itm_ci_stale_queued",
       occurredAt: "2026-04-06T10:00:40Z",
-      metadata: { workflowRunId: 1001, headSha: "sha-pr-72", status: "queued" },
+      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "queued" },
     }),
   ];
-  const decision = decideGithubCiDigestFlush(items, CI_DIGEST_CONFIG, {
+  const decision = decideGithubCiDigestFlush(items, { ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10] }, {
     threadCreatedAt: "2026-04-06T10:00:00Z",
     lastItemAt: "2026-04-06T10:00:40Z",
     now: "2026-04-06T10:01:00Z",
   });
   assert.equal(decision.flush, true);
-  assert.match(decision.reason ?? "", /all runs terminal/);
+  assert.match(decision.reason ?? "", /all expected runs terminal/);
 
   const summary = summarizeGithubCiDigestThread(items);
   assert.match(summary ?? "", /1 passed/);
@@ -291,6 +842,7 @@ test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
         headSha: "sha-pr-72",
         pullRequestNumbers: [72],
         name: "CI",
+        createdAt: "2026-04-06T10:00:00Z",
         status: "completed",
         conclusion: "success",
       },
@@ -304,6 +856,7 @@ test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
         headSha: "sha-pr-72",
         pullRequestNumbers: [72],
         name: "Web E2E",
+        createdAt: "2026-04-06T10:00:00Z",
         status: "completed",
         conclusion: "failure",
       },
@@ -317,12 +870,13 @@ test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
         headSha: "sha-pr-72",
         pullRequestNumbers: [72],
         name: "Docs",
+        createdAt: "2026-04-06T10:00:00Z",
         status: "completed",
         conclusion: "skipped",
       },
     }),
   ]);
-  assert.equal(summary, "CI for holon-run/agentinbox#72: 3 workflow runs on sha-pr-, 1 failed: Web E2E (failure), 2 passed");
+  assert.equal(summary, "CI for holon-run/agentinbox#72: 3 workflow runs on sha-pr-, 1 failed: Web E2E (failure), 1 passed, 1 non-success: Docs (skipped)");
 });
 
 test("github_repo_ci subscriptions can filter by pull request numbers", async () => {

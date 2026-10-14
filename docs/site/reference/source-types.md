@@ -47,6 +47,29 @@ Useful normalized `ci_runs` metadata includes:
 - `headBranch`
 - `headSha`
 - `actor`
+- `workflowRunId`
+- `workflowId`
+- `runAttempt`
+- `runCreatedAt`
+- `createdAt`
+- `updatedAt`
+
+`runCreatedAt` is the workflow run creation timestamp; `createdAt` is its
+compatibility alias. `updatedAt` and `occurredAt` reflect update time, not the
+ordering of SHA cycles.
+
+Workflow runs keep `workflow_run:<runId>` as their native identity. First-attempt
+event variants remain unchanged; reruns append `.attempt_<N>` (for example,
+`workflow_run.ci.completed.success.attempt_2`) so a repeated conclusion from a
+new attempt is admitted while duplicate polls of that attempt stay deduplicated.
+
+For coordinated workflow notifications, optionally configure
+`expectedWorkflowIds` as a non-empty array of unique positive workflow IDs.
+Without this explicit scope, the adapter never claims that all expected CI
+succeeded: it sends first actionable failures immediately and otherwise falls
+back to an incomplete hard-timeout summary. See
+[GitHub CI Notification Policy](./github-ci-notification-policy.md) for the
+completion barrier, reruns, acknowledgement, and workflow-level limitations.
 
 Typical `ci_runs` subscription filters:
 

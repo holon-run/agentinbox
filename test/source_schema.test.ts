@@ -10,6 +10,18 @@ test("getSourceSchema exposes github repo ci metadata and examples", () => {
   assert.ok(schema.eventVariantExamples.includes("workflow_run.ci.completed.failure"));
   assert.ok(schema.payloadExamples[0]?.head_commit);
   assert.ok(schema.configFields.some((field) => field.name === "branch"));
+  for (const name of ["workflowRunId", "workflowId", "runAttempt", "runCreatedAt", "createdAt", "updatedAt"]) {
+    assert.ok(schema.metadataFields.some((field) => field.name === name), `missing CI metadata: ${name}`);
+  }
+  for (const [name, type] of [
+    ["expectedWorkflowIds", "number[]"],
+    ["digestQuietWindowSecs", "number"],
+    ["digestFlushTimeoutSecs", "number"],
+  ]) {
+    assert.ok(schema.configFields.some((field) => field.name === name && field.type === type && !field.required),
+      `missing optional CI configuration: ${name}`);
+  }
+  assert.ok(schema.eventVariantExamples.includes("workflow_run.ci.completed.failure.attempt_2"));
 });
 
 test("getSourceSchema exposes local and remote source schemas", () => {

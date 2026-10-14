@@ -187,6 +187,7 @@ export class AgentInboxService {
   private readonly ackedRetentionMs: number;
   private readonly notificationBuffers = new Map<string, BufferedNotification>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
+  private readonly digestGroupLocks = new Map<string, Promise<void>>();
   private syncInterval: NodeJS.Timeout | null = null;
   private timerSyncTimeout: NodeJS.Timeout | null = null;
   private stopping = false;
@@ -1668,9 +1669,46 @@ export class AgentInboxService {
     }
 
     const groupKey = digestGroupKey(input.source.sourceId, grouping.resourceRef, grouping.eventFamily);
+    return this.withDigestGroupLock(input.inbox.inboxId, groupKey, async () => {
+      return this.appendDigestThreadItem(input, grouping, groupKey, policy);
+    });
+  }
+
+  /** Serialize rotation, append and flush by group, not just by the current thread id. */
+  private async withDigestGroupLock<T>(inboxId: string, groupKey: string, action: () => Promise<T>): Promise<T> {
+    const key = JSON.stringify([inboxId, groupKey]);
+    const previous = this.digestGroupLocks.get(key);
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.digestGroupLocks.set(key, current);
+    if (previous) await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.digestGroupLocks.get(key) === current) this.digestGroupLocks.delete(key);
+    }
+  }
+
+  private async appendDigestThreadItem(
+    input: {
+      agentId: string;
+      inbox: Inbox;
+      source: SourceStream | null;
+      subscriptionId: string | null;
+      item: InboxItem;
+      summary: string;
+    },
+    grouping: NotificationGrouping,
+    groupKey: string,
+    policy: InboxAggregationPolicy,
+  ): Promise<InboxEntry[]> {
+    if (!input.source || !this.store.getInbox(input.inbox.inboxId)) return [];
     let thread = this.store.getOpenDigestThread(input.inbox.inboxId, groupKey);
     const now = nowIso();
-    if (thread && Date.parse(thread.createdAt) + (policy.maxThreadAgeMs ?? DEFAULT_INBOX_AGGREGATION_MAX_THREAD_AGE_MS) <= Date.now()) {
+    // Pending evidence must stay together until the source gate approves a snapshot.
+    if (thread && Date.parse(thread.createdAt) + (policy.maxThreadAgeMs ?? DEFAULT_INBOX_AGGREGATION_MAX_THREAD_AGE_MS) <= Date.now()
+      && this.store.countPendingInboxItemsForDigestThread(thread.threadId) === 0) {
       this.store.closeDigestThread(thread.threadId, now);
       thread = null;
     }
@@ -1711,12 +1749,13 @@ export class AgentInboxService {
       );
     }
 
-    const unacked = this.store.listUnackedInboxItemsForDigestThread(thread.threadId);
-    const shouldFlush = grouping.flushClass === "immediate" || unacked.length >= (policy.maxItems ?? DEFAULT_INBOX_AGGREGATION_MAX_ITEMS);
+    const pendingCount = this.store.countPendingInboxItemsForDigestThread(thread.threadId);
+    const shouldFlush = grouping.flushClass === "immediate" || grouping.evaluateOnAppend
+      || pendingCount >= (policy.maxItems ?? DEFAULT_INBOX_AGGREGATION_MAX_ITEMS);
     if (!shouldFlush) {
       return [];
     }
-    const entry = await this.flushDigestThread(input.source, thread.threadId, grouping);
+    const entry = await this.flushDigestThreadLocked(input.source, thread.threadId, grouping);
     return entry ? [entry] : [];
   }
 
@@ -1726,14 +1765,48 @@ export class AgentInboxService {
     groupingHint?: NotificationGrouping | null,
   ): Promise<InboxEntry | null> {
     const thread = this.store.getDigestThread(threadId);
-    if (!thread || thread.status !== "open") {
+    if (!thread) return null;
+    return this.withDigestGroupLock(thread.inboxId, thread.groupKey, () =>
+      this.flushDigestThreadLocked(source, threadId, groupingHint));
+  }
+
+  private async flushDigestThreadLocked(
+    source: SourceStream,
+    threadId: string,
+    groupingHint?: NotificationGrouping | null,
+    reconcile = false,
+  ): Promise<InboxEntry | null> {
+    const thread = this.store.getDigestThread(threadId);
+    if (!thread || thread.status !== "open" || !this.store.getInbox(thread.inboxId)) {
       return null;
     }
-    const items = this.store.listUnackedInboxItemsForDigestThread(threadId);
-    if (items.length === 0) {
+    const allItems = this.store.listUnackedInboxItemsForDigestThread(threadId);
+    if (allItems.length === 0) {
       this.store.closeDigestThread(threadId, nowIso());
       return null;
     }
+    const items = reconcile ? this.store.listSnapshottedUnackedInboxItemsForDigestThread(threadId) : allItems;
+    if (items.length === 0) return null;
+    if (!reconcile && this.store.countPendingInboxItemsForDigestThread(threadId) === 0) return null;
+    const candidateIds = items.map((item) => item.itemId);
+    const candidateIsCurrent = () => {
+      const current = this.store.getDigestThread(threadId);
+      const currentItems = reconcile
+        ? this.store.listSnapshottedUnackedInboxItemsForDigestThread(threadId)
+        : this.store.listUnackedInboxItemsForDigestThread(threadId);
+      return current?.status === "open" && current.latestRevision === thread.latestRevision
+        && this.store.getInbox(thread.inboxId) != null
+        && sameStringArray(candidateIds, currentItems.map((item) => item.itemId));
+    };
+    const retryInvalidCandidate = () => {
+      const current = this.store.getDigestThread(threadId);
+      if (current?.status !== "open") return;
+      if (this.store.listUnackedInboxItemsForDigestThread(threadId).length === 0) {
+        this.store.closeDigestThread(threadId, nowIso());
+      } else if (this.store.countPendingInboxItemsForDigestThread(threadId) > 0 && current.flushAfterAt == null) {
+        this.store.updateDigestThreadFlushAfterAt(threadId, new Date(Date.now() + DEFAULT_DIGEST_THREAD_RECHECK_MS).toISOString());
+      }
+    };
     const activationItems = items.map((item) => activationItemFromInboxItem(item));
     const grouping: NotificationGrouping = groupingHint ?? {
       groupable: true,
@@ -1742,7 +1815,38 @@ export class AgentInboxService {
       summaryHint: thread.summary,
       flushClass: "normal",
     };
-    const moduleSummary = await this.adapters.summarizeDigestThread(source, activationItems, grouping);
+    let notificationState: Record<string, unknown> | undefined;
+    let summaryOverride: string | undefined;
+    if (!reconcile && grouping.flushClass !== "immediate") {
+      const decision = await this.adapters.shouldFlushDigestThread(source, activationItems, {
+        threadCreatedAt: thread.createdAt,
+        lastItemAt: thread.lastItemAt,
+        now: nowIso(),
+        notificationState: this.store.getDigestNotificationState(thread.inboxId, thread.groupKey),
+      });
+      if (!candidateIsCurrent()) {
+        retryInvalidCandidate();
+        return null;
+      }
+      if (decision && !decision.flush) {
+        const delay = decision.recheckAfterMs != null && decision.recheckAfterMs > 0
+          ? decision.recheckAfterMs : DEFAULT_DIGEST_THREAD_RECHECK_MS;
+        this.store.updateDigestThreadFlushAfterAt(threadId, new Date(Date.now() + delay).toISOString());
+        return null;
+      }
+      notificationState = decision?.notificationState;
+      summaryOverride = decision?.summary;
+    }
+    // Ack repair retains the published notification summary; it neither
+    // evaluates/advances a business notification phase nor exposes pending data.
+    const moduleSummary = reconcile
+      ? (thread.latestEntryId ? this.store.getInboxEntry(thread.latestEntryId)?.summary : null) ?? thread.summary
+      : summaryOverride
+      ?? await this.adapters.summarizeDigestThread(source, activationItems, grouping);
+    if (!candidateIsCurrent()) {
+      retryInvalidCandidate();
+      return null;
+    }
     const summary = moduleSummary ?? `${items.length} ${thread.summary}`;
     const sourceIds = uniqueSorted(items.map((item) => item.sourceId));
     const subscriptionIds = uniqueSortedNullable(
@@ -1765,6 +1869,7 @@ export class AgentInboxService {
       lastItemAt,
       deliveryHandleJson: deliveryHandle ? JSON.stringify(deliveryHandle) : null,
       createdAt: nowIso(),
+      notificationState,
     });
   }
 
@@ -2932,22 +3037,20 @@ export class AgentInboxService {
 
   private async reconcileDigestThreadsForInbox(inboxId: string): Promise<void> {
     for (const thread of this.store.listOpenDigestThreadsForInbox(inboxId)) {
-      const source = this.store.getSource(thread.sourceId);
-      if (!source) {
-        this.store.closeDigestThread(thread.threadId, nowIso());
-        continue;
-      }
-      const items = this.store.listUnackedInboxItemsForDigestThread(thread.threadId);
-      if (items.length === 0) {
-        this.store.closeDigestThread(thread.threadId, nowIso());
-        continue;
-      }
-      const head = thread.latestEntryId != null ? this.store.getInboxEntry(thread.latestEntryId) : null;
-      const currentIds = items.map((item) => item.itemId);
-      const headIds = head?.itemIds ?? [];
-      if (!sameStringArray(currentIds, headIds)) {
-        await this.flushDigestThread(source, thread.threadId);
-      }
+      await this.withDigestGroupLock(inboxId, thread.groupKey, async () => {
+        const current = this.store.getDigestThread(thread.threadId);
+        if (current?.status !== "open") return;
+        const source = this.store.getSource(thread.sourceId);
+        if (!source || this.store.listUnackedInboxItemsForDigestThread(thread.threadId).length === 0) {
+          this.store.closeDigestThread(thread.threadId, nowIso());
+          return;
+        }
+        const items = this.store.listSnapshottedUnackedInboxItemsForDigestThread(thread.threadId);
+        const head = current.latestEntryId != null ? this.store.getInboxEntry(current.latestEntryId) : null;
+        if (head && items.length > 0 && !sameStringArray(items.map((item) => item.itemId), head.itemIds)) {
+          await this.flushDigestThreadLocked(source, thread.threadId, null, true);
+        }
+      });
     }
   }
 
@@ -3749,28 +3852,6 @@ export class AgentInboxService {
         if (!source) {
           this.store.closeDigestThread(thread.threadId, now);
           continue;
-        }
-        const pendingItems = this.store.listUnackedInboxItemsForDigestThread(thread.threadId);
-        if (pendingItems.length > 0) {
-          const decision = await this.adapters.shouldFlushDigestThread(
-            source,
-            pendingItems.map((item) => activationItemFromInboxItem(item)),
-            {
-              threadCreatedAt: thread.createdAt,
-              lastItemAt: thread.lastItemAt,
-              now,
-            },
-          );
-          if (decision && !decision.flush) {
-            const recheckAfterMs = decision.recheckAfterMs != null && decision.recheckAfterMs > 0
-              ? decision.recheckAfterMs
-              : DEFAULT_DIGEST_THREAD_RECHECK_MS;
-            this.store.updateDigestThreadFlushAfterAt(
-              thread.threadId,
-              new Date(Date.parse(now) + recheckAfterMs).toISOString(),
-            );
-            continue;
-          }
         }
         const entry = await this.flushDigestThread(source, thread.threadId);
         if (!entry) {

@@ -575,8 +575,17 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
         { name: "eventFilter", type: "string", required: false, description: "Optional GitHub workflow event filter." },
         { name: "branch", type: "string", required: false, description: "Optional branch filter for workflow runs." },
         { name: "statusFilter", type: "string", required: false, description: "Optional workflow status filter." },
+        { name: "expectedWorkflowIds", type: "number[]", required: false, description: "Unique positive workflow IDs defining the minimum notification completion barrier; all observed runs also participate, and no success claim is made without this explicit set." },
+        { name: "digestQuietWindowSecs", type: "number", required: false, description: "Digest scheduling hint, not proof that all expected workflows were observed." },
+        { name: "digestFlushTimeoutSecs", type: "number", required: false, description: "Hard timeout for an incomplete workflow digest (default 3600 seconds)." },
       ],
       metadataFields: [
+        { name: "workflowRunId", type: "number", description: "GitHub workflow run ID." },
+        { name: "workflowId", type: "number|null", description: "GitHub workflow ID used by the explicit notification scope." },
+        { name: "runAttempt", type: "number|null", description: "Workflow run attempt; later attempts supersede earlier outcomes." },
+        { name: "runCreatedAt", type: "string|null", description: "Workflow run creation timestamp; the ordering proof for SHA generations. occurredAt/updated_at alone never prove which SHA is current." },
+        { name: "createdAt", type: "string|null", description: "Compatibility alias of runCreatedAt." },
+        { name: "updatedAt", type: "string|null", description: "Workflow run update timestamp." },
         { name: "name", type: "string|null", description: "Workflow run name." },
         { name: "status", type: "string", description: "Normalized workflow run status." },
         { name: "conclusion", type: "string|null", description: "Workflow run conclusion when completed." },
@@ -589,7 +598,7 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
         { name: "commitMessage", type: "string|null", description: "Head commit message when present." },
         { name: "htmlUrl", type: "string|null", description: "GitHub Actions run URL." },
       ],
-      eventVariantExamples: ["workflow_run.ci.completed.failure", "workflow_run.nightly_checks.observed"],
+      eventVariantExamples: ["workflow_run.ci.completed.failure", "workflow_run.ci.completed.failure.attempt_2", "workflow_run.nightly_checks.observed"],
     };
   },
   deriveInlinePreview(item: ActivationItem): string | null {
@@ -632,11 +641,11 @@ const GITHUB_REPO_CI_MODULE: RemoteSourceModule = {
   ): DigestFlushDecision | null {
     return decideGithubCiDigestFlush(items, parseGithubCiSourceConfig(source), context);
   },
-  summarizeDigestThread(items: ActivationItem[], _source: SourceStream, grouping: NotificationGrouping): string | null {
+  summarizeDigestThread(items: ActivationItem[], source: SourceStream, grouping: NotificationGrouping): string | null {
     if (items.length === 0) {
       return null;
     }
-    return summarizeGithubCiDigestThread(items)
+    return summarizeGithubCiDigestThread(items, parseGithubCiSourceConfig(source))
       ?? (grouping.summaryHint ? `${items.length} ${grouping.summaryHint}` : null);
   },
   validateConfig(source: SourceStream): void {

@@ -473,6 +473,8 @@ export interface NotificationGrouping {
   eventFamily?: string | null;
   summaryHint?: string | null;
   flushClass?: "normal" | "immediate";
+  /** Evaluate the normal source gate on every append, without waiting for maxItems. */
+  evaluateOnAppend?: boolean;
   /**
    * Per-family quiet window hint (milliseconds) used when re-arming the digest
    * thread flush deadline after an append. Falls back to the inbox aggregation
@@ -485,11 +487,17 @@ export interface DigestThreadFlushContext {
   threadCreatedAt: string;
   lastItemAt: string;
   now: string;
+  /** Opaque adapter-owned state shared by an inbox/group across thread rotation and ack. */
+  notificationState?: Record<string, unknown> | null;
 }
 
 export interface DigestFlushDecision {
   flush: boolean;
   reason?: string | null;
+  /** Committed atomically with the snapshot only when flush is true. */
+  notificationState?: Record<string, unknown>;
+  /** Source-provided notification summary, overriding generic thread summarization. */
+  summary?: string;
   /**
    * When `flush` is false, how long the service should wait before checking
    * this thread again.
