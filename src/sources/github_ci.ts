@@ -707,7 +707,7 @@ function mergeGithubCiEvidence(
   // an old SHA's delayed completion accidentally become the current SHA.
   // Evidence with no creation timestamp cannot prove order, keeps the
   // persisted head SHA, and therefore cannot trigger a false notification.
-  const newest = incoming.at(-1);
+  const newest = incoming.filter((run) => timestamp(run.createdAt) > 0).at(-1);
   if (newest && (!state || (newest.headSha !== state.headSha
       && (timestamp(newest.createdAt) > timestamp(state.headCreatedAt)
         || (timestamp(newest.createdAt) === timestamp(state.headCreatedAt) && newest.runId > state.headRunId))))) {

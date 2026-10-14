@@ -428,6 +428,39 @@ test("CI policy keeps the persisted SHA when a late completion cannot prove crea
   }).flush, false, "a failure that cannot prove it belongs to the current generation must not notify");
 });
 
+test("CI policy rejects timestamp-less evidence when initializing a notification head", () => {
+  for (const createdAt of [undefined, "", "invalid-date"]) {
+    for (const conclusion of ["failure", "success"]) {
+      const items = [10, 20].map((workflowId) =>
+        policyRun(workflowId, workflowId, conclusion, { createdAt }));
+      for (const now of [CI_CONTEXT.now, "2026-04-06T12:00:00Z"]) {
+        const decision = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, { ...CI_CONTEXT, now });
+        assert.equal(decision.flush, false, `${createdAt}/${conclusion}/${now} cannot establish a head`);
+        assert.equal(decision.notificationState, undefined);
+      }
+    }
+  }
+});
+
+test("CI policy merges timestamp-less evidence only after a head is proven", () => {
+  const proven = policyRun(1, 10, "success");
+  const unproven = policyRun(99, 20, "failure", { createdAt: "invalid-date", headSha: "sha-other" });
+  const initial = decideGithubCiDigestFlush([proven, unproven], {
+    ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10],
+  }, CI_CONTEXT);
+  assert.equal(initial.flush, true);
+  assert.match(initial.summary ?? "", /1 workflow runs.*1 passed/);
+  assert.doesNotMatch(initial.summary ?? "", /failed/);
+  const failure = policyRun(2, 20, "failure", { createdAt: undefined });
+  const merged = decideGithubCiDigestFlush([failure], CI_BARRIER_CONFIG, {
+    ...CI_CONTEXT, notificationState: initial.notificationState,
+  });
+  assert.equal(merged.flush, true, "timestamp-less evidence for a persisted head remains actionable");
+  assert.match(merged.summary ?? "", /1 failed/);
+  const alias = policyRun(3, 10, "failure", { runCreatedAt: "2026-04-06T10:00:00Z", createdAt: undefined });
+  assert.equal(decideGithubCiDigestFlush([alias], CI_BARRIER_CONFIG, CI_CONTEXT).flush, true);
+});
+
 test("CI config validates non-empty unique positive integer expected workflow ids", () => {
   const source = {
     sourceId: "ci-config", sourceKey: "holon-run/agentinbox",
@@ -702,12 +735,12 @@ test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha a
     ciActivationItem({
       itemId: "itm_ci_completed",
       occurredAt: "2026-04-06T10:00:00Z",
-      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "completed", conclusion: "success" },
     }),
     ciActivationItem({
       itemId: "itm_ci_running",
       occurredAt: "2026-04-06T10:00:30Z",
-      metadata: { workflowRunId: 1002, workflowId: 20, headSha: "sha-pr-72", status: "in_progress" },
+      metadata: { workflowRunId: 1002, workflowId: 20, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "in_progress" },
     }),
   ];
   const pendingDecision = decideGithubCiDigestFlush(pendingItems, CI_BARRIER_CONFIG, {
@@ -738,7 +771,7 @@ test("decideGithubCiDigestFlush waits for terminal runs on the latest head sha a
   const timedOutDecision = decideGithubCiDigestFlush(pendingItems, CI_BARRIER_CONFIG, {
     threadCreatedAt: "2026-04-06T09:00:00Z",
     lastItemAt: "2026-04-06T10:00:30Z",
-    now: "2026-04-06T10:10:00Z",
+    now: "2026-04-06T11:00:00Z",
   });
   assert.equal(timedOutDecision.flush, true);
   assert.match(timedOutDecision.reason ?? "", /hard timeout/);
@@ -749,12 +782,12 @@ test("decideGithubCiDigestFlush keeps a run terminal when later items arrive out
     ciActivationItem({
       itemId: "itm_ci_terminal_first",
       occurredAt: "2026-04-06T10:00:10Z",
-      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", status: "completed", conclusion: "success" },
+      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "completed", conclusion: "success" },
     }),
     ciActivationItem({
       itemId: "itm_ci_stale_queued",
       occurredAt: "2026-04-06T10:00:40Z",
-      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", status: "queued" },
+      metadata: { workflowRunId: 1001, workflowId: 10, headSha: "sha-pr-72", createdAt: "2026-04-06T10:00:00Z", status: "queued" },
     }),
   ];
   const decision = decideGithubCiDigestFlush(items, { ...CI_DIGEST_CONFIG, expectedWorkflowIds: [10] }, {
@@ -779,6 +812,7 @@ test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
         headSha: "sha-pr-72",
         pullRequestNumbers: [72],
         name: "CI",
+        createdAt: "2026-04-06T10:00:00Z",
         status: "completed",
         conclusion: "success",
       },
@@ -792,6 +826,7 @@ test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
         headSha: "sha-pr-72",
         pullRequestNumbers: [72],
         name: "Web E2E",
+        createdAt: "2026-04-06T10:00:00Z",
         status: "completed",
         conclusion: "failure",
       },
@@ -805,6 +840,7 @@ test("summarizeGithubCiDigestThread summarizes workflow run outcomes", () => {
         headSha: "sha-pr-72",
         pullRequestNumbers: [72],
         name: "Docs",
+        createdAt: "2026-04-06T10:00:00Z",
         status: "completed",
         conclusion: "skipped",
       },
