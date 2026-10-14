@@ -211,9 +211,13 @@ export const digestThreads = sqliteTable("digest_threads", {
 export const digestNotificationStates = sqliteTable("digest_notification_states", {
   inboxId: text("inbox_id").notNull().references(() => inboxes.inboxId, { onDelete: "cascade" }),
   groupKey: text("group_key").notNull(),
+  sourceId: text("source_id").references(() => sources.sourceId, { onDelete: "cascade" }),
+  updatedAt: text("updated_at").notNull(),
   notificationStateJson: text("notification_state_json").notNull(),
 }, (table) => ({
   pk: primaryKey({ columns: [table.inboxId, table.groupKey] }),
+  sourceIdx: index("idx_digest_notification_states_source").on(table.sourceId),
+  updatedIdx: index("idx_digest_notification_states_updated").on(table.updatedAt),
 }));
 
 export const inboxEntries = sqliteTable("inbox_entries", {

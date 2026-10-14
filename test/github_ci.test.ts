@@ -326,6 +326,34 @@ test("CI policy ranks SHA cycles by run creation, not old runs finishing late", 
   }).flush, false);
 });
 
+test("CI policy starts a new SHA timeout at its earliest workflow after a committed snapshot", () => {
+  const previous = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success"), policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,
+  );
+  assert.equal(previous.flush, true);
+  const early = policyRun(3, 10, "success", {
+    headSha: "sha-next", createdAt: "2026-04-06T10:10:00Z", updatedAt: "2026-04-06T10:11:00Z",
+  });
+  const late = policyRun(4, 20, null, {
+    headSha: "sha-next", createdAt: "2026-04-06T10:30:00Z", updatedAt: "2026-04-06T10:31:00Z",
+  });
+  const context = { ...CI_CONTEXT, notificationState: previous.notificationState };
+  for (const items of [[early, late], [late, early]]) {
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:09:00Z",
+    }).flush, false, "the new SHA must not inherit the previous SHA's deadline");
+    const timeout = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:11:00Z",
+    });
+    assert.equal(timeout.flush, true, "later workflows must not extend the new SHA's deadline");
+    assert.equal(timeout.notificationState?.startedAt, "2026-04-06T10:10:00Z");
+    assert.match(timeout.summary ?? "", /incomplete.*1 still running/);
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: "2026-04-06T11:12:00Z", notificationState: timeout.notificationState,
+    }).flush, false, "the committed incomplete snapshot must suppress replay");
+  }
+});
+
 test("CI policy keeps the persisted SHA when a late completion cannot prove creation order", () => {
   const current = decideGithubCiDigestFlush(
     [policyRun(2, 10, "success"), policyRun(3, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT,

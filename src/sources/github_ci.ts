@@ -715,8 +715,8 @@ function mergeGithubCiEvidence(
       version: 1, headSha: newest.headSha, headCreatedAt: newest.createdAt,
       headRunId: newest.runId,
       generation: 1,
-      startedAt: state ? newest.createdAt
-        : incoming.find((run) => run.headSha === newest.headSha)?.createdAt || context.threadCreatedAt,
+      startedAt: incoming.find((run) => run.headSha === newest.headSha
+        && timestamp(run.createdAt) > 0)?.createdAt || context.threadCreatedAt,
       runs: [],
     };
   }

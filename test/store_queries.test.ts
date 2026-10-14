@@ -21,6 +21,12 @@ async function makeDigestStoreFixture() {
   const dbPath = path.join(dir, "inbox.sqlite");
   const store = await AgentInboxStore.open(dbPath);
   const now = "2026-10-14T00:00:00.000Z";
+  store.insertSource({
+    sourceId: "digest-source", hostId: "digest-host", streamKind: "test",
+    streamKey: "digest", sourceType: "local_event", sourceKey: "digest",
+    configRef: null, config: {}, status: "active", checkpoint: null,
+    createdAt: now, updatedAt: now,
+  });
   store.insertAgent({
     agentId: "digest-agent", runtimeKind: "unknown", status: "active",
     createdAt: now, updatedAt: now, lastSeenAt: now,
@@ -94,8 +100,8 @@ test("digest pending and notification state: opaque state survives rotation/ack/
     const state = { generation: 1, opaque: { stage: "reported", fingerprint: ["a", 7] } };
     fx.snapshot(["one"], state);
     assert.deepEqual(store.getDigestNotificationState("digest-inbox", fx.thread.groupKey), state);
-    store.ackItems("digest-inbox", ["one"], fx.now);
-    store.deleteAckedInboxItems("digest-inbox", "2026-10-15T00:00:00.000Z");
+    store.ackItems("digest-inbox", ["one"], "2026-10-12T00:00:00.000Z");
+    assert.equal(store.deleteAckedInboxItems("digest-inbox", "2026-10-13T00:00:00.000Z"), 1);
     store.closeDigestThread(fx.thread.threadId, fx.now);
     fx.createThread();
     assert.deepEqual(store.getDigestNotificationState("digest-inbox", fx.thread.groupKey), state);

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import BetterSqlite3 from "better-sqlite3";
 import { AdapterRegistry } from "../src/adapters";
 import { Activation, AppendSourceEventInput } from "../src/model";
 import { ActivationDispatcher, AgentInboxService } from "../src/service";
@@ -223,7 +224,16 @@ test("CI ack keeps cycle evidence, and a newer attempt can recover after GC and 
     assert.match(final.summary, /1 failed|failure/);
     assert.match(final.summary, /1 passed/);
     await f.service.ackInbox(f.agentId, { all: true });
-    f.store.deleteAckedInboxItemsGlobal(new Date(Date.now() + 86_400_000).toISOString());
+    // Collect old acknowledged content while keeping recent cycle state inside
+    // retention. A future cutoff would expire the state itself as well.
+    const db = new BetterSqlite3(path.join(f.dir, "inbox.sqlite"));
+    try {
+      db.prepare("update inbox_items set acked_at = ? where acked_at is not null")
+        .run(new Date(Date.now() - 2 * 86_400_000).toISOString());
+    } finally {
+      db.close();
+    }
+    assert.ok(f.store.deleteAckedInboxItemsGlobal(new Date(Date.now() - 86_400_000).toISOString()) > 0);
     await f.service.stop();
     f.store.close();
     current = await openFixture(f.dir, f.dispatcher);
