@@ -776,8 +776,7 @@ function mergeGithubCiEvidence(
     // Pending decisions do not persist state. Use the first evidence of this
     // generation, not evaluation time, or every recheck resets the timeout.
     state.startedAt = generationEvents.map((run) =>
-      (uncommitted ? run.attempt > 1 : baseline.get(evidenceKey(run))?.runId === run.runId)
-        ? run.updatedAt : run.createdAt)
+      run.attempt > 1 ? run.updatedAt : run.createdAt)
       .sort((a, b) => timestamp(a) - timestamp(b))[0] ?? context.threadCreatedAt;
     delete state.phase;
     delete state.firstFingerprint;

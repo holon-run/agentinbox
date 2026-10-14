@@ -535,6 +535,36 @@ for (const scenario of ["new SHA", "new attempt", "new attempt without prior evi
 }
 
 for (const attempt of [1, 2]) {
+  test(`CI policy times replacement attempt ${attempt} independently of the committed run`, () => {
+    const first = decideGithubCiDigestFlush(
+      [policyRun(1, 10, "failure"), policyRun(3, 20, "success")],
+      CI_BARRIER_CONFIG, CI_CONTEXT,
+    );
+    assert.ok(first.notificationState);
+    const replacement = policyRun(2, 10, null, {
+      createdAt: "2026-04-06T10:30:00Z",
+      updatedAt: "2026-04-06T10:58:00Z",
+    });
+    const retry = policyRun(2, 10, null, {
+      ...replacement.metadata, runAttempt: attempt, updatedAt: "2026-04-06T10:59:00Z",
+    });
+    const items = [replacement, retry, policyRun(2, 10, null, {
+      ...retry.metadata, updatedAt: "2026-04-06T11:01:00Z",
+    })];
+    const context = { ...CI_CONTEXT, notificationState: first.notificationState };
+    const startedAt = attempt === 1 ? "2026-04-06T10:30:00Z" : "2026-04-06T10:59:00Z";
+    assert.equal(decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: attempt === 1 ? "2026-04-06T11:29:00Z" : "2026-04-06T11:30:00Z",
+    }).flush, false, "the selected attempt must receive its own timeout");
+    const timeout = decideGithubCiDigestFlush(items, CI_BARRIER_CONFIG, {
+      ...context, now: attempt === 1 ? "2026-04-06T11:30:00Z" : "2026-04-06T11:59:00Z",
+    });
+    assert.equal(timeout.flush, true, "later observations must not restart the timeout");
+    assert.match(timeout.summary ?? "", /incomplete/);
+    assert.equal(timeout.notificationState?.startedAt, startedAt);
+    assert.equal(first.notificationState?.generation, 1, "pending decisions must not mutate the baseline");
+  });
+
   test(`CI policy reconstructs same-SHA replacement run attempt ${attempt} before a snapshot exists`, () => {
     const startedAt = "2026-04-06T10:59:00Z";
     const replacement = policyRun(2, 10, null, {
