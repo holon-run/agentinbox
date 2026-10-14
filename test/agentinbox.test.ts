@@ -6867,3 +6867,389 @@ function fireDispatchWithExpiredLease(store: AgentInboxStore, agentId: string, t
     store.upsertActivationDispatchState({ ...state, leaseExpiresAt: new Date(Date.now() - 1).toISOString() });
   }
 }
+
+// Digest pending/gate concurrency regression tests (core aggregation contract).
+async function makeDigestRegressionFixture(maxItems = 20) {
+  const fixture = await makeService();
+  const { service, store } = fixture;
+  const registration = await service.registerAgent({
+    runtimeKind: "codex", backend: "tmux", tmuxPaneId: "%digest-regression",
+  });
+  const agentId = registration.agent.agentId;
+  service.updateInboxAggregationPolicy(agentId, {
+    enabled: true, windowMs: 30_000, maxItems, maxThreadAgeMs: 60_000,
+  });
+  const inbox = store.getInboxByAgentId(agentId)!;
+  const source = await service.registerSource({
+    sourceType: "github_repo", sourceKey: "digest-regression",
+    config: { owner: "example", repo: "example" },
+  });
+  const adapters: AdapterRegistry = (service as any).adapters;
+  adapters.deriveNotificationGrouping = async () => ({
+    groupable: true, resourceRef: "resource:1", eventFamily: "updates", flushClass: "normal",
+  });
+  adapters.summarizeDigestThread = async (_source, items) => `${items.length} updates`;
+  adapters.shouldFlushDigestThread = async () => null;
+  let sequence = 0;
+  const append = async () => {
+    const item = {
+      itemId: `digest-regression-${++sequence}`, inboxId: inbox.inboxId,
+      sourceId: source.sourceId, sourceNativeId: String(sequence), eventVariant: "updated",
+      occurredAt: nowIso(), metadata: {}, rawPayload: { sequence },
+      deliveryHandle: null, ackedAt: null,
+    };
+    store.insertInboxItem(item);
+    return (service as any).materializeInboxEntryForItem({
+      agentId, inbox: store.getInbox(inbox.inboxId)!, source, item, summary: "updates", subscriptionId: null,
+    }) as Promise<import("../src/model").InboxEntry[]>;
+  };
+  const history = () => store.listInboxEntries(inbox.inboxId, { includeAcked: true })
+    .filter((entry) => entry.kind === "digest_snapshot");
+  const cleanup = async () => {
+    await service.stop();
+    store.close();
+    fs.rmSync(fixture.dir, { recursive: true, force: true });
+  };
+  return { ...fixture, agentId, inbox, source, adapters, append, history, cleanup };
+}
+
+test("digest pending regression: 48 unacked items flush at 20/40, not every append", async () => {
+  const fx = await makeDigestRegressionFixture();
+  try {
+    for (let index = 0; index < 48; index++) await fx.append();
+    assert.deepEqual(fx.history().map((entry) => entry.count), [20, 40]);
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.deepEqual(fx.history().map((entry) => entry.count), [20, 40, 48]);
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.equal(fx.history().length, 3, "no new pending must not manufacture revisions");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("digest gate regression: threshold and timer share the adapter gate", async () => {
+  const fx = await makeDigestRegressionFixture(2);
+  try {
+    let allow = false;
+    let summaries = 0;
+    fx.adapters.shouldFlushDigestThread = async () => ({ flush: allow, recheckAfterMs: 1000 });
+    fx.adapters.summarizeDigestThread = async () => { summaries++; return "allowed"; };
+    await fx.append();
+    await fx.append();
+    assert.equal(fx.history().length, 0, "threshold must not bypass the source gate");
+    assert.equal(summaries, 0);
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.equal(fx.history().length, 0);
+    assert.ok(fx.store.listOpenDigestThreads()[0]!.flushAfterAt);
+    allow = true;
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.equal(fx.history().length, 1);
+    assert.equal(summaries, 1);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("digest gate regression: pending items defer age rotation until the snapshot commits", async () => {
+  const fx = await makeDigestRegressionFixture(1);
+  try {
+    fx.service.updateInboxAggregationPolicy(fx.agentId, {
+      enabled: true, windowMs: 30_000, maxItems: 1, maxThreadAgeMs: 1,
+    });
+    let allow = false;
+    const candidates: string[][] = [];
+    fx.adapters.shouldFlushDigestThread = async (_source, items) => {
+      candidates.push(items.map((item) => item.itemId));
+      return { flush: allow };
+    };
+    await fx.append();
+    const original = fx.store.listOpenDigestThreads()[0]!;
+    await sleep(5);
+    await fx.append();
+    await sleep(5);
+    await fx.append();
+    const pendingIds = ["digest-regression-1", "digest-regression-2", "digest-regression-3"];
+    assert.equal(fx.store.getDigestThread(original.threadId)!.status, "open",
+      "an expired thread with pending items must not close before gate approval");
+    assert.deepEqual(fx.store.listOpenDigestThreads().map((thread) => thread.threadId), [original.threadId]);
+    assert.deepEqual(fx.store.listUnackedInboxItemsForDigestThread(original.threadId).map((item) => item.itemId), pendingIds);
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(original.threadId), 3);
+    assert.deepEqual(candidates, [pendingIds.slice(0, 1), pendingIds.slice(0, 2), pendingIds]);
+    assert.equal(fx.history().length, 0, "age must not bypass the gate");
+
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.equal(fx.history().length, 0, "timer flush must still honor gate rejection");
+    allow = true;
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.deepEqual(fx.history().map((entry) => entry.itemIds), [pendingIds]);
+    assert.equal(fx.history()[0]!.threadId, original.threadId);
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(original.threadId), 0);
+
+    await fx.append();
+    assert.equal(fx.store.getDigestThread(original.threadId)!.status, "closed");
+    assert.notEqual(fx.store.listOpenDigestThreads()[0]!.threadId, original.threadId);
+    assert.deepEqual(fx.history().map((entry) => entry.itemIds), [pendingIds, ["digest-regression-4"]]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+function digestAsyncBarrier() {
+  let started!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  return { entered, release, pause: async () => { started(); await released; } };
+}
+
+test("digest gate regression: immediate retains bypass and evaluateOnAppend uses normal gate", async () => {
+  const fx = await makeDigestRegressionFixture(100);
+  try {
+    let gateCalls = 0;
+    let allow = false;
+    fx.adapters.shouldFlushDigestThread = async () => {
+      gateCalls++;
+      return { flush: allow, notificationState: { committed: true }, summary: "business summary" };
+    };
+    fx.adapters.deriveNotificationGrouping = async () => ({
+      groupable: true, resourceRef: "resource:1", eventFamily: "updates", evaluateOnAppend: true,
+    });
+    await fx.append();
+    assert.equal(gateCalls, 1);
+    assert.equal(fx.history().length, 0);
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    assert.equal(fx.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), null, "rejected decisions cannot advance state");
+    allow = true;
+    await fx.append();
+    assert.equal(gateCalls, 2);
+    assert.equal(fx.history()[0]!.summary, "business summary");
+    assert.deepEqual(fx.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), { committed: true });
+    fx.adapters.deriveNotificationGrouping = async () => ({
+      groupable: true, resourceRef: "resource:1", eventFamily: "updates", flushClass: "immediate",
+    });
+    allow = false;
+    await fx.append();
+    assert.equal(fx.history().length, 2);
+    assert.equal(gateCalls, 2, "immediate explicitly bypasses the normal adapter gate");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("digest concurrency regression: threshold/timer overlap and new arrivals preserve the next deadline", async () => {
+  const fx = await makeDigestRegressionFixture(2);
+  const barrier = digestAsyncBarrier();
+  try {
+    await fx.append();
+    let summaries = 0;
+    fx.adapters.summarizeDigestThread = async (_source, items) => {
+      if (++summaries === 1) await barrier.pause();
+      return `${items.length} updates`;
+    };
+    const threshold = fx.append();
+    await barrier.entered;
+    const timer = (fx.service as any).syncPendingDigestThreads(true);
+    const arriving = fx.append();
+    barrier.release();
+    await Promise.all([threshold, timer, arriving]);
+    assert.deepEqual(fx.history().map((entry) => entry.count), [2]);
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(thread.threadId), 1);
+    assert.ok(thread.flushAfterAt, "arrival outside the first snapshot must remain scheduled");
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.deepEqual(fx.history().map((entry) => entry.count), [2, 3]);
+    assert.equal(summaries, 2, "overlapping timer cannot resummarize an already committed candidate");
+  } finally {
+    barrier.release();
+    await fx.cleanup();
+  }
+});
+
+test("digest concurrency regression: ack during summarize invalidates the candidate without exposing pending data", async () => {
+  const fx = await makeDigestRegressionFixture(1);
+  const barrier = digestAsyncBarrier();
+  try {
+    await fx.append();
+    const older = fx.history()[0]!;
+    fx.adapters.summarizeDigestThread = async () => { await barrier.pause(); return "stale summary"; };
+    const append = fx.append();
+    await barrier.entered;
+    const ack = fx.service.ackInboxItems(fx.agentId, [older.entryId]);
+    barrier.release();
+    await Promise.all([append, ack]);
+    assert.equal(fx.history().length, 1, "neither stale summary nor ack repair may publish the new item");
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(thread.threadId), 1);
+    assert.ok(thread.flushAfterAt);
+    fx.adapters.summarizeDigestThread = async () => "fresh summary";
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.equal(fx.history().length, 2);
+    assert.deepEqual(fx.history()[1]!.itemIds, ["digest-regression-2"]);
+  } finally {
+    barrier.release();
+    await fx.cleanup();
+  }
+});
+
+test("digest concurrency regression: ack during gate prevents snapshot/state commit", async () => {
+  const fx = await makeDigestRegressionFixture(1);
+  const barrier = digestAsyncBarrier();
+  try {
+    fx.adapters.shouldFlushDigestThread = async () => {
+      await barrier.pause();
+      return { flush: true, notificationState: { generation: 1 }, summary: "obsolete" };
+    };
+    const append = fx.append();
+    await barrier.entered;
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    fx.store.ackItems(fx.inbox.inboxId, ["digest-regression-1"], nowIso());
+    barrier.release();
+    await append;
+    assert.equal(fx.history().length, 0);
+    assert.equal(fx.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), null);
+    assert.equal(fx.store.getDigestThread(thread.threadId)!.status, "closed");
+  } finally {
+    barrier.release();
+    await fx.cleanup();
+  }
+});
+
+test("digest ack regression: unrelated ack cannot reveal a never-notified thread", async () => {
+  const fx = await makeDigestRegressionFixture(1);
+  try {
+    fx.adapters.shouldFlushDigestThread = async () => ({ flush: false });
+    await fx.append();
+    const direct = await fx.service.addDirectInboxTextMessage(fx.agentId, { message: "unrelated" });
+    const entry = fx.store.listInboxEntries(fx.inbox.inboxId).find((entry) => entry.itemIds.includes(direct.itemId))!;
+    await fx.service.ackInboxItems(fx.agentId, [entry.entryId]);
+    assert.equal(fx.history().length, 0);
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(fx.store.listOpenDigestThreads()[0]!.threadId), 1);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("digest ack regression: partial snapshot ack repairs only published membership and preserves summary/state", async () => {
+  const fx = await makeDigestRegressionFixture(2);
+  try {
+    fx.adapters.shouldFlushDigestThread = async () => ({
+      flush: true, notificationState: { generation: 1 }, summary: "published business outcome",
+    });
+    await fx.append();
+    await fx.append();
+    fx.adapters.shouldFlushDigestThread = async () => { throw new Error("ack repair must not evaluate a business gate"); };
+    await fx.append(); // Pending below threshold, must not appear in repair.
+    fx.store.ackItems(fx.inbox.inboxId, ["digest-regression-1"], nowIso());
+    await (fx.service as any).reconcileDigestThreadsForInbox(fx.inbox.inboxId);
+    const repaired = fx.history()[1]!;
+    assert.deepEqual(repaired.itemIds, ["digest-regression-2"]);
+    assert.equal(repaired.summary, "published business outcome");
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(thread.threadId), 1);
+    assert.ok(thread.flushAfterAt);
+    assert.deepEqual(fx.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), { generation: 1 });
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+test("digest state regression: group lock serializes notification state across thread rotation", async () => {
+  const fx = await makeDigestRegressionFixture(1);
+  const barrier = digestAsyncBarrier();
+  try {
+    fx.service.updateInboxAggregationPolicy(fx.agentId, {
+      enabled: true, windowMs: 30_000, maxItems: 1, maxThreadAgeMs: 1,
+    });
+    const states: Array<Record<string, unknown> | null | undefined> = [];
+    fx.adapters.shouldFlushDigestThread = async (_source, _items, context) => {
+      states.push(context.notificationState);
+      if (states.length === 1) await barrier.pause();
+      return {
+        flush: true, summary: "generation",
+        notificationState: { generation: Number(context.notificationState?.generation ?? 0) + 1 },
+      };
+    };
+    const first = fx.append();
+    await barrier.entered;
+    await sleep(5); // Force maxThreadAge rotation while the older flush is in flight.
+    const second = fx.append();
+    barrier.release();
+    await Promise.all([first, second]);
+    assert.deepEqual(states, [null, { generation: 1 }]);
+    assert.equal(fx.history().length, 2);
+    assert.notEqual(fx.history()[0]!.threadId, fx.history()[1]!.threadId);
+    assert.deepEqual(fx.store.getDigestNotificationState(fx.inbox.inboxId, fx.history()[1]!.groupKey!), { generation: 2 });
+  } finally {
+    barrier.release();
+    await fx.cleanup();
+  }
+});
+
+test("digest state regression: restart preserves pending threshold and source-gated state", async () => {
+  const fx = await makeDigestRegressionFixture(2);
+  let closed = false;
+  let reopened: Awaited<ReturnType<typeof makeServiceFromDbPath>> | null = null;
+  try {
+    fx.adapters.shouldFlushDigestThread = async () => ({
+      flush: true, notificationState: { generation: 1 }, summary: "first",
+    });
+    await fx.append();
+    await fx.append();
+    await fx.append();
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    await fx.service.stop();
+    fx.store.close();
+    closed = true;
+    reopened = await makeServiceFromDbPath(path.join(fx.dir, "agentinbox.sqlite"), fx.dir);
+    const adapters: AdapterRegistry = (reopened.service as any).adapters;
+    let allow = false;
+    adapters.shouldFlushDigestThread = async (_source, _items, context) => {
+      assert.deepEqual(context.notificationState, { generation: 1 });
+      return { flush: allow, summary: "second", notificationState: { generation: 2 } };
+    };
+    assert.equal(reopened.store.countPendingInboxItemsForDigestThread(thread.threadId), 1);
+    await (reopened.service as any).syncPendingDigestThreads(true);
+    assert.equal(reopened.store.getDigestThread(thread.threadId)!.latestRevision, 1);
+    assert.ok(reopened.store.getDigestThread(thread.threadId)!.flushAfterAt);
+    allow = true;
+    await (reopened.service as any).syncPendingDigestThreads(true);
+    assert.equal(reopened.store.getDigestThread(thread.threadId)!.latestRevision, 2);
+    assert.equal(reopened.store.countPendingInboxItemsForDigestThread(thread.threadId), 0);
+    assert.deepEqual(reopened.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), { generation: 2 });
+    await (reopened.service as any).syncPendingDigestThreads(true);
+    assert.equal(reopened.store.getDigestThread(thread.threadId)!.latestRevision, 2);
+  } finally {
+    if (reopened) {
+      await reopened.service.stop();
+      reopened.store.close();
+    }
+    if (!closed) {
+      await fx.service.stop();
+      fx.store.close();
+    }
+    fs.rmSync(fx.dir, { recursive: true, force: true });
+  }
+});
+
+test("digest state regression: failed materialization leaves pending/state eligible for retry", async () => {
+  const fx = await makeDigestRegressionFixture(1);
+  try {
+    fx.adapters.shouldFlushDigestThread = async (_source, _items, context) => ({
+      flush: true, notificationState: { generation: Number(context.notificationState?.generation ?? 0) + 1 },
+      summary: "business outcome",
+    });
+    const materialize = fx.store.materializeDigestSnapshot.bind(fx.store);
+    fx.store.materializeDigestSnapshot = () => { throw new Error("snapshot unavailable"); };
+    await assert.rejects(fx.append(), /snapshot unavailable/);
+    const thread = fx.store.listOpenDigestThreads()[0]!;
+    assert.equal(fx.store.countPendingInboxItemsForDigestThread(thread.threadId), 1);
+    assert.ok(thread.flushAfterAt);
+    assert.equal(fx.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), null);
+    fx.store.materializeDigestSnapshot = materialize;
+    await (fx.service as any).syncPendingDigestThreads(true);
+    assert.equal(fx.history().length, 1);
+    assert.deepEqual(fx.store.getDigestNotificationState(fx.inbox.inboxId, thread.groupKey), { generation: 1 });
+  } finally {
+    await fx.cleanup();
+  }
+});

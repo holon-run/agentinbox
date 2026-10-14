@@ -32,6 +32,8 @@ export interface GithubCiSourceConfig {
   statusFilter?: string;
   digestQuietWindowSecs?: number;
   digestFlushTimeoutSecs?: number;
+  /** Explicit workflow scope for the completion barrier (not jobs or checks). */
+  expectedWorkflowIds?: number[];
 }
 
 interface GithubCiSourceCheckpoint {
@@ -319,7 +321,7 @@ export function normalizeGithubWorkflowRunEvent(
   const workflowName = asString(run.name) ?? asString(run.display_title);
   const conclusion = asString(run.conclusion);
   const status = inferWorkflowRunStatus(run, conclusion);
-  const variant = buildWorkflowRunVariant(workflowName, status, conclusion);
+  const variant = buildWorkflowRunVariant(workflowName, status, conclusion, asNumber(run.run_attempt));
   const actor = asRecord(run.actor);
   const headCommit = asRecord(run.head_commit);
   const headRepository = asRecord(run.head_repository);
@@ -350,6 +352,7 @@ export function normalizeGithubWorkflowRunEvent(
       runAttempt: asNumber(run.run_attempt),
       actor: asString(actor.login),
       htmlUrl: asString(run.html_url),
+      runCreatedAt: asString(run.created_at),
       createdAt: asString(run.created_at),
       updatedAt: asString(run.updated_at),
       commitMessage: asString(headCommit.message),
@@ -370,6 +373,8 @@ export function normalizeGithubWorkflowRunEvent(
       pull_requests: pullRequestNumbers.map((number) => ({ number })),
       run_number: asNumber(run.run_number),
       run_attempt: asNumber(run.run_attempt),
+      created_at: asString(run.created_at),
+      updated_at: asString(run.updated_at),
       html_url: asString(run.html_url),
       actor: asString(actor.login),
       head_commit: {
@@ -383,6 +388,7 @@ export function normalizeGithubWorkflowRunEvent(
 
 export function parseGithubCiSourceConfig(source: SourceStream): GithubCiSourceConfig {
   const config = source.config ?? {};
+  const expectedWorkflowIds = parseExpectedWorkflowIds(config.expectedWorkflowIds);
   const owner = asString(config.owner);
   const repo = asString(config.repo);
   if (!owner || !repo) {
@@ -401,6 +407,7 @@ export function parseGithubCiSourceConfig(source: SourceStream): GithubCiSourceC
       statusFilter: asString(config.statusFilter) ?? undefined,
       digestQuietWindowSecs: asNumber(config.digestQuietWindowSecs) ?? undefined,
       digestFlushTimeoutSecs: asNumber(config.digestFlushTimeoutSecs) ?? undefined,
+      expectedWorkflowIds,
     };
   }
   return {
@@ -414,7 +421,20 @@ export function parseGithubCiSourceConfig(source: SourceStream): GithubCiSourceC
     statusFilter: asString(config.statusFilter) ?? undefined,
     digestQuietWindowSecs: asNumber(config.digestQuietWindowSecs) ?? undefined,
     digestFlushTimeoutSecs: asNumber(config.digestFlushTimeoutSecs) ?? undefined,
+    expectedWorkflowIds,
   };
+}
+
+function parseExpectedWorkflowIds(value: unknown): number[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0
+      || value.some((id) => typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)
+      || new Set(value).size !== value.length) {
+    throw new Error("github_repo_ci expectedWorkflowIds must be a non-empty array of unique positive integers");
+  }
+  return [...value];
 }
 
 export function githubCiDigestQuietWindowMs(config: GithubCiSourceConfig): number {
@@ -463,8 +483,6 @@ export function deriveGithubCiNotificationGrouping(
   if (!resourceRef) {
     return null;
   }
-  const conclusion = asString(item.metadata.conclusion);
-  const actionableFailure = Boolean(conclusion) && conclusion !== "success" && conclusion !== "skipped";
   return {
     groupable: true,
     resourceRef,
@@ -472,124 +490,153 @@ export function deriveGithubCiNotificationGrouping(
     summaryHint: prNumber != null
       ? `CI updates for ${repoFullName}#${prNumber}`
       : `CI updates for ${repoFullName}@${shortSha(headSha)}`,
-    flushClass: actionableFailure ? "immediate" : "normal",
+    // First failures are urgent, but only the stateful gate may admit them.
+    flushClass: "normal",
+    evaluateOnAppend: true,
     flushDelayMs: githubCiDigestQuietWindowMs(config),
   };
 }
 
+const ACTIONABLE_CI_FAILURES = new Set(["failure", "timed_out", "action_required", "startup_failure"]);
+
+interface GithubCiRunEvidence {
+  runId: number;
+  workflowId: number | null;
+  attempt: number;
+  headSha: string;
+  createdAt: string;
+  updatedAt: string;
+  status: string | null;
+  conclusion: string | null;
+  name: string | null;
+  repoFullName: string | null;
+  prNumber: number | null;
+}
+
+interface GithubCiNotificationState extends Record<string, unknown> {
+  version: 1;
+  headSha: string;
+  headCreatedAt: string;
+  headRunId: number;
+  generation: number;
+  startedAt: string;
+  runs: GithubCiRunEvidence[];
+  phase?: "first" | "final" | "incomplete";
+  firstFingerprint?: string;
+  finalFingerprint?: string;
+  incompleteFingerprint?: string;
+  /** Only currently selected run attempts, bounded by workflow scope. */
+  notifiedFailures?: string[];
+}
+
 /**
- * Post-hoc flush decision for a PR-level CI digest thread: flush once every
- * workflow run observed for the thread's latest head sha has reached a
- * terminal state (or the hard timeout expires). GitHub exposes no prior about
- * how many runs a push will create, so readiness is judged from the observed
- * event stream itself.
+ * Merge persisted evidence with unacked items. The caller commits the returned
+ * notification state atomically with a snapshot only when flush is true.
  */
 export function decideGithubCiDigestFlush(
   items: ActivationItem[],
   config: GithubCiSourceConfig,
   context: DigestThreadFlushContext,
 ): DigestFlushDecision {
-  if (items.length === 0) {
-    return { flush: true, reason: "no pending items" };
-  }
-  const ordered = orderItemsByOccurredAt(items);
-  const latestSha = latestHeadSha(ordered);
-  if (!latestSha) {
-    return { flush: true, reason: "no head sha" };
+  const state = mergeGithubCiEvidence(items, config, context);
+  if (!state) {
+    return { flush: false, reason: "no workflow evidence", recheckAfterMs: GITHUB_CI_DIGEST_RECHECK_MS };
   }
   const nowMs = Date.parse(context.now);
-  const createdMs = Date.parse(context.threadCreatedAt);
+  const createdMs = Date.parse(state.startedAt);
   const timeoutMs = githubCiDigestFlushTimeoutMs(config);
   const timedOut = Number.isFinite(nowMs) && Number.isFinite(createdMs) && nowMs - createdMs >= timeoutMs;
-  if (!timedOut) {
-    const runTerminal = new Map<number, boolean>();
-    for (const item of ordered) {
-      if (asString(item.metadata.headSha) !== latestSha) {
-        continue;
-      }
-      const runId = asNumber(item.metadata.workflowRunId);
-      if (!runId) {
-        continue;
-      }
-      const status = asString(item.metadata.status);
-      const conclusion = asString(item.metadata.conclusion);
-      // Sticky terminal: out-of-order delivery or timestamp skew must never
-      // downgrade a run that was already observed terminal back to pending,
-      // which would defer the flush until the hard timeout.
-      const observedTerminal = status === "completed" || Boolean(conclusion);
-      runTerminal.set(runId, (runTerminal.get(runId) ?? false) || observedTerminal);
+  const missing = config.expectedWorkflowIds?.filter((id) => !state.runs.some((run) => run.workflowId === id));
+  // A completed status without an outcome is not a complete result barrier.
+  const pending = state.runs.filter((run) => !isTerminalRun(run) || !run.conclusion).length;
+  const complete = Boolean(missing && missing.length === 0 && pending === 0);
+  const failures = state.runs.filter((run) => ACTIONABLE_CI_FAILURES.has(run.conclusion ?? ""));
+  const newFailure = failures.some((run) => !state.notifiedFailures?.includes(failureEvidenceKey(run)));
+  const fingerprint = JSON.stringify([
+    state.headSha, state.generation,
+    state.runs.map((run) => [run.workflowId, run.runId, run.attempt, run.status, run.conclusion]),
+  ]);
+  if (newFailure && !state.firstFingerprint) {
+    state.phase = "first";
+    state.firstFingerprint = fingerprint;
+    state.notifiedFailures = failures.map(failureEvidenceKey);
+    // A first failure that already contains the complete result needs no
+    // identical second notification.
+    if (complete) {
+      state.finalFingerprint = fingerprint;
     }
-    let pending = 0;
-    for (const terminal of runTerminal.values()) {
-      if (!terminal) {
-        pending += 1;
-      }
-    }
-    if (pending > 0) {
-      const remaining = createdMs + timeoutMs - nowMs;
-      const recheckAfterMs = Number.isFinite(remaining)
-        ? Math.min(GITHUB_CI_DIGEST_RECHECK_MS, Math.max(GITHUB_CI_DIGEST_MIN_RECHECK_MS, remaining))
-        : GITHUB_CI_DIGEST_RECHECK_MS;
-      return {
-        flush: false,
-        reason: `${pending} run(s) still pending on ${shortSha(latestSha)}`,
-        recheckAfterMs,
-      };
-    }
+    return {
+      flush: true, reason: `first actionable failure on ${shortSha(state.headSha)}`,
+      notificationState: state, summary: summarizeCiEvidence(state, "first failure"),
+    };
   }
+  if (complete && !state.finalFingerprint) {
+    state.phase = "final";
+    state.finalFingerprint = fingerprint;
+    state.notifiedFailures = failures.map(failureEvidenceKey);
+    const allSuccessful = state.runs.every((run) => run.conclusion === "success");
+    return {
+      flush: true, reason: `all expected runs terminal on ${shortSha(state.headSha)}`,
+      notificationState: state,
+      summary: summarizeCiEvidence(state, allSuccessful ? "final: all expected workflows succeeded" : "final"),
+    };
+  }
+  if (!complete && timedOut && !state.incompleteFingerprint) {
+    state.phase = "incomplete";
+    state.incompleteFingerprint = fingerprint;
+    state.notifiedFailures = failures.map(failureEvidenceKey);
+    const detail = missing ? `missing workflows: ${missing.join(", ") || "none"}` : "expected workflow set unknown";
+    return {
+      flush: true, reason: `hard timeout on ${shortSha(state.headSha)}`,
+      notificationState: state, summary: summarizeCiEvidence(state, `incomplete: ${detail}`),
+    };
+  }
+  const remaining = createdMs + timeoutMs - nowMs;
   return {
-    flush: true,
-    reason: timedOut ? `hard timeout on ${shortSha(latestSha)}` : `all runs terminal on ${shortSha(latestSha)}`,
+    flush: false,
+    reason: complete ? "generation already notified"
+      : `${pending} run(s) still pending on ${shortSha(state.headSha)}; ${missing ? `${missing.length} expected workflow(s) missing` : "expected workflow set unknown"}`,
+    recheckAfterMs: Number.isFinite(remaining) && remaining > 0
+      ? Math.min(GITHUB_CI_DIGEST_RECHECK_MS, Math.max(GITHUB_CI_DIGEST_MIN_RECHECK_MS, remaining))
+      : GITHUB_CI_DIGEST_RECHECK_MS,
   };
 }
 
-export function summarizeGithubCiDigestThread(items: ActivationItem[]): string | null {
-  if (items.length === 0) {
-    return null;
-  }
-  const ordered = orderItemsByOccurredAt(items);
-  let repoFullName: string | null = null;
-  let prNumber: number | null = null;
-  let latestSha: string | null = null;
-  for (const item of ordered) {
-    repoFullName = asString(item.metadata.repoFullName) ?? repoFullName;
-    prNumber = firstPullRequestNumber(item) ?? prNumber;
-    latestSha = asString(item.metadata.headSha) ?? latestSha;
-  }
-  const runs = new Map<number, { name: string | null; conclusion: string | null }>();
-  for (const item of ordered) {
-    const runId = asNumber(item.metadata.workflowRunId);
-    if (!runId) {
-      continue;
-    }
-    const previous = runs.get(runId) ?? { name: null, conclusion: null };
-    runs.set(runId, {
-      name: asString(item.metadata.name) ?? previous.name,
-      // Sticky conclusion: keep the first observed terminal conclusion so
-      // out-of-order items cannot rewrite a run's reported outcome.
-      conclusion: previous.conclusion ?? asString(item.metadata.conclusion),
-    });
-  }
+export function summarizeGithubCiDigestThread(items: ActivationItem[], config?: GithubCiSourceConfig): string | null {
+  const at = items[0]?.occurredAt ?? new Date().toISOString();
+  const state = mergeGithubCiEvidence(items, config ?? { owner: "", repo: "" }, {
+    threadCreatedAt: at, lastItemAt: at, now: at,
+  });
+  return state ? summarizeCiEvidence(state) : null;
+}
+
+function summarizeCiEvidence(state: GithubCiNotificationState, phase?: string): string {
   const failed: string[] = [];
+  const other: string[] = [];
   let passed = 0;
   let running = 0;
-  for (const run of runs.values()) {
-    if (run.conclusion === "success" || run.conclusion === "skipped") {
+  for (const run of state.runs) {
+    if (run.conclusion === "success") {
       passed += 1;
-    } else if (run.conclusion) {
-      failed.push(run.name ? `${run.name} (${run.conclusion})` : run.conclusion);
-    } else {
+    } else if (ACTIONABLE_CI_FAILURES.has(run.conclusion ?? "")) {
+      failed.push(run.name ? `${run.name} (${run.conclusion})` : run.conclusion!);
+    } else if (!isTerminalRun(run)) {
       running += 1;
+    } else {
+      other.push(run.name ? `${run.name} (${run.conclusion ?? "unknown conclusion"})` : run.conclusion ?? "unknown conclusion");
     }
   }
+  const repoFullName = state.runs.find((run) => run.repoFullName)?.repoFullName;
+  const prNumber = state.runs.find((run) => run.prNumber != null)?.prNumber;
   const target = repoFullName
     ? prNumber != null
       ? `${repoFullName}#${prNumber}`
-      : latestSha
-        ? `${repoFullName}@${shortSha(latestSha)}`
-        : repoFullName
+      : `${repoFullName}@${shortSha(state.headSha)}`
     : "repository";
-  const parts = [`${runs.size} workflow runs on ${shortSha(latestSha)}`];
+  const parts = [`${state.runs.length} workflow runs on ${shortSha(state.headSha)}`];
+  if (phase) {
+    parts.push(phase);
+  }
   if (failed.length > 0) {
     const shown = failed.slice(0, 3).join(", ");
     parts.push(`${failed.length} failed: ${shown}${failed.length > 3 ? ", …" : ""}`);
@@ -600,28 +647,134 @@ export function summarizeGithubCiDigestThread(items: ActivationItem[]): string |
   if (running > 0) {
     parts.push(`${running} still running`);
   }
+  if (other.length > 0) {
+    parts.push(`${other.length} non-success: ${other.slice(0, 3).join(", ")}${other.length > 3 ? ", …" : ""}`);
+  }
   return `CI for ${target}: ${parts.join(", ")}`;
 }
 
-function orderItemsByOccurredAt(items: ActivationItem[]): ActivationItem[] {
-  return [...items].sort((left, right) => Date.parse(left.occurredAt) - Date.parse(right.occurredAt));
+function isTerminalRun(run: GithubCiRunEvidence): boolean {
+  return run.status === "completed" || Boolean(run.conclusion);
 }
 
-function latestHeadSha(orderedItems: ActivationItem[]): string | null {
-  let latestSha: string | null = null;
-  let latestAt = Number.NaN;
-  for (const item of orderedItems) {
-    const sha = asString(item.metadata.headSha);
-    if (!sha) {
+function evidenceFromItem(item: ActivationItem): GithubCiRunEvidence | null {
+  const runId = asNumber(item.metadata.workflowRunId);
+  const headSha = asString(item.metadata.headSha);
+  if (!runId || !headSha) {
+    return null;
+  }
+  return {
+    runId, headSha, workflowId: asNumber(item.metadata.workflowId),
+    attempt: asNumber(item.metadata.runAttempt) ?? 1,
+    // Run creation time is the only ordering proof between SHA generations.
+    // occurredAt mirrors run updated_at, so a late completion of an old SHA
+    // must never claim currency from delivery time; evidence without a
+    // creation timestamp sorts oldest and conservatively loses head races.
+    createdAt: asString(item.metadata.runCreatedAt) ?? asString(item.metadata.createdAt) ?? "",
+    updatedAt: asString(item.metadata.updatedAt) ?? item.occurredAt,
+    status: asString(item.metadata.status), conclusion: asString(item.metadata.conclusion),
+    name: asString(item.metadata.name), repoFullName: asString(item.metadata.repoFullName),
+    prNumber: firstPullRequestNumber(item),
+  };
+}
+
+function evidenceKey(run: GithubCiRunEvidence): string {
+  return run.workflowId == null ? `run:${run.runId}` : `workflow:${run.workflowId}`;
+}
+
+function failureEvidenceKey(run: GithubCiRunEvidence): string {
+  return `${run.runId}:${run.attempt}`;
+}
+
+function timestamp(value: string): number {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mergeGithubCiEvidence(
+  items: ActivationItem[], config: GithubCiSourceConfig, context: DigestThreadFlushContext,
+): GithubCiNotificationState | null {
+  const persisted = asRecord(context.notificationState);
+  // Clone: decisions must never mutate the caller's state before commit.
+  let state: GithubCiNotificationState | null = persisted.version === 1 && typeof persisted.headSha === "string"
+      && Array.isArray(persisted.runs)
+    ? structuredClone(persisted) as GithubCiNotificationState : null;
+  const incoming = items.map(evidenceFromItem).filter((run): run is GithubCiRunEvidence => Boolean(run))
+    .sort((a, b) => timestamp(a.createdAt) - timestamp(b.createdAt)
+      || a.runId - b.runId || a.attempt - b.attempt || timestamp(a.updatedAt) - timestamp(b.updatedAt));
+  // Run creation timestamps identify pushes; updatedAt/occurredAt alone let
+  // an old SHA's delayed completion accidentally become the current SHA.
+  // Evidence with no creation timestamp cannot prove order, keeps the
+  // persisted head SHA, and therefore cannot trigger a false notification.
+  const newest = incoming.at(-1);
+  if (newest && (!state || (newest.headSha !== state.headSha
+      && (timestamp(newest.createdAt) > timestamp(state.headCreatedAt)
+        || (timestamp(newest.createdAt) === timestamp(state.headCreatedAt) && newest.runId > state.headRunId))))) {
+    state = {
+      version: 1, headSha: newest.headSha, headCreatedAt: newest.createdAt,
+      headRunId: newest.runId,
+      generation: 1, startedAt: state ? newest.createdAt : context.threadCreatedAt, runs: [],
+    };
+  }
+  if (!state) {
+    return null;
+  }
+  const baseline = new Map(state.runs.map((run) => [evidenceKey(run), run]));
+  const runs = new Map(baseline);
+  for (const next of incoming) {
+    if (next.headSha !== state.headSha) {
       continue;
     }
-    const at = Date.parse(item.occurredAt);
-    if (latestSha == null || (!Number.isNaN(at) && (Number.isNaN(latestAt) || at >= latestAt))) {
-      latestSha = sha;
-      latestAt = at;
+    const key = evidenceKey(next);
+    const previous = runs.get(key);
+    if (previous) {
+      if (next.runId !== previous.runId) {
+        const newerRun = timestamp(next.createdAt) > timestamp(previous.createdAt)
+          || (timestamp(next.createdAt) === timestamp(previous.createdAt) && next.runId > previous.runId);
+        if (!newerRun) {
+          continue;
+        }
+      } else if (next.attempt < previous.attempt
+          || (next.attempt === previous.attempt && isTerminalRun(previous)
+            && (previous.conclusion || !next.conclusion))) {
+        continue;
+      } else if (next.attempt === previous.attempt && !isTerminalRun(next)
+          && timestamp(next.updatedAt) < timestamp(previous.updatedAt)) {
+        continue;
+      }
+    }
+    runs.set(key, next);
+    if (timestamp(next.createdAt) > timestamp(state.headCreatedAt)
+        || (timestamp(next.createdAt) === timestamp(state.headCreatedAt) && next.runId > state.headRunId)) {
+      state.headCreatedAt = next.createdAt;
+      state.headRunId = next.runId;
     }
   }
-  return latestSha;
+  const rerun = [...runs].some(([key, run]) => {
+    const previous = baseline.get(key);
+    return previous && (run.runId !== previous.runId || run.attempt > previous.attempt);
+  });
+  if (rerun) {
+    state.generation += 1;
+    // Pending decisions do not persist state. Use the first evidence of this
+    // generation, not evaluation time, or every recheck resets the timeout.
+    const generationEvents = incoming.filter((run) => {
+      const previous = baseline.get(evidenceKey(run));
+      const selected = runs.get(evidenceKey(run));
+      return selected?.runId === run.runId && selected.attempt === run.attempt && previous
+        && (run.runId !== previous.runId || run.attempt > previous.attempt);
+    });
+    state.startedAt = generationEvents.map((run) =>
+      baseline.get(evidenceKey(run))?.runId === run.runId ? run.updatedAt : run.createdAt)
+      .sort((a, b) => timestamp(a) - timestamp(b))[0] ?? context.threadCreatedAt;
+    delete state.phase;
+    delete state.firstFingerprint;
+    delete state.finalFingerprint;
+    delete state.incompleteFingerprint;
+  }
+  state.runs = [...runs.values()].sort((a, b) => (a.workflowId ?? a.runId) - (b.workflowId ?? b.runId));
+  state.notifiedFailures = state.notifiedFailures?.filter((key) => state!.runs.some((run) => failureEvidenceKey(run) === key));
+  return state;
 }
 
 function shortSha(sha: string | null): string {
@@ -678,6 +831,7 @@ function buildWorkflowRunVariant(
   workflowName: string | null,
   status: string,
   conclusion: string | null,
+  attempt: number | null,
 ): string {
   const parts = ["workflow_run"];
   const workflowSlug = slugifyWorkflowName(workflowName);
@@ -687,6 +841,11 @@ function buildWorkflowRunVariant(
   parts.push(status);
   if (conclusion) {
     parts.push(conclusion);
+  }
+  // Preserve existing first-attempt identities, but admit same-outcome reruns
+  // through ingress deduplication while keeping repeat polls idempotent.
+  if (attempt != null && attempt > 1) {
+    parts.push(`attempt_${attempt}`);
   }
   return parts.join(".");
 }

@@ -2274,6 +2274,66 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapInboxItem(row));
   }
 
+  countPendingInboxItemsForDigestThread(threadId: string): number {
+    const row = this.getOne(
+      `
+      select count(*) as count
+      from digest_thread_items t
+      join inbox_items i on i.item_id = t.item_id
+      where t.thread_id = ? and i.acked_at is null
+        and not exists (
+          select 1 from inbox_entry_items ei
+          join inbox_entries e on e.entry_id = ei.entry_id
+          where ei.item_id = i.item_id
+            and e.thread_id = t.thread_id and e.kind = 'digest_snapshot'
+        )
+      `,
+      [threadId],
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  /** Read-model repair may include published items, but never unpublished pending items. */
+  listSnapshottedUnackedInboxItemsForDigestThread(threadId: string): InboxItem[] {
+    const rows = this.getAll(
+      `
+      select i.*
+      from digest_thread_items t
+      join inbox_items i on i.item_id = t.item_id
+      where t.thread_id = ? and i.acked_at is null
+        and exists (
+          select 1 from inbox_entry_items ei
+          join inbox_entries e on e.entry_id = ei.entry_id
+          where ei.item_id = i.item_id
+            and e.thread_id = t.thread_id and e.kind = 'digest_snapshot'
+        )
+      order by coalesce(i.inbox_sequence, i.rowid) asc
+      `,
+      [threadId],
+    );
+    return rows.map((row) => this.mapInboxItem(row));
+  }
+
+  getDigestNotificationState(inboxId: string, groupKey: string): Record<string, unknown> | null {
+    const row = this.getOne(
+      "select notification_state_json from digest_notification_states where inbox_id = ? and group_key = ?",
+      [inboxId, groupKey],
+    );
+    return row ? JSON.parse(requiredText(row, "notification_state_json")) as Record<string, unknown> : null;
+  }
+
+  storeDigestNotificationState(inboxId: string, groupKey: string, state: Record<string, unknown>): void {
+    this.run(
+      `
+      insert into digest_notification_states (inbox_id, group_key, notification_state_json)
+      values (?, ?, ?)
+      on conflict (inbox_id, group_key) do update set notification_state_json = excluded.notification_state_json
+      `,
+      [inboxId, groupKey, JSON.stringify(state)],
+    );
+    this.persist();
+  }
+
   listOpenDigestThreadsForInbox(inboxId: string): DigestThreadRecord[] {
     const rows = this.getAll(
       "select * from digest_threads where inbox_id = ? and status = 'open' order by created_at asc, thread_id asc",
@@ -2315,6 +2375,7 @@ export class AgentInboxStore {
     lastItemAt: string;
     deliveryHandleJson?: string | null;
     createdAt: string;
+    notificationState?: Record<string, unknown>;
   }): InboxEntry {
     const thread = this.getDigestThread(input.threadId);
     if (!thread) {
@@ -2354,14 +2415,22 @@ export class AgentInboxStore {
           [entryId, itemId],
         );
       }
+      if (input.notificationState !== undefined) {
+        this.storeDigestNotificationState(input.inboxId, input.groupKey, input.notificationState);
+      }
+      // Reconciliation or an append during async summarization can leave items
+      // outside this snapshot. Their quiet-window deadline must not be erased.
+      const flushAfterAt = this.countPendingInboxItemsForDigestThread(input.threadId) > 0
+        ? this.getDigestThread(input.threadId)!.flushAfterAt ?? input.createdAt
+        : null;
       this.run(
         `
         update digest_threads
         set latest_revision = ?, latest_entry_id = ?, summary = ?, first_item_at = ?, last_item_at = ?,
-            flush_after_at = null, updated_at = ?
+            flush_after_at = ?, updated_at = ?
         where thread_id = ?
         `,
-        [nextRevision, entryId, input.summary, input.firstItemAt, input.lastItemAt, input.createdAt, input.threadId],
+        [nextRevision, entryId, input.summary, input.firstItemAt, input.lastItemAt, flushAfterAt, input.createdAt, input.threadId],
       );
     });
     this.persist();
