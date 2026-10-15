@@ -1516,12 +1516,7 @@ export class AgentInboxService {
 
   updateInboxAggregationPolicy(agentId: string, input: InboxAggregationPolicy): InboxAggregationPolicy {
     const inbox = this.ensureInboxForAgent(agentId);
-    const updated = this.store.updateInboxAggregationPolicy(inbox.inboxId, {
-      enabled: input.enabled,
-      windowMs: input.windowMs,
-      maxItems: input.maxItems,
-      maxThreadAgeMs: input.maxThreadAgeMs,
-    });
+    const updated = this.store.updateInboxAggregationPolicy(inbox.inboxId, input);
     return inboxAggregationPolicy(updated);
   }
 

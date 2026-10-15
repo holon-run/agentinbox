@@ -2116,9 +2116,9 @@ function buildFastifyServer(service: AgentInboxService) {
         additionalProperties: false,
         properties: {
           enabled: { type: "boolean" },
-          windowMs: { type: "integer", minimum: 1 },
-          maxItems: { type: "integer", minimum: 1 },
-          maxThreadAgeMs: { type: "integer", minimum: 1 },
+          windowMs: { type: ["integer", "null"], minimum: 1 },
+          maxItems: { type: ["integer", "null"], minimum: 1 },
+          maxThreadAgeMs: { type: ["integer", "null"], minimum: 1 },
         },
       },
       response: {
@@ -2129,9 +2129,9 @@ function buildFastifyServer(service: AgentInboxService) {
     const params = request.params as { agentId: string };
     const body = request.body as {
       enabled?: boolean;
-      windowMs?: number;
-      maxItems?: number;
-      maxThreadAgeMs?: number;
+      windowMs?: number | null;
+      maxItems?: number | null;
+      maxThreadAgeMs?: number | null;
     };
     return service.updateInboxAggregationPolicy(decodeURIComponent(params.agentId), body);
   });

@@ -3194,6 +3194,33 @@ test("ack through still follows visible order when older binaries left inbox_seq
   }
 });
 
+test("inbox policy partial updates preserve omitted fields and allow explicit resets", async () => {
+  const { service, store, dir } = await makeService();
+  try {
+    const { agent } = await service.registerAgent({
+      runtimeKind: "codex", backend: "tmux", tmuxPaneId: "%partial-policy",
+    });
+    const defaults = service.getInboxAggregationPolicy(agent.agentId);
+    const custom = { enabled: true, windowMs: 1234, maxItems: 7, maxThreadAgeMs: 5678 };
+    service.updateInboxAggregationPolicy(agent.agentId, custom);
+    assert.deepEqual(service.updateInboxAggregationPolicy(agent.agentId, { enabled: false }), {
+      ...custom, enabled: false,
+    });
+    assert.deepEqual(service.updateInboxAggregationPolicy(agent.agentId, { maxItems: 9 }), {
+      ...custom, enabled: false, maxItems: 9,
+    });
+    const reset = service.updateInboxAggregationPolicy(agent.agentId, { windowMs: null });
+    assert.equal(reset.windowMs, defaults.windowMs);
+    assert.equal(reset.maxItems, 9);
+    assert.equal(reset.maxThreadAgeMs, custom.maxThreadAgeMs);
+    assert.deepEqual(service.updateInboxAggregationPolicy(agent.agentId, {}), reset);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("github bursts materialize digest snapshot entries when inbox aggregation is enabled", async () => {
   const { service, store } = await makeService();
   try {
