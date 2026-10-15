@@ -20,6 +20,7 @@ function makeAgentRecord(input: {
     agent: {
       agentId: input.agentId,
       status: input.status ?? "active",
+      deliveryPaused: false,
       offlineSince: null,
       runtimeKind: input.runtimeKind ?? "codex",
       runtimeSessionId: input.runtimeSessionId ?? null,

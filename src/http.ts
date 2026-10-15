@@ -1056,9 +1056,32 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.removeAgent(decodeURIComponent(params.agentId));
   });
 
-  app.post("/agents/:agentId/resume", {
+  app.post("/agents/:agentId/pause", {
     schema: {
       tags: ["agents"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: { agentId: { type: "string", minLength: 1 } },
+      },
+      response: { 200: jsonObjectSchema },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    return service.pauseAgent(decodeURIComponent(params.agentId));
+  });
+
+  app.post("/agents/:agentId/resume", {
+    preValidation: async (request) => {
+      // Legacy callers send no body; validate that as the default scope.
+      if (request.body === undefined) request.body = {};
+    },
+    schema: {
+      tags: ["agents"],
+      body: {
+        type: "object",
+        properties: { deliveryOnly: { type: "boolean" } },
+      },
       params: {
         type: "object",
         required: ["agentId"],
@@ -1072,7 +1095,8 @@ function buildFastifyServer(service: AgentInboxService) {
     },
   }, async (request) => {
     const params = request.params as { agentId: string };
-    return service.resumeAgent(decodeURIComponent(params.agentId));
+    const body = request.body as { deliveryOnly?: boolean } | undefined;
+    return service.resumeAgent(decodeURIComponent(params.agentId), body);
   });
 
   app.get("/agents/:agentId/operator-bindings", {
@@ -2116,9 +2140,9 @@ function buildFastifyServer(service: AgentInboxService) {
         additionalProperties: false,
         properties: {
           enabled: { type: "boolean" },
-          windowMs: { type: "integer", minimum: 1 },
-          maxItems: { type: "integer", minimum: 1 },
-          maxThreadAgeMs: { type: "integer", minimum: 1 },
+          windowMs: { type: ["integer", "null"], minimum: 1 },
+          maxItems: { type: ["integer", "null"], minimum: 1 },
+          maxThreadAgeMs: { type: ["integer", "null"], minimum: 1 },
         },
       },
       response: {
@@ -2129,9 +2153,9 @@ function buildFastifyServer(service: AgentInboxService) {
     const params = request.params as { agentId: string };
     const body = request.body as {
       enabled?: boolean;
-      windowMs?: number;
-      maxItems?: number;
-      maxThreadAgeMs?: number;
+      windowMs?: number | null;
+      maxItems?: number | null;
+      maxThreadAgeMs?: number | null;
     };
     return service.updateInboxAggregationPolicy(decodeURIComponent(params.agentId), body);
   });

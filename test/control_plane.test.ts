@@ -3777,6 +3777,60 @@ test("control plane accepts direct inbox text messages and rejects blank payload
   }
 });
 
+test("HTTP inbox policy preserves omitted fields and accepts explicit null resets", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-policy-patch-"));
+  const store = await AgentInboxStore.open(path.join(dir, "inbox.sqlite"));
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input));
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+  const socketPath = path.join(dir, "inbox.sock");
+  const started = await startControlServer(server, { kind: "socket", socketPath });
+  const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+  try {
+    const { agent } = await service.registerAgent({
+      runtimeKind: "codex", backend: "tmux", tmuxPaneId: "%http-policy-patch",
+    });
+    const defaults = service.getInboxAggregationPolicy(agent.agentId);
+    const url = `/agents/${agent.agentId}/inbox/policy`;
+    const custom = { enabled: true, windowMs: 1234, maxItems: 7, maxThreadAgeMs: 5678 };
+    assert.equal((await client.request(url, custom)).statusCode, 200);
+    const partial = await client.request(url, { enabled: false });
+    assert.equal(partial.statusCode, 200);
+    assert.deepEqual(partial.data, { ...custom, enabled: false });
+    const reset = await client.request(url, { maxItems: null });
+    assert.equal(reset.statusCode, 200);
+    assert.deepEqual(reset.data, { ...custom, enabled: false, maxItems: defaults.maxItems });
+    assert.equal((await client.request(url, { maxItems: 0 })).statusCode, 400);
+  } finally {
+    await started.close();
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli inbox policy toggles preserve custom aggregation parameters", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-cli-policy-patch-"));
+  const env = { ...process.env, AGENTINBOX_HOME: homeDir, TMUX_PANE: "%policy-patch",
+    CODEX_THREAD_ID: "policy-patch", ITERM_SESSION_ID: "", TERM_SESSION_ID: "", TERM_PROGRAM: "" };
+  try {
+    const set = runCli(["inbox", "policy", "set", "--enabled", "--window-ms", "1234",
+      "--max-items", "7", "--max-thread-age-ms", "5678"], env);
+    assert.equal(set.status, 0, set.stderr);
+    const disabled = runCli(["inbox", "policy", "set", "--disabled"], env);
+    assert.equal(disabled.status, 0, disabled.stderr);
+    const policy = JSON.parse(disabled.stdout);
+    assert.equal(policy.enabled, false);
+    assert.equal(policy.windowMs, 1234);
+    assert.equal(policy.maxItems, 7);
+    assert.equal(policy.maxThreadAgeMs, 5678);
+  } finally {
+    void runCli(["daemon", "stop"], env);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("control plane accepts notification policy thresholds for agent and webhook targets", async () => {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "aix-http-pol-"));
   const socketPath = path.join(homeDir, "agentinbox.sock");

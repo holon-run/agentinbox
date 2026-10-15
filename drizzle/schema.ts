@@ -64,6 +64,7 @@ export const timers = sqliteTable("timers", {
 export const agents = sqliteTable("agents", {
   agentId: text("agent_id").primaryKey(),
   status: text("status").notNull(),
+  deliveryPaused: integer("delivery_paused", { mode: "boolean" }).notNull().default(false),
   offlineSince: text("offline_since"),
   runtimeKind: text("runtime_kind").notNull(),
   runtimeSessionId: text("runtime_session_id"),

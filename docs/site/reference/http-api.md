@@ -71,12 +71,35 @@ registration.
 - `POST /agents`
 - `GET /agents/{agentId}`
 - `DELETE /agents/{agentId}`
+- `POST /agents/{agentId}/pause`
+- `POST /agents/{agentId}/resume`
+
+`pause` persists `agent.deliveryPaused` independently of aggregation policy and
+target offline state. It gates all proactive webhook/terminal notifications,
+including digest, retry and timer notifications. Collection, matching, inbox
+materialization, reads and explicit outbound replies continue. A request already
+started before the pause may finish.
+
+Resume with `{"deliveryOnly":true}` clears this flag and catches up once per effective active
+target using persisted unacknowledged entries, without creating inbox entries.
+Existing target offline state and retry/defer backoff are preserved. Repeated
+resume calls retry due durable pending work, but never replay successfully
+notified backlog. Pending catch-up is persisted before clearing the pause, so
+request failure or process interruption can be retried by resume or the daemon.
+Pause survives daemon restarts.
+
+`deliveryOnly` defaults to false. With an omitted body or `{}`, resume retains
+legacy recovery of all offline targets and also clears the delivery pause,
+regardless of pause history. Concurrent calls with different scopes are
+serialized so target recovery is not lost. Target-level resume only recovers
+that target and never clears the agent delivery pause.
 
 ## Activation Targets
 
 - `GET /agents/{agentId}/targets`
 - `POST /agents/{agentId}/targets`
 - `DELETE /agents/{agentId}/targets/{targetId}`
+- `POST /agents/{agentId}/targets/{targetId}/resume`
 
 ## Timers
 
