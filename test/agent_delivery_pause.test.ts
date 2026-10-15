@@ -280,6 +280,70 @@ test("pause permits already-started webhook completion; concurrent resumes seria
   } finally { release.resolve(); await fx.cleanup(); }
 });
 
+for (const deliveryOnly of [true, false]) {
+  test(`resume after a new pause waits for the previous generation (deliveryOnly=${deliveryOnly})`, async () => {
+    const fx = await fixture();
+    const started = deferred();
+    const release = deferred();
+    try {
+      fx.register();
+      fx.service.pauseAgent("paused-agent");
+      await fx.service.addDirectInboxTextMessage("paused-agent", { message: "first backlog" });
+      fx.webhooks.onDispatch = async () => { started.resolve(); await release.promise; };
+      const first = fx.service.resumeAgent("paused-agent", { deliveryOnly });
+      await started.promise;
+      fx.service.pauseAgent("paused-agent");
+      await fx.service.addDirectInboxTextMessage("paused-agent", { message: "new pause backlog" });
+      const second = fx.service.resumeAgent("paused-agent", { deliveryOnly });
+      release.resolve();
+      await Promise.all([first, second]);
+      assert.equal(fx.service.getAgent("paused-agent").deliveryPaused, false);
+      assert.equal(fx.webhooks.calls.length, 2, "the new generation needs its own catch-up");
+      assert.equal(fx.webhooks.calls[1].entries?.length, 2);
+      await fx.service.resumeAgent("paused-agent", { deliveryOnly });
+      assert.equal(fx.webhooks.calls.length, 2, "repeated resume must remain idempotent");
+    } finally { release.resolve(); await fx.cleanup(); }
+  });
+}
+
+test("queued lease retries recheck backoff after the preceding dispatch fails", async () => {
+  const fx = await fixture();
+  const started = deferred();
+  const release = deferred();
+  try {
+    const { webhookTarget } = fx.register();
+    fx.service.pauseAgent("paused-agent");
+    await fx.service.addDirectInboxTextMessage("paused-agent", { message: "retry backlog" });
+    fx.webhooks.onDispatch = async () => { throw Object.assign(new Error("temporary failure"), { statusCode: 500 }); };
+    await fx.service.resumeAgent("paused-agent", { deliveryOnly: true });
+    const state = fx.store.getActivationDispatchState("paused-agent", webhookTarget!.targetId)!;
+    fx.store.upsertActivationDispatchState({ ...state, leaseExpiresAt: new Date(0).toISOString() });
+    fx.webhooks.onDispatch = async () => {
+      started.resolve();
+      await release.promise;
+      throw Object.assign(new Error("temporary failure"), { statusCode: 500 });
+    };
+    const sync = () => (fx.service as unknown as {
+      syncActivationDispatchStates(): Promise<void>;
+    }).syncActivationDispatchStates();
+    const first = sync();
+    await started.promise;
+    const queued = [sync(), sync()];
+    release.resolve();
+    await Promise.all([first, ...queued]);
+    assert.equal(fx.webhooks.calls.length, 2, "queued retries must respect the new backoff");
+    const retried = fx.store.getActivationDispatchState("paused-agent", webhookTarget!.targetId)!;
+    assert.equal(retried.status, "dirty");
+    assert.ok(Date.parse(retried.leaseExpiresAt!) > Date.now());
+    assert.equal(fx.service.getActivationTarget(webhookTarget!.targetId).consecutiveFailures, 2);
+    fx.webhooks.onDispatch = undefined;
+    fx.store.upsertActivationDispatchState({ ...retried, leaseExpiresAt: new Date(0).toISOString() });
+    await sync();
+    assert.equal(fx.webhooks.calls.length, 3, "an expired backoff must still retry");
+    assert.equal(fx.store.getActivationDispatchState("paused-agent", webhookTarget!.targetId)!.status, "notified");
+  } finally { release.resolve(); await fx.cleanup(); }
+});
+
 test("webhook may explicitly ack before returning without deadlocking the delivery lock", async () => {
   const fx = await fixture();
   try {

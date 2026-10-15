@@ -188,7 +188,7 @@ export class AgentInboxService {
   private readonly notificationBuffers = new Map<string, BufferedNotification>();
   private readonly targetDeliveryLocks = new Map<string, Promise<void>>();
   private readonly deliveryGenerations = new Map<string, number>();
-  private readonly agentResumeOperations = new Map<string, { deliveryOnly: boolean; promise: Promise<ResumeAgentResult> }>();
+  private readonly agentResumeOperations = new Map<string, { deliveryOnly: boolean; generation: number; promise: Promise<ResumeAgentResult> }>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private readonly digestGroupLocks = new Map<string, Promise<void>>();
   private syncInterval: NodeJS.Timeout | null = null;
@@ -1077,14 +1077,15 @@ export class AgentInboxService {
 
   async resumeAgent(agentId: string, options: { deliveryOnly?: boolean } = {}): Promise<ResumeAgentResult> {
     const deliveryOnly = options.deliveryOnly === true;
+    const generation = this.deliveryGenerations.get(agentId) ?? 0;
     const existing = this.agentResumeOperations.get(agentId);
     if (existing) {
-      if (existing.deliveryOnly === deliveryOnly) return existing.promise;
-      // Different scopes must not share a result or lose target recovery.
+      if (existing.deliveryOnly === deliveryOnly && existing.generation === generation) return existing.promise;
+      // Different scopes or pause generations need their own recovery.
       await existing.promise.catch(() => {});
       return this.resumeAgent(agentId, options);
     }
-    const operation = { deliveryOnly, promise: this.resumeAgentNow(agentId, deliveryOnly) };
+    const operation = { deliveryOnly, generation, promise: this.resumeAgentNow(agentId, deliveryOnly) };
     this.agentResumeOperations.set(agentId, operation);
     try {
       return await operation.promise;
@@ -3226,8 +3227,13 @@ export class AgentInboxService {
     if (!state) {
       return;
     }
-    if (reason === "resume" && (state.status !== "dirty"
-      || state.leaseExpiresAt == null || !(Date.parse(state.leaseExpiresAt) <= Date.now()))) {
+    if (reason === "resume" && state.status !== "dirty") {
+      return;
+    }
+    // A preceding dispatch may have renewed the lease or set retry backoff
+    // while this operation was queued for the target lock.
+    if ((reason === "resume" || reason === "lease")
+      && (state.leaseExpiresAt == null || !(Date.parse(state.leaseExpiresAt) <= Date.now()))) {
       return;
     }
 
