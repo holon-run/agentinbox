@@ -833,12 +833,15 @@ export class AgentInboxStore {
     return row ? this.mapAgent(row) : null;
   }
 
-  insertAgent(agent: Agent): void {
+  insertAgent(agent: Omit<Agent, "deliveryPaused"> & {
+    deliveryPaused?: boolean;
+  }): void {
     this.run(
       `
       insert into agents (
-        agent_id, status, offline_since, runtime_kind, runtime_session_id, created_at, updated_at, last_seen_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        agent_id, status, offline_since, runtime_kind, runtime_session_id, created_at, updated_at, last_seen_at,
+        delivery_paused
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       [
         agent.agentId,
@@ -849,6 +852,7 @@ export class AgentInboxStore {
         agent.createdAt,
         agent.updatedAt,
         agent.lastSeenAt,
+        agent.deliveryPaused ? 1 : 0,
       ],
     );
     this.persist();
@@ -882,6 +886,16 @@ export class AgentInboxStore {
         agentId,
       ],
     );
+    this.persist();
+    return this.getAgent(agentId)!;
+  }
+
+  setAgentDeliveryPaused(agentId: string, paused: boolean): Agent {
+    if (!this.getAgent(agentId)) {
+      throw new Error(`unknown agent: ${agentId}`);
+    }
+    this.run("update agents set delivery_paused = ?, updated_at = ? where agent_id = ?",
+      [paused ? 1 : 0, nowIso(), agentId]);
     this.persist();
     return this.getAgent(agentId)!;
   }
@@ -3117,6 +3131,7 @@ export class AgentInboxStore {
     return {
       agentId: String(row.agent_id),
       status: row.status as Agent["status"],
+      deliveryPaused: Number(row.delivery_paused) > 0,
       offlineSince: row.offline_since ? String(row.offline_since) : null,
       runtimeKind: row.runtime_kind as Agent["runtimeKind"],
       runtimeSessionId: row.runtime_session_id ? String(row.runtime_session_id) : null,

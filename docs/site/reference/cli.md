@@ -46,6 +46,27 @@ Terminal-backed runtimes attach a terminal target. In Holon, the CLI can infer
 `agentId` from `HOLON_AGENT_ID` and the webhook URL from
 `HOLON_EXTERNAL_TRIGGER_URL`; otherwise pass `--webhook-url`.
 
+## Agent delivery pause
+
+```bash
+agentinbox agent pause <agent_id>
+agentinbox agent resume <agent_id> --delivery
+```
+
+Agent delivery pause is persistent and independent of inbox aggregation and
+target offline state. Collection, inbox reads and explicit outbound replies
+continue, but proactive webhook/terminal notifications (including digest,
+retry and timer notifications) stop. Already-started requests may finish.
+Resume catches up from unacknowledged backlog once per effective active target
+without adding inbox entries; offline targets and retry backoff are preserved.
+Repeated pause/resume calls do not replay successfully notified backlog, but
+resume retries pending durable catch-up after its retry/defer backoff expires.
+Use `--delivery` for delivery-only resume: repeated or concurrent calls preserve
+offline targets. Without this flag, agent resume retains its existing recovery
+of all offline targets and also clears the delivery pause, regardless of pause
+history. `agentinbox agent target resume <agent_id> <target_id>` only recovers
+that target and never unpauses agent delivery.
+
 ## Hosts
 
 ```bash

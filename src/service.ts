@@ -150,7 +150,7 @@ interface InboxWatcher {
   onItems(entries: InboxEntry[]): void;
 }
 
-type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline" | "deferred" | "suppressed";
+type ActivationDispatchOutcome = "dispatched" | "retryable_failure" | "offline" | "deferred" | "suppressed" | "paused";
 
 export interface InboxWatchSession {
   initialItems: InboxEntry[];
@@ -186,6 +186,9 @@ export class AgentInboxService {
   private readonly activationMaxItems: number;
   private readonly ackedRetentionMs: number;
   private readonly notificationBuffers = new Map<string, BufferedNotification>();
+  private readonly targetDeliveryLocks = new Map<string, Promise<void>>();
+  private readonly deliveryGenerations = new Map<string, number>();
+  private readonly agentResumeOperations = new Map<string, { deliveryOnly: boolean; promise: Promise<ResumeAgentResult> }>();
   private readonly inboxWatchers = new Map<string, Set<InboxWatcher>>();
   private readonly digestGroupLocks = new Map<string, Promise<void>>();
   private syncInterval: NodeJS.Timeout | null = null;
@@ -783,6 +786,7 @@ export class AgentInboxService {
           const created: Agent = {
             agentId,
             status: "active",
+            deliveryPaused: false,
             offlineSince: null,
             runtimeKind,
             runtimeSessionId: input.runtimeSessionId ?? null,
@@ -1064,14 +1068,143 @@ export class AgentInboxService {
     return { removed: true };
   }
 
-  async resumeAgent(agentId: string): Promise<ResumeAgentResult> {
-    this.getAgent(agentId);
-    const targets = this.store.listActivationTargetsForAgent(agentId);
-    const results: ResumeActivationTargetResult[] = [];
-    for (const target of targets) {
-      results.push(await this.resumeActivationTarget(agentId, target.targetId));
+  pauseAgent(agentId: string): { paused: boolean; agent: Agent } {
+    const agent = this.getAgent(agentId);
+    if (agent.deliveryPaused) return { paused: false, agent };
+    this.deliveryGenerations.set(agentId, (this.deliveryGenerations.get(agentId) ?? 0) + 1);
+    return { paused: true, agent: this.store.setAgentDeliveryPaused(agentId, true) };
+  }
+
+  async resumeAgent(agentId: string, options: { deliveryOnly?: boolean } = {}): Promise<ResumeAgentResult> {
+    const deliveryOnly = options.deliveryOnly === true;
+    const existing = this.agentResumeOperations.get(agentId);
+    if (existing) {
+      if (existing.deliveryOnly === deliveryOnly) return existing.promise;
+      // Different scopes must not share a result or lose target recovery.
+      await existing.promise.catch(() => {});
+      return this.resumeAgent(agentId, options);
     }
-    this.reconcileAgentStatus(agentId);
+    const operation = { deliveryOnly, promise: this.resumeAgentNow(agentId, deliveryOnly) };
+    this.agentResumeOperations.set(agentId, operation);
+    try {
+      return await operation.promise;
+    } finally {
+      if (this.agentResumeOperations.get(agentId) === operation) this.agentResumeOperations.delete(agentId);
+    }
+  }
+
+  private async resumeAgentNow(agentId: string, deliveryOnly: boolean): Promise<ResumeAgentResult> {
+    this.getAgent(agentId);
+    const results: ResumeActivationTargetResult[] = [];
+    if (!deliveryOnly) {
+      for (const target of this.store.listActivationTargetsForAgent(agentId)) {
+        results.push(await this.resumeActivationTarget(agentId, target.targetId));
+      }
+      this.reconcileAgentStatus(agentId);
+    }
+    const agent = this.getAgent(agentId);
+    if (agent.deliveryPaused) {
+      const generation = this.deliveryGenerations.get(agentId) ?? 0;
+      const targets = this.listEffectiveActiveActivationTargets(agentId);
+      // Finish already-started requests while still paused: their completion
+      // must not overwrite the durable catch-up state prepared below.
+      await Promise.all(targets.map((target) => this.withTargetDeliveryLock(agentId, target.targetId, async () => {})));
+      const inbox = this.ensureInboxForAgent(agentId);
+      const entries = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
+      const backoffTargets = new Set<string>();
+      for (const target of targets) {
+        const state = this.store.getActivationDispatchState(agentId, target.targetId);
+        if (entries.length === 0) continue;
+        const backingOff = state?.status === "dirty" && state.leaseExpiresAt != null
+          && Date.parse(state.leaseExpiresAt) > Date.now();
+        if (backingOff) backoffTargets.add(target.targetId);
+        this.store.upsertActivationDispatchState({
+          agentId, targetId: target.targetId, status: "dirty",
+          leaseExpiresAt: backingOff ? state!.leaseExpiresAt : nowIso(),
+          lastNotifiedFingerprint: null,
+          deferReason: state?.deferReason ?? null,
+          deferAttempts: state?.deferAttempts ?? 0,
+          firstDeferredAt: state?.firstDeferredAt ?? null,
+          lastDeferredAt: state?.lastDeferredAt ?? null,
+          pendingFingerprint: state?.pendingFingerprint ?? null,
+          pendingNewItemCount: entries.length,
+          pendingSummary: latestSummary(entries),
+          pendingSubscriptionIds: uniqueSorted(entries.flatMap((entry) => entry.subscriptionIds)),
+          pendingSourceIds: uniqueSorted(entries.flatMap((entry) => entry.sourceIds)),
+          updatedAt: nowIso(),
+        });
+      }
+      // No await between durable preparation and unpause. A crash before this
+      // point leaves the pause intact; afterward the normal dirty retry owns it.
+      this.store.setAgentDeliveryPaused(agentId, false);
+      await Promise.all(targets.map((target) => this.withTargetDeliveryLock(agentId, target.targetId, async () => {
+        if (!this.deliveryAllowed(agentId, generation)) return;
+        const key = notificationBufferKey(agentId, target.targetId);
+        const buffer = this.notificationBuffers.get(key);
+        if (buffer?.timer) clearTimeout(buffer.timer);
+        this.notificationBuffers.delete(key);
+        const inbox = this.ensureInboxForAgent(agentId);
+        const entries = this.store.listInboxEntries(inbox.inboxId, { includeAcked: false });
+        if (entries.length === 0) {
+          this.store.deleteActivationDispatchState(agentId, target.targetId);
+          return;
+        }
+        const state = this.store.getActivationDispatchState(agentId, target.targetId);
+        if (backoffTargets.has(target.targetId) && state) {
+          // The persisted retry will catch up after its existing backoff.
+          this.store.upsertActivationDispatchState({
+            ...state,
+            pendingNewItemCount: entries.length,
+            pendingSummary: latestSummary(entries),
+            pendingSubscriptionIds: uniqueSorted(entries.flatMap((entry) => entry.subscriptionIds)),
+            pendingSourceIds: uniqueSorted(entries.flatMap((entry) => entry.sourceIds)),
+            updatedAt: nowIso(),
+          });
+          return;
+        }
+        const outcome = await this.dispatchActivationTarget({
+          agentId,
+          targetId: target.targetId,
+          newItemCount: entries.length,
+          totalUnackedCount: entries.length,
+          summary: state?.pendingSummary ?? null,
+          subscriptionIds: uniqueSorted(entries.flatMap((entry) => entry.subscriptionIds)),
+          sourceIds: uniqueSorted(entries.flatMap((entry) => entry.sourceIds)),
+          entries,
+          forceNotification: true,
+        });
+        if (outcome === "retryable_failure") {
+          const updatedTarget = this.getActivationTargetIfExists(agentId, target.targetId);
+          if (!updatedTarget) return;
+          this.store.upsertActivationDispatchState({
+            agentId,
+            targetId: target.targetId,
+            status: "dirty",
+            leaseExpiresAt: new Date(Date.now() + (target.kind === "webhook"
+              ? webhookDeferRetryMs(updatedTarget.consecutiveFailures) : DEFAULT_NOTIFY_RETRY_MS)).toISOString(),
+            lastNotifiedFingerprint: state?.lastNotifiedFingerprint ?? null,
+            deferReason: null,
+            deferAttempts: 0,
+            firstDeferredAt: null,
+            lastDeferredAt: null,
+            pendingFingerprint: null,
+            pendingNewItemCount: entries.length,
+            pendingSummary: latestSummary(entries),
+            pendingSubscriptionIds: uniqueSorted(entries.flatMap((entry) => entry.subscriptionIds)),
+            pendingSourceIds: uniqueSorted(entries.flatMap((entry) => entry.sourceIds)),
+            updatedAt: nowIso(),
+          });
+        }
+      })));
+      return { resumed: true, agent: this.getAgent(agentId), targets: results };
+    }
+    // Retry durable catch-up after an interrupted resume, respecting backoff.
+    // The target lock prevents replay if a concurrent sync already delivered it.
+    for (const state of this.store.listActivationDispatchStatesForAgent(agentId)) {
+      if (state.status === "dirty") {
+        await this.maybeDispatchActivationTarget(agentId, state.targetId, "resume");
+      }
+    }
     return {
       resumed: results.some((result) => result.resumed),
       agent: this.getAgent(agentId),
@@ -1634,7 +1767,7 @@ export class AgentInboxService {
     return {
       itemId: item.itemId,
       inboxId: inbox.inboxId,
-      activated: targets.length > 0,
+      activated: targets.length > 0 && !this.store.getAgent(agentId)?.deliveryPaused,
     };
   }
 
@@ -2794,6 +2927,8 @@ export class AgentInboxService {
       entry: InboxEntry;
     },
   ): void {
+    // The inbox is authoritative during a pause; do not accumulate volatile buffers.
+    if (this.store.getAgent(target.agentId)?.deliveryPaused) return;
     const key = notificationBufferKey(target.agentId, target.targetId);
     let buffer = this.notificationBuffers.get(key);
     if (!buffer) {
@@ -2880,6 +3015,16 @@ export class AgentInboxService {
   }
 
   private async flushNotificationBuffer(key: string): Promise<void> {
+    const buffer = this.notificationBuffers.get(key);
+    if (!buffer) return;
+    const generation = this.deliveryGenerations.get(buffer.agentId) ?? 0;
+    if (!this.deliveryAllowed(buffer.agentId, generation)) return;
+    await this.withTargetDeliveryLock(buffer.agentId, buffer.targetId, async () => {
+      if (this.deliveryAllowed(buffer.agentId, generation)) await this.flushNotificationBufferLocked(key);
+    });
+  }
+
+  private async flushNotificationBufferLocked(key: string): Promise<void> {
     const buffer = this.notificationBuffers.get(key);
     if (!buffer || buffer.inFlight || buffer.pending.length === 0) {
       return;
@@ -3052,10 +3197,37 @@ export class AgentInboxService {
   private async maybeDispatchActivationTarget(
     agentId: string,
     targetId: string,
-    reason: "ack" | "lease",
+    reason: "ack" | "lease" | "resume",
   ): Promise<void> {
+    const generation = this.deliveryGenerations.get(agentId) ?? 0;
+    if (!this.deliveryAllowed(agentId, generation)) return;
+    const inFlight = this.targetDeliveryLocks.has(notificationBufferKey(agentId, targetId));
+    const pending = this.withTargetDeliveryLock(agentId, targetId, async () => {
+      if (this.deliveryAllowed(agentId, generation)) {
+        await this.maybeDispatchActivationTargetLocked(agentId, targetId, reason);
+      }
+    });
+    // A webhook receiver may ack before returning its HTTP response. Do not
+    // make that ack wait on the very dispatch which is waiting on the receiver.
+    if (reason === "ack" && inFlight) {
+      void pending.catch((error) => console.warn(`activation ack follow-up failed for ${targetId}/${agentId}:`, error));
+      return;
+    }
+    await pending;
+  }
+
+  private async maybeDispatchActivationTargetLocked(
+    agentId: string,
+    targetId: string,
+    reason: "ack" | "lease" | "resume",
+  ): Promise<void> {
+    if (this.store.getAgent(agentId)?.deliveryPaused) return;
     const state = this.store.getActivationDispatchState(agentId, targetId);
     if (!state) {
+      return;
+    }
+    if (reason === "resume" && (state.status !== "dirty"
+      || state.leaseExpiresAt == null || !(Date.parse(state.leaseExpiresAt) <= Date.now()))) {
       return;
     }
 
@@ -3150,6 +3322,26 @@ export class AgentInboxService {
     }
   }
 
+  private deliveryAllowed(agentId: string, generation: number): boolean {
+    const agent = this.store.getAgent(agentId);
+    return agent != null && !agent.deliveryPaused
+      && (this.deliveryGenerations.get(agentId) ?? 0) === generation;
+  }
+
+  private async withTargetDeliveryLock(
+    agentId: string, targetId: string, operation: () => Promise<void>,
+  ): Promise<void> {
+    const key = notificationBufferKey(agentId, targetId);
+    const previous = this.targetDeliveryLocks.get(key) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(operation);
+    this.targetDeliveryLocks.set(key, pending);
+    try {
+      await pending;
+    } finally {
+      if (this.targetDeliveryLocks.get(key) === pending) this.targetDeliveryLocks.delete(key);
+    }
+  }
+
   private async dispatchActivationTarget(input: {
     agentId: string;
     targetId: string;
@@ -3159,7 +3351,10 @@ export class AgentInboxService {
     subscriptionIds: string[];
     sourceIds: string[];
     entries: InboxEntry[];
+    forceNotification?: boolean;
   }): Promise<ActivationDispatchOutcome> {
+    const generation = this.deliveryGenerations.get(input.agentId) ?? 0;
+    if (!this.deliveryAllowed(input.agentId, generation)) return "paused";
     const target = this.getActivationTargetIfExists(input.agentId, input.targetId);
     if (!target) {
       return "offline";
@@ -3213,6 +3408,7 @@ export class AgentInboxService {
     try {
       if (target.kind === "terminal") {
         const gate = await this.activationGate.evaluate(target);
+        if (!this.deliveryAllowed(input.agentId, generation)) return "paused";
         if (!this.activationTargetExists(input.agentId, input.targetId)) {
           return "offline";
         }
@@ -3241,6 +3437,7 @@ export class AgentInboxService {
           input.summary,
           input.entries,
         );
+        if (!this.deliveryAllowed(input.agentId, generation)) return "paused";
         if (!this.activationTargetExists(input.agentId, input.targetId)) {
           return "offline";
         }
@@ -3294,7 +3491,7 @@ export class AgentInboxService {
             currentFingerprint: promptFingerprint,
           });
         }
-        if (state?.lastNotifiedFingerprint === promptFingerprint) {
+        if (!input.forceNotification && state?.lastNotifiedFingerprint === promptFingerprint) {
           this.logger.debug("activation.dispatch_suppressed", {
             agentId: input.agentId,
             targetId: target.targetId,
@@ -3328,6 +3525,8 @@ export class AgentInboxService {
           sourceIds: input.sourceIds,
           subscriptionIds: input.subscriptionIds,
         });
+        // No await is permitted between the pause check and starting dispatch.
+        if (!this.deliveryAllowed(input.agentId, generation)) return "paused";
         await this.terminalDispatcher.dispatch(target, prompt);
         if (!this.activationTargetExists(input.agentId, input.targetId)) {
           return "offline";
@@ -3361,6 +3560,7 @@ export class AgentInboxService {
           createdAt: nowIso(),
           deliveredAt: null,
         };
+        if (!this.deliveryAllowed(input.agentId, generation)) return "paused";
         await this.activationDispatcher.dispatch(target.url, activation);
         if (!this.activationTargetExists(input.agentId, input.targetId)) {
           return "offline";

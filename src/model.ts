@@ -162,6 +162,7 @@ export type CleanupPolicy =
 export interface Agent {
   agentId: string;
   status: AgentStatus;
+  deliveryPaused: boolean;
   offlineSince?: string | null;
   runtimeKind: RuntimeKind;
   runtimeSessionId?: string | null;

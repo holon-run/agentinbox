@@ -1,0 +1,1 @@
+ALTER TABLE agents ADD COLUMN delivery_paused INTEGER NOT NULL DEFAULT 0;

@@ -584,12 +584,13 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (command === "agent" && normalized[1] === "resume") {
+  if (command === "agent" && (normalized[1] === "pause" || normalized[1] === "resume")) {
     const agentId = normalized[2];
     if (!agentId) {
-      throw new Error("usage: agentinbox agent resume <agentId>");
+      throw new Error(`usage: agentinbox agent ${normalized[1]} <agentId>`);
     }
-    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/resume`, {});
+    await printRemote(client, `/agents/${encodeURIComponent(agentId)}/${normalized[1]}`,
+      normalized[1] === "resume" && normalized.includes("--delivery") ? { deliveryOnly: true } : {});
     return;
   }
 
@@ -1767,7 +1768,7 @@ const KNOWN_SUBCOMMANDS: Record<string, string[]> = {
   host: ["add", "list", "show", "schema"],
   stream: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "poll", "event"],
   source: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "actions", "invoke", "poll", "event"],
-  agent: ["register", "list", "current", "show", "remove", "resume", "target"],
+  agent: ["register", "list", "current", "show", "remove", "pause", "resume", "target"],
   subscription: ["add", "list", "show", "remove", "poll", "lag", "reset"],
   timer: ["add", "list", "pause", "resume", "remove"],
 };
@@ -2180,7 +2181,8 @@ Usage:
   agentinbox agent current
   agentinbox agent show <agentId>
   agentinbox agent remove <agentId>
-  agentinbox agent resume <agentId>
+  agentinbox agent pause <agentId>
+  agentinbox agent resume <agentId> [--delivery]
   agentinbox agent target add webhook <agentId> --url URL [--activation-mode MODE] [--notify-lease-ms N] [--min-unacked-items N]
   agentinbox agent target list <agentId> [--limit N]
   agentinbox agent target remove <agentId> <targetId>

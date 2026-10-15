@@ -19,6 +19,7 @@ const EXPECTED_MIGRATION_TAGS = [
   "0009_inbox_aggregation_default_on",
   "0010_digest_notification_states",
   "0011_digest_notification_state_lifecycle",
+  "0012_agent_delivery_pause",
 ];
 
 async function createLegacyDb(dbPath: string): Promise<void> {
