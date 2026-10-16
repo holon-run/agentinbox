@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const sourceHosts = sqliteTable("source_hosts", {
@@ -412,6 +413,7 @@ export const streamEvents = sqliteTable("stream_events", {
   rawPayloadJson: text("raw_payload_json").notNull(),
   providerRawPayloadJson: text("provider_raw_payload_json"),
   deliveryHandleJson: text("delivery_handle_json"),
+  payloadPrunedAt: text("payload_pruned_at"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({
   streamEventIdUnique: uniqueIndex("idx_stream_events_stream_event_id").on(table.streamEventId),
@@ -419,6 +421,12 @@ export const streamEvents = sqliteTable("stream_events", {
     .on(table.streamId, table.sourceNativeId, table.eventVariant),
   streamOffsetIdx: index("idx_stream_events_stream_offset").on(table.streamId, table.offset),
   streamOccurredAtIdx: index("idx_stream_events_stream_occurred_at").on(table.streamId, table.occurredAt),
+  retainedOffsetIdx: index("idx_stream_events_retained_offset").on(table.streamId, table.offset)
+    .where(sql`${table.payloadPrunedAt} is null`),
+  prunedOffsetIdx: index("idx_stream_events_pruned_offset").on(table.streamId, table.offset)
+    .where(sql`${table.payloadPrunedAt} is not null`),
+  prunedOccurredAtIdx: index("idx_stream_events_pruned_occurred_at").on(table.streamId, table.occurredAt)
+    .where(sql`${table.payloadPrunedAt} is not null`),
 }));
 
 export const consumers = sqliteTable("consumers", {
@@ -436,6 +444,7 @@ export const consumers = sqliteTable("consumers", {
   subscriptionIdUnique: uniqueIndex("idx_consumers_subscription_id").on(table.subscriptionId),
   consumerKeyUnique: uniqueIndex("idx_consumers_consumer_key").on(table.consumerKey),
   streamIdx: index("idx_consumers_stream").on(table.streamId),
+  streamNextOffsetIdx: index("idx_consumers_stream_next_offset").on(table.streamId, table.nextOffset),
 }));
 
 export const consumerCommits = sqliteTable("consumer_commits", {

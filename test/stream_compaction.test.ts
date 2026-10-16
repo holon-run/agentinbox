@@ -214,7 +214,7 @@ test("HTTP and CLI preview stay read-only, validate options and reject unsupport
     assert.equal(output.code, 0, output.stderr);
     assert.equal(JSON.parse(output.stdout).candidateEvents, 1);
     assert.equal(JSON.parse(output.stdout).scanLimit, 1);
-    for (const args of [[], ["--retention", "0"], ["--retention", "1d", "--apply"]]) {
+    for (const args of [[], ["--retention", "0"], ["--retention", "1d", "--apply", "--dry-run"]]) {
       const invalid = await cli(...args);
       assert.notEqual(invalid.code, 0);
     }

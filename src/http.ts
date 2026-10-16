@@ -14,6 +14,7 @@ import {
   WatchInboxOptions,
 } from "./model";
 import { jsonResponse } from "./util";
+import { ApplyStreamCompactionInput, HistoryUnavailableError } from "./stream_compaction";
 
 function sendSse(res: http.ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\n`);
@@ -35,6 +36,19 @@ const errorResponseSchema = {
   additionalProperties: false,
   properties: {
     error: { type: "string" },
+    code: { type: "string" },
+    streamId: { type: "string" },
+    requested: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        offset: { type: "integer" },
+        time: { type: "string" },
+        startPolicy: { type: "string" },
+      },
+    },
+    retainedFromOffset: { type: "integer" },
+    highWatermarkOffset: { anyOf: [{ type: "integer" }, { type: "null" }] },
   },
 } as const;
 
@@ -350,6 +364,42 @@ function buildFastifyServer(service: AgentInboxService) {
       request.body as { retentionMs: number; scanLimit?: number });
   });
 
+  app.post("/streams/:streamId/compaction-apply", {
+    preValidation: async (request) => {
+      // Unknown options must not be silently removed by AJV.
+      const allowed = ["apply", "retentionMs", "batchSize", "maxEvents", "maxPayloadBytes"];
+      if (request.body && typeof request.body === "object"
+        && Object.keys(request.body).some((key) => !allowed.includes(key))) {
+        throw Object.assign(new Error("invalid compaction apply option"), { statusCode: 400 });
+      }
+    },
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object", required: ["streamId"],
+        properties: { streamId: { type: "string", minLength: 1 } },
+      },
+      body: {
+        type: "object", additionalProperties: false, required: ["apply", "retentionMs"],
+        properties: {
+          apply: { type: "boolean", const: true },
+          retentionMs: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          batchSize: { type: "integer", minimum: 1, maximum: 100 },
+          maxEvents: { type: "integer", minimum: 1, maximum: 1000 },
+          maxPayloadBytes: { type: "integer", minimum: 1, maximum: 8 * 1024 * 1024 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema, 400: errorResponseSchema, 404: errorResponseSchema,
+        409: errorResponseSchema, 501: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    const { apply: _apply, ...options } = request.body as Omit<ApplyStreamCompactionInput, "streamId"> & { apply: true };
+    return service.applyStreamCompaction(decodeURIComponent(params.streamId), options);
+  });
+
   app.get("/streams/:streamId/schema", {
     schema: {
       tags: ["sources"],
@@ -659,6 +709,7 @@ function buildFastifyServer(service: AgentInboxService) {
       response: {
         200: jsonObjectSchema,
         400: errorResponseSchema,
+        409: errorResponseSchema,
       },
     },
   }, async (request) => {
@@ -1609,6 +1660,7 @@ function buildFastifyServer(service: AgentInboxService) {
       response: {
         200: subscriptionCollectionSchema,
         400: errorResponseSchema,
+        409: errorResponseSchema,
       },
     },
   }, async (request) => {
@@ -1686,6 +1738,7 @@ function buildFastifyServer(service: AgentInboxService) {
       },
       response: {
         200: jsonObjectSchema,
+        409: errorResponseSchema,
       },
     },
   }, async (request) => {
@@ -1735,6 +1788,7 @@ function buildFastifyServer(service: AgentInboxService) {
       response: {
         200: jsonObjectSchema,
         400: errorResponseSchema,
+        409: errorResponseSchema,
       },
     },
   }, async (request) => {
@@ -2340,6 +2394,17 @@ function buildFastifyServer(service: AgentInboxService) {
 
   app.setErrorHandler((error, _request, reply) => {
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof HistoryUnavailableError) {
+      void reply.code(409).send({
+        error: message,
+        code: error.code,
+        streamId: error.streamId,
+        requested: error.requested,
+        retainedFromOffset: error.retainedFromOffset,
+        highWatermarkOffset: error.highWatermarkOffset,
+      });
+      return;
+    }
     if ((error as { validation?: unknown }).validation) {
       void reply.code(400).send({ error: normalizeValidationMessage(message) });
       return;

@@ -73,7 +73,12 @@ import {
   toAppendResult,
 } from "./backend";
 import { formatEntryRef, generateCanonicalId, nowIso } from "./util";
-import { compactionPreviewOptions, PreviewStreamCompactionInput } from "./stream_compaction";
+import {
+  ApplyStreamCompactionInput,
+  compactionApplyOptions,
+  compactionPreviewOptions,
+  PreviewStreamCompactionInput,
+} from "./stream_compaction";
 import { getSourceSchema } from "./source_schema";
 import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
@@ -374,6 +379,7 @@ export class AgentInboxService {
         : withResolvedIdentity(source.sourceId, fallbackSchema, resolvedIdentity))
       : fallbackSchema;
     const runtime = await this.adapters.getSourceRuntime(source);
+    const stream = this.store.getStreamBySourceId(sourceId);
     return {
       source,
       runtime,
@@ -381,7 +387,8 @@ export class AgentInboxService {
       resolvedIdentity,
       ...(resolutionError ? { resolutionError } : {}),
       schema: resolvedSchema,
-      stream: this.store.getStreamBySourceId(sourceId),
+      stream,
+      streamStats: stream ? await this.backend.getStreamStats(stream.streamId) : null,
       subscriptions: this.store.listSubscriptionsForSource(sourceId),
       idleState: this.store.getSourceIdleState(sourceId),
     };
@@ -483,6 +490,20 @@ export class AgentInboxService {
     if (!stream) throw new Error(`unknown event stream for source: ${streamId}`);
     return {
       ...await this.backend.previewStreamCompaction({ ...options, streamId: stream.streamId }),
+      sourceId: source.sourceId,
+    };
+  }
+
+  async applyStreamCompaction(streamId: string, options: Omit<ApplyStreamCompactionInput, "streamId">) {
+    compactionApplyOptions({ streamId, ...options });
+    const source = this.getStream(streamId);
+    if (!this.backend.applyStreamCompaction) {
+      throw Object.assign(new Error("stream compaction apply unsupported by this backend"), { statusCode: 501 });
+    }
+    const stream = this.store.getStreamBySourceId(source.sourceId);
+    if (!stream) throw new Error(`unknown event stream for source: ${streamId}`);
+    return {
+      ...await this.backend.applyStreamCompaction({ ...options, streamId: stream.streamId }),
       sourceId: source.sourceId,
     };
   }
