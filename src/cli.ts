@@ -36,6 +36,7 @@ import { AgentInboxStore } from "./store";
 import { detectTerminalContext } from "./terminal";
 import { jsonResponse, parseJsonArg } from "./util";
 import { projectPublicInboxEntry } from "./email_attachment";
+import { compactionPreviewOptions } from "./stream_compaction";
 
 interface CommandWarning {
   code: "cross_session_agent";
@@ -182,6 +183,23 @@ async function main(): Promise<void> {
       throw new Error("usage: agentinbox stream show <streamId>");
     }
     await printRemote(client, `/streams/${encodeURIComponent(streamId)}`, undefined, "GET");
+    return;
+  }
+
+  if (command === "stream" && normalized[1] === "compact") {
+    const args = normalized.slice(2);
+    const [streamId, extra] = positionalArgs(args, ["--retention", "--scan-limit"]);
+    const retention = takeFlagValue(args, "--retention");
+    if (!streamId || extra || !retention
+      || unexpectedFlags(args, ["--retention", "--scan-limit", "--dry-run"]).length) {
+      throw new Error("usage: agentinbox stream compact <streamId> --retention <duration> [--dry-run] [--scan-limit N] (preview only)");
+    }
+    const options = {
+      retentionMs: parseDurationMs(retention),
+      scanLimit: parseOptionalNumber(takeFlagValue(args, "--scan-limit")),
+    };
+    compactionPreviewOptions({ streamId, ...options });
+    await printRemote(client, `/streams/${encodeURIComponent(streamId)}/compaction-preview`, options);
     return;
   }
 
@@ -1766,7 +1784,7 @@ const KNOWN_SUBCOMMANDS: Record<string, string[]> = {
   inbox: ["list", "show", "read", "send", "watch", "ack", "policy", "compact"],
   daemon: ["start", "stop", "status"],
   host: ["add", "list", "show", "schema"],
-  stream: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "poll", "event"],
+  stream: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "poll", "event", "compact"],
   source: ["add", "list", "show", "update", "remove", "pause", "resume", "schema", "actions", "invoke", "poll", "event"],
   agent: ["register", "list", "current", "show", "remove", "pause", "resume", "target"],
   subscription: ["add", "list", "show", "remove", "poll", "lag", "reset"],
@@ -2138,6 +2156,7 @@ Usage:
   agentinbox stream show <streamId>
   agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox stream remove <streamId> [--with-subscriptions]
+  agentinbox stream compact <streamId> --retention <duration> [--dry-run] [--scan-limit N]
   agentinbox stream pause <streamId>
   agentinbox stream resume <streamId>
   agentinbox stream schema <streamId>

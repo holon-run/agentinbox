@@ -5,6 +5,7 @@ import {
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { generateCanonicalId, nowIso } from "./util";
+import type { PreviewStreamCompactionInput, StreamCompactionPreview } from "./stream_compaction";
 
 export interface StreamRecord {
   streamId: string;
@@ -127,10 +128,15 @@ export interface EventBusBackend {
   reset(input: ResetConsumerInput): Promise<ConsumerRecord>;
   getStreamStats(streamId: string): Promise<StreamStats>;
   getConsumerLag(input: GetConsumerInput): Promise<ConsumerLag>;
+  previewStreamCompaction?(input: PreviewStreamCompactionInput): Promise<StreamCompactionPreview>;
 }
 
 export class SqliteEventBusBackend implements EventBusBackend {
   constructor(private readonly store: AgentInboxStore) {}
+
+  async previewStreamCompaction(input: PreviewStreamCompactionInput): Promise<StreamCompactionPreview> {
+    return this.store.previewStreamCompaction(input);
+  }
 
   async ensureStream(input: EnsureStreamInput): Promise<StreamRecord> {
     const existing = this.store.getStreamBySourceId(input.sourceId);
