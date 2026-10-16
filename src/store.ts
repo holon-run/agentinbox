@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import BetterSqlite3, { Database as BetterSqliteDatabase } from "better-sqlite3";
+import {
+  compactionPreviewOptions,
+  emptyPayloadBytes,
+  PreviewStreamCompactionInput,
+  StreamCompactionPreview,
+  StreamPayloadBytes,
+} from "./stream_compaction";
 import type {
   ConsumerRecord,
   StreamEventRecord,
@@ -2912,6 +2919,86 @@ export class AgentInboxStore {
       eventCount: Number(row?.event_count ?? 0),
       highWatermarkOffset: row?.high_watermark_offset != null ? Number(row.high_watermark_offset) : null,
     };
+  }
+
+  previewStreamCompaction(input: PreviewStreamCompactionInput): StreamCompactionPreview {
+    const { cutoff, scanLimit } = compactionPreviewOptions(input);
+    // A read transaction keeps consumers and the event prefix in the same snapshot.
+    // Do not ensure a stream/consumer or create maintenance state on this path.
+    return this.inTransaction(() => {
+      if (!this.getStream(input.streamId)) {
+        throw new Error(`unknown stream: ${input.streamId}`);
+      }
+      const boundary = this.getOne(
+        "select min(next_offset) as next_offset from consumers where stream_id = ?",
+        [input.streamId],
+      );
+      const safeBeforeOffset = boundary?.next_offset == null ? null : Number(boundary.next_offset);
+      const blockers = safeBeforeOffset == null ? [] : this.getAll(
+        `select consumer_id, next_offset from consumers
+         where stream_id = ? and next_offset = ? order by consumer_id limit 101`,
+        [input.streamId, safeBeforeOffset],
+      );
+      const result: StreamCompactionPreview = {
+        streamId: input.streamId, dryRun: true, cutoff, scanLimit, countsScope: "scanned_prefix",
+        scannedEvents: 0, candidateEvents: 0, protectedEvents: 0,
+        scannedPayloadBytes: emptyPayloadBytes(), candidatePayloadBytes: emptyPayloadBytes(),
+        safeBeforeOffset,
+        blockingConsumers: blockers.slice(0, 100).map((row) => ({
+          consumerId: String(row.consumer_id), nextOffset: Number(row.next_offset),
+        })),
+        blockingConsumersHasMore: blockers.length > 100,
+        candidateThroughOffset: null, projectedRetainedFromOffset: 1,
+        hasMore: false, estimated: false, stopReason: "no_consumers",
+      };
+      if (safeBeforeOffset == null) return result;
+
+      // Compute UTF-8 logical lengths in SQLite; never load or return payloads.
+      const rows = this.getAll(
+        `select offset, created_at,
+           length(cast(metadata_json as blob)) as metadata,
+           length(cast(raw_payload_json as blob)) as raw_payload,
+           coalesce(length(cast(provider_raw_payload_json as blob)), 0) as provider_raw_payload,
+           coalesce(length(cast(delivery_handle_json as blob)), 0) as delivery_handle
+         from stream_events where stream_id = ? order by offset limit ?`,
+        [input.streamId, scanLimit + 1],
+      );
+      result.hasMore = rows.length > scanLimit;
+      result.estimated = result.hasMore;
+      result.stopReason = result.hasMore ? "scan_limit" : "exhausted";
+      let prefixOpen = true;
+      for (const row of rows.slice(0, scanLimit)) {
+        const bytes: StreamPayloadBytes = {
+          metadata: Number(row.metadata), rawPayload: Number(row.raw_payload),
+          providerRawPayload: Number(row.provider_raw_payload), deliveryHandle: Number(row.delivery_handle),
+          total: Number(row.metadata) + Number(row.raw_payload)
+            + Number(row.provider_raw_payload) + Number(row.delivery_handle),
+        };
+        result.scannedEvents += 1;
+        for (const key of Object.keys(bytes) as Array<keyof StreamPayloadBytes>) {
+          result.scannedPayloadBytes[key] += bytes[key];
+        }
+        if (prefixOpen && Number(row.offset) >= safeBeforeOffset) {
+          result.stopReason = "consumer_boundary";
+          prefixOpen = false;
+        }
+        if (prefixOpen && String(row.created_at) >= cutoff) {
+          result.stopReason = "retention_boundary";
+          prefixOpen = false;
+        }
+        if (!prefixOpen) {
+          result.protectedEvents += 1;
+          continue;
+        }
+        result.candidateEvents += 1;
+        result.candidateThroughOffset = Number(row.offset);
+        result.projectedRetainedFromOffset = Number(row.offset) + 1;
+        for (const key of Object.keys(bytes) as Array<keyof StreamPayloadBytes>) {
+          result.candidatePayloadBytes[key] += bytes[key];
+        }
+      }
+      return result;
+    });
   }
 
   findOffsetAtOrAfter(streamId: string, occurredAt: string): number | null {

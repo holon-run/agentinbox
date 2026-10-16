@@ -36,6 +36,15 @@ going forward.
 
 ## Streams / Sources
 
+`POST /streams/{streamId}/compaction-preview` accepts
+`{"retentionMs": 2592000000, "scanLimit": 1000}` and performs a bounded,
+read-only payload-compaction preview. The path uses the public source/stream ID.
+It does not initialize a missing event stream or invoke a provider.
+See [CLI preview semantics](cli.md#stream-compaction-preview) for consumer
+protection, sample counts, byte estimates and truncation fields.
+Invalid durations/limits return 400, missing streams return 404, and a backend
+without preview support returns 501. This endpoint cannot apply compaction.
+
 - `GET /sources`
 - `POST /sources`
 - `GET /sources/{sourceId}`

@@ -316,6 +316,40 @@ function buildFastifyServer(service: AgentInboxService) {
     return service.getStreamDetails(decodeURIComponent(params.streamId));
   });
 
+  app.post("/streams/:streamId/compaction-preview", {
+    preValidation: async (request) => {
+      // Reject unsupported options before AJV can silently remove them.
+      if (request.body && typeof request.body === "object"
+        && Object.keys(request.body).some((key) => key !== "retentionMs" && key !== "scanLimit")) {
+        throw Object.assign(new Error("invalid compaction preview option: only retentionMs and scanLimit are supported"), {
+          statusCode: 400,
+        });
+      }
+    },
+    schema: {
+      tags: ["sources"],
+      params: {
+        type: "object", required: ["streamId"],
+        properties: { streamId: { type: "string", minLength: 1 } },
+      },
+      body: {
+        type: "object", additionalProperties: false, required: ["retentionMs"],
+        properties: {
+          retentionMs: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          scanLimit: { type: "integer", minimum: 1, maximum: 1000 },
+        },
+      },
+      response: {
+        200: jsonObjectSchema, 400: errorResponseSchema,
+        404: errorResponseSchema, 501: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { streamId: string };
+    return service.previewStreamCompaction(decodeURIComponent(params.streamId),
+      request.body as { retentionMs: number; scanLimit?: number });
+  });
+
   app.get("/streams/:streamId/schema", {
     schema: {
       tags: ["sources"],

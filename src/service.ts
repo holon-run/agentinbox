@@ -73,6 +73,7 @@ import {
   toAppendResult,
 } from "./backend";
 import { formatEntryRef, generateCanonicalId, nowIso } from "./util";
+import { compactionPreviewOptions, PreviewStreamCompactionInput } from "./stream_compaction";
 import { getSourceSchema } from "./source_schema";
 import { withResolvedIdentity } from "./source_resolution";
 import { matchSubscriptionFilter, validateSubscriptionFilter } from "./filter";
@@ -470,6 +471,20 @@ export class AgentInboxService {
 
   getStreamDetails(streamId: string): Promise<Record<string, unknown>> {
     return this.getSourceDetails(streamId);
+  }
+
+  async previewStreamCompaction(streamId: string, options: Omit<PreviewStreamCompactionInput, "streamId">) {
+    compactionPreviewOptions({ streamId, ...options });
+    const source = this.getStream(streamId);
+    if (!this.backend.previewStreamCompaction) {
+      throw Object.assign(new Error("stream compaction preview unsupported by this backend"), { statusCode: 501 });
+    }
+    const stream = this.store.getStreamBySourceId(source.sourceId);
+    if (!stream) throw new Error(`unknown event stream for source: ${streamId}`);
+    return {
+      ...await this.backend.previewStreamCompaction({ ...options, streamId: stream.streamId }),
+      sourceId: source.sourceId,
+    };
   }
 
   async getResolvedSourceSchema(sourceId: string): Promise<ResolvedSourceSchema> {

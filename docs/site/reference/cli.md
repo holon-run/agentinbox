@@ -3,6 +3,31 @@
 `AgentInbox` uses a local control-plane CLI around agents, sources,
 subscriptions, inboxes, activation targets, and daemon lifecycle.
 
+## Stream Compaction Preview
+
+```bash
+agentinbox stream compact <streamId> --retention 30d [--dry-run] [--scan-limit 1000]
+```
+
+This command is **preview only**; `--apply` is not supported in this stage.
+Retention must be explicit and positive (`ms`, `s`, `m`, `h`, `d`, or integer
+milliseconds). It never starts a source, creates a consumer, advances an offset,
+or changes a payload. No automatic retention policy is installed.
+
+The preview examines at most 1000 events, ordered by the stream's global offsets.
+Only a continuous prefix older than the `created_at` cutoff and strictly below
+every existing consumer's `nextOffset` is a candidate. Paused/offline consumers
+still protect history; no consumers means `no_consumers`, not permission to
+compact the whole stream. Acked inbox items are unrelated to this boundary.
+
+Counts and UTF-8 logical field bytes describe the **scanned prefix only**
+(`countsScope: scanned_prefix`); `hasMore` / `estimated` indicate a truncated
+scan. `candidatePayloadBytes` is not a promise of physical file shrinkage.
+`blockingConsumers` lists at most 100 consumers at the minimum offset, with
+`blockingConsumersHasMore` indicating truncation. No raw payload is returned.
+The command uses the public source/stream ID; the result also identifies the
+internal event-log `streamId` and its `sourceId`.
+
 ## Meta Commands
 
 Text-first commands:
