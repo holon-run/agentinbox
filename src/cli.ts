@@ -36,7 +36,7 @@ import { AgentInboxStore } from "./store";
 import { detectTerminalContext } from "./terminal";
 import { jsonResponse, parseJsonArg } from "./util";
 import { projectPublicInboxEntry } from "./email_attachment";
-import { compactionPreviewOptions } from "./stream_compaction";
+import { compactionApplyOptions, compactionPreviewOptions } from "./stream_compaction";
 
 interface CommandWarning {
   code: "cross_session_agent";
@@ -188,18 +188,46 @@ async function main(): Promise<void> {
 
   if (command === "stream" && normalized[1] === "compact") {
     const args = normalized.slice(2);
-    const [streamId, extra] = positionalArgs(args, ["--retention", "--scan-limit"]);
-    const retention = takeFlagValue(args, "--retention");
-    if (!streamId || extra || !retention
-      || unexpectedFlags(args, ["--retention", "--scan-limit", "--dry-run"]).length) {
-      throw new Error("usage: agentinbox stream compact <streamId> --retention <duration> [--dry-run] [--scan-limit N] (preview only)");
+    let endpoint: string;
+    let options: Record<string, unknown>;
+    try {
+      const valueFlags = ["--retention", "--scan-limit", "--batch-size", "--max-events", "--max-payload-bytes"];
+      const [streamId, extra] = positionalArgs(args, valueFlags);
+      const retention = takeFlagValue(args, "--retention");
+      const apply = hasFlag(args, "--apply");
+      if (!streamId || extra || !retention
+        || unexpectedFlags(args, [...valueFlags, "--dry-run", "--apply"]).length) {
+        throw new Error("usage: agentinbox stream compact <streamId> --retention <duration> [--dry-run | --apply] [mode-specific limits]");
+      }
+      if (apply && hasFlag(args, "--dry-run")) {
+        throw new Error("invalid compaction mode: --apply and --dry-run conflict");
+      }
+      if (apply && hasFlag(args, "--scan-limit")) {
+        throw new Error("invalid --scan-limit: only supported in preview mode");
+      }
+      if (!apply && ["--batch-size", "--max-events", "--max-payload-bytes"].some((flag) => hasFlag(args, flag))) {
+        throw new Error("invalid compaction limits: --batch-size, --max-events and --max-payload-bytes require --apply");
+      }
+      const retentionMs = parseDurationMs(retention);
+      if (apply) {
+        const limits = {
+          retentionMs,
+          batchSize: parseOptionalNumber(takeFlagValue(args, "--batch-size")),
+          maxEvents: parseOptionalNumber(takeFlagValue(args, "--max-events")),
+          maxPayloadBytes: parseOptionalNumber(takeFlagValue(args, "--max-payload-bytes")),
+        };
+        compactionApplyOptions({ streamId, ...limits });
+        options = { apply: true, ...limits };
+      } else {
+        const limits = { retentionMs, scanLimit: parseOptionalNumber(takeFlagValue(args, "--scan-limit")) };
+        compactionPreviewOptions({ streamId, ...limits });
+        options = limits;
+      }
+      endpoint = `/streams/${encodeURIComponent(streamId)}/compaction-${apply ? "apply" : "preview"}`;
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { statusCode: 400, compaction: true });
     }
-    const options = {
-      retentionMs: parseDurationMs(retention),
-      scanLimit: parseOptionalNumber(takeFlagValue(args, "--scan-limit")),
-    };
-    compactionPreviewOptions({ streamId, ...options });
-    await printRemote(client, `/streams/${encodeURIComponent(streamId)}/compaction-preview`, options);
+    await printRemote(client, endpoint, options);
     return;
   }
 
@@ -1586,7 +1614,11 @@ async function requestRemote<T = unknown>(
   const response = await client.request<T>(endpoint, body, method);
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const bodyText = jsonResponse(response.data);
-    throw new Error(`request ${method} ${endpoint} failed with HTTP ${response.statusCode}: ${bodyText}`);
+    throw Object.assign(new Error(`request ${method} ${endpoint} failed with HTTP ${response.statusCode}: ${bodyText}`), {
+      statusCode: response.statusCode,
+      response: response.data,
+      compaction: /^\/streams\/[^/]+\/compaction-(apply|preview)$/.test(endpoint),
+    });
   }
   return { data: response.data };
 }
@@ -2157,6 +2189,7 @@ Usage:
   agentinbox stream update <streamId> [--config-json JSON] [--config-ref REF | --clear-config-ref]
   agentinbox stream remove <streamId> [--with-subscriptions]
   agentinbox stream compact <streamId> --retention <duration> [--dry-run] [--scan-limit N]
+  agentinbox stream compact <streamId> --retention <duration> --apply [--batch-size N] [--max-events N] [--max-payload-bytes N]
   agentinbox stream pause <streamId>
   agentinbox stream resume <streamId>
   agentinbox stream schema <streamId>
@@ -2302,6 +2335,13 @@ function findPackageJsonPath(startDir: string): string {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  if (error && typeof error.statusCode === "number"
+    && (error.compaction === true || error.response?.code === "history_unavailable")) {
+    const details = error.response && typeof error.response === "object"
+      ? error.response : { error: error instanceof Error ? error.message : String(error) };
+    console.error(jsonResponse({ ...details, statusCode: error.statusCode }));
+  } else {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
   process.exit(1);
 });

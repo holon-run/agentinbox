@@ -36,6 +36,14 @@ going forward.
 
 ## Streams / Sources
 
+`GET /streams/{streamId}` and `GET /sources/{sourceId}` preserve their existing
+detail fields and add `streamStats` (`null` when no stream exists).
+`eventCount` remains the total number of identity rows, including pruned events;
+`replayableEventCount` and `prunedEventCount` distinguish payload availability.
+`prunedThroughOffset`, `retainedFromOffset` and `highWatermarkOffset` expose
+replay boundaries. The new compaction-specific fields may be absent for
+third-party backends.
+
 `POST /streams/{streamId}/compaction-preview` accepts
 `{"retentionMs": 2592000000, "scanLimit": 1000}` and performs a bounded,
 read-only payload-compaction preview. The path uses the public source/stream ID.
@@ -44,6 +52,29 @@ See [CLI preview semantics](cli.md#stream-compaction-preview) for consumer
 protection, sample counts, byte estimates and truncation fields.
 Invalid durations/limits return 400, missing streams return 404, and a backend
 without preview support returns 501. This endpoint cannot apply compaction.
+
+`POST /streams/{streamId}/compaction-apply` is a separate, manual opt-in endpoint:
+
+```json
+{"apply": true, "retentionMs": 2592000000, "batchSize": 100, "maxEvents": 1000, "maxPayloadBytes": 8388608}
+```
+
+`apply: true` and a positive `retentionMs` are required. The optional limits above
+are both defaults and hard upper bounds. Unknown options (including preview-only
+`scanLimit`) and missing/false apply return 400; missing streams return 404 and
+unsupported backends return 501. No-consumer streams are skipped. Eligibility is
+rechecked per short batch; retries skip committed pruned payloads. A single event
+over the byte budget blocks progress with `stopReason: oversized`.
+
+Responses report committed batches, pruned logical bytes, replay bounds,
+`nextOffset`, `hasMore` and the stop reason. Identity stubs and historical offsets
+remain, but payload pruning cannot be undone without a backup. There is no
+automatic GC, `VACUUM`, or promise of immediate database-file shrinkage.
+See [manual compaction and replay boundaries](cli.md#manual-payload-compaction)
+for `latest`, `earliest`, `at_offset`, `at_time`, reset and commit behavior.
+History-unavailable failures return 409 with `error`, `code: history_unavailable`,
+`streamId`, `requested` (offset/time/startPolicy), `retainedFromOffset`, and
+`highWatermarkOffset`; these fields also survive CLI remote errors.
 
 - `GET /sources`
 - `POST /sources`

@@ -20,6 +20,7 @@ const EXPECTED_MIGRATION_TAGS = [
   "0010_digest_notification_states",
   "0011_digest_notification_state_lifecycle",
   "0012_agent_delivery_pause",
+  "0013_stream_payload_compaction",
 ];
 
 async function createLegacyDb(dbPath: string): Promise<void> {

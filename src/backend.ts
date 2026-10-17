@@ -5,7 +5,9 @@ import {
 } from "./model";
 import { AgentInboxStore } from "./store";
 import { generateCanonicalId, nowIso } from "./util";
-import type { PreviewStreamCompactionInput, StreamCompactionPreview } from "./stream_compaction";
+import type {
+  ApplyStreamCompactionInput, PreviewStreamCompactionInput, StreamCompactionPreview, StreamCompactionResult,
+} from "./stream_compaction";
 
 export interface StreamRecord {
   streamId: string;
@@ -45,8 +47,13 @@ export interface ConsumerRecord {
 
 export interface StreamStats {
   streamId: string;
+  /** Total identity rows, including compacted events; preserved for compatibility. */
   eventCount: number;
   highWatermarkOffset: number | null;
+  replayableEventCount?: number;
+  prunedEventCount?: number;
+  prunedThroughOffset?: number | null;
+  retainedFromOffset?: number;
 }
 
 export interface ConsumerLag {
@@ -129,6 +136,7 @@ export interface EventBusBackend {
   getStreamStats(streamId: string): Promise<StreamStats>;
   getConsumerLag(input: GetConsumerInput): Promise<ConsumerLag>;
   previewStreamCompaction?(input: PreviewStreamCompactionInput): Promise<StreamCompactionPreview>;
+  applyStreamCompaction?(input: ApplyStreamCompactionInput): Promise<StreamCompactionResult>;
 }
 
 export class SqliteEventBusBackend implements EventBusBackend {
@@ -136,6 +144,10 @@ export class SqliteEventBusBackend implements EventBusBackend {
 
   async previewStreamCompaction(input: PreviewStreamCompactionInput): Promise<StreamCompactionPreview> {
     return this.store.previewStreamCompaction(input);
+  }
+
+  async applyStreamCompaction(input: ApplyStreamCompactionInput): Promise<StreamCompactionResult> {
+    return this.store.applyStreamCompaction(input);
   }
 
   async ensureStream(input: EnsureStreamInput): Promise<StreamRecord> {
@@ -218,8 +230,11 @@ export class SqliteEventBusBackend implements EventBusBackend {
     if (!consumer) {
       throw new Error(`unknown consumer: ${input.consumerId}`);
     }
+    if (consumer.streamId !== input.streamId) {
+      throw Object.assign(new Error("invalid streamId: consumer belongs to a different stream"), { statusCode: 400 });
+    }
     const events = this.store.readStreamEvents(input.streamId, consumer.nextOffset, input.limit);
-    const stats = this.store.getStreamStats(input.streamId);
+    const stats = this.store.getStreamHistoryBounds(input.streamId);
     return {
       consumer,
       events,
@@ -268,7 +283,7 @@ export class SqliteEventBusBackend implements EventBusBackend {
     if (!consumer) {
       throw new Error("unknown consumer");
     }
-    const stats = this.store.getStreamStats(consumer.streamId);
+    const stats = this.store.getStreamHistoryBounds(consumer.streamId);
     const pendingEvents = this.store.countPendingEvents(consumer.streamId, consumer.nextOffset);
     return {
       consumerId: consumer.consumerId,
@@ -285,15 +300,18 @@ export class SqliteEventBusBackend implements EventBusBackend {
     startOffset: number | null,
     startTime: string | null,
   ): number {
-    const stats = this.store.getStreamStats(streamId);
+    const stats = this.store.getStreamHistoryBounds(streamId);
     if (startPolicy === "latest") {
       return (stats.highWatermarkOffset ?? 0) + 1;
     }
     if (startPolicy === "earliest") {
+      this.store.assertStreamHistory(streamId, { offset: 1, startPolicy });
       return 1;
     }
     if (startPolicy === "at_offset") {
-      return Math.max(1, startOffset ?? 1);
+      const offset = Math.max(1, startOffset ?? 1);
+      this.store.assertStreamHistory(streamId, { offset, startPolicy });
+      return offset;
     }
     if (startPolicy === "at_time") {
       if (!startTime) {

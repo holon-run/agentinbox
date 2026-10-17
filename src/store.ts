@@ -2,10 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import BetterSqlite3, { Database as BetterSqliteDatabase } from "better-sqlite3";
 import {
+  ApplyStreamCompactionInput,
+  compactionApplyOptions,
   compactionPreviewOptions,
   emptyPayloadBytes,
+  HistoryUnavailableError,
   PreviewStreamCompactionInput,
   StreamCompactionPreview,
+  StreamCompactionResult,
+  StreamHistoryBounds,
   StreamPayloadBytes,
 } from "./stream_compaction";
 import type {
@@ -470,8 +475,8 @@ export class AgentInboxStore {
     // better-sqlite3 persists changes through SQLite's journaling layer.
   }
 
-  private inTransaction<T>(fn: () => T): T {
-    this.db.exec("begin");
+  private inTransaction<T>(fn: () => T, mode: "deferred" | "immediate" = "deferred"): T {
+    this.db.exec(mode === "immediate" ? "begin immediate" : "begin");
     try {
       const result = fn();
       this.db.exec("commit");
@@ -2893,32 +2898,88 @@ export class AgentInboxStore {
   }
 
   readStreamEvents(streamId: string, nextOffset: number, limit: number): StreamEventRecord[] {
-    const rows = this.getAll(
-      `
-      select * from stream_events
-      where stream_id = ? and offset >= ?
-      order by offset asc
-      limit ?
-    `,
-      [streamId, nextOffset, limit],
+    return this.inTransaction(() => {
+      this.assertStreamHistory(streamId, { offset: nextOffset });
+      const rows = this.getAll(
+        `select * from stream_events
+         where stream_id = ? and offset >= ? and payload_pruned_at is null
+         order by offset asc limit ?`,
+        [streamId, nextOffset, limit],
+      );
+      return rows.map((row) => this.mapStreamEvent(row));
+    });
+  }
+
+  getStreamHistoryBounds(streamId: string): StreamHistoryBounds {
+    // Partial indexes keep this check independent of the size of retained payloads/history.
+    const pruned = this.getOne(
+      `select offset from stream_events
+       where stream_id = ? and payload_pruned_at is not null order by offset desc limit 1`,
+      [streamId],
     );
-    return rows.map((row) => this.mapStreamEvent(row));
+    const high = this.getOne(
+      "select offset from stream_events where stream_id = ? order by offset desc limit 1",
+      [streamId],
+    );
+    const prunedThroughOffset = pruned ? Number(pruned.offset) : null;
+    return {
+      prunedThroughOffset,
+      retainedFromOffset: (prunedThroughOffset ?? 0) + 1,
+      highWatermarkOffset: high ? Number(high.offset) : null,
+    };
+  }
+
+  assertStreamHistory(
+    streamId: string,
+    requested: { offset?: number; time?: string; startPolicy?: string },
+  ): void {
+    if (requested.offset != null
+      && (!Number.isSafeInteger(requested.offset) || requested.offset < 1)) {
+      throw Object.assign(new Error("invalid offset: expected a positive safe integer"), { statusCode: 400 });
+    }
+    const bounds = this.getStreamHistoryBounds(streamId);
+    if (bounds.prunedThroughOffset == null) return;
+    const missingTime = requested.time != null && this.getOne(
+      `select offset from stream_events
+       where stream_id = ? and payload_pruned_at is not null and occurred_at >= ? limit 1`,
+      [streamId, requested.time],
+    );
+    if (requested.startPolicy === "earliest"
+      || (requested.offset != null && requested.offset < bounds.retainedFromOffset)
+      || missingTime) {
+      throw new HistoryUnavailableError(
+        streamId, requested, bounds.retainedFromOffset, bounds.highWatermarkOffset,
+      );
+    }
+  }
+
+  private assertConsumerHistory(
+    streamId: string,
+    consumer: { nextOffset: number; startPolicy: SubscriptionStartPolicy; startTime: string | null },
+  ): void {
+    this.assertStreamHistory(streamId, {
+      offset: consumer.nextOffset,
+      startPolicy: consumer.startPolicy,
+      ...(consumer.startPolicy === "at_time" && consumer.startTime != null ? { time: consumer.startTime } : {}),
+    });
   }
 
   getStreamStats(streamId: string): StreamStats {
-    const row = this.getOne(
-      `
-      select count(*) as event_count, max(offset) as high_watermark_offset
-      from stream_events
-      where stream_id = ?
-    `,
-      [streamId],
-    );
-    return {
-      streamId,
-      eventCount: Number(row?.event_count ?? 0),
-      highWatermarkOffset: row?.high_watermark_offset != null ? Number(row.high_watermark_offset) : null,
-    };
+    return this.inTransaction(() => {
+      const row = this.getOne(
+        `select
+          (select count(*) from stream_events where stream_id = ? and payload_pruned_at is null) as retained_count,
+          (select count(*) from stream_events where stream_id = ? and payload_pruned_at is not null) as pruned_count`,
+        [streamId, streamId],
+      );
+      const prunedEventCount = Number(row?.pruned_count ?? 0);
+      const replayableEventCount = Number(row?.retained_count ?? 0);
+      return {
+        streamId, eventCount: replayableEventCount + prunedEventCount,
+        replayableEventCount, prunedEventCount,
+        ...this.getStreamHistoryBounds(streamId),
+      };
+    });
   }
 
   previewStreamCompaction(input: PreviewStreamCompactionInput): StreamCompactionPreview {
@@ -2929,6 +2990,7 @@ export class AgentInboxStore {
       if (!this.getStream(input.streamId)) {
         throw new Error(`unknown stream: ${input.streamId}`);
       }
+      const bounds = this.getStreamHistoryBounds(input.streamId);
       const boundary = this.getOne(
         "select min(next_offset) as next_offset from consumers where stream_id = ?",
         [input.streamId],
@@ -2948,7 +3010,7 @@ export class AgentInboxStore {
           consumerId: String(row.consumer_id), nextOffset: Number(row.next_offset),
         })),
         blockingConsumersHasMore: blockers.length > 100,
-        candidateThroughOffset: null, projectedRetainedFromOffset: 1,
+        candidateThroughOffset: null, projectedRetainedFromOffset: bounds.retainedFromOffset,
         hasMore: false, estimated: false, stopReason: "no_consumers",
       };
       if (safeBeforeOffset == null) return result;
@@ -2960,7 +3022,7 @@ export class AgentInboxStore {
            length(cast(raw_payload_json as blob)) as raw_payload,
            coalesce(length(cast(provider_raw_payload_json as blob)), 0) as provider_raw_payload,
            coalesce(length(cast(delivery_handle_json as blob)), 0) as delivery_handle
-         from stream_events where stream_id = ? order by offset limit ?`,
+         from stream_events where stream_id = ? and payload_pruned_at is null order by offset limit ?`,
         [input.streamId, scanLimit + 1],
       );
       result.hasMore = rows.length > scanLimit;
@@ -3001,12 +3063,134 @@ export class AgentInboxStore {
     });
   }
 
+  applyStreamCompaction(input: ApplyStreamCompactionInput): StreamCompactionResult {
+    const { cutoff, batchSize, maxEvents, maxPayloadBytes } = compactionApplyOptions(input);
+    const prunedAt = nowIso();
+    const result: StreamCompactionResult = {
+      streamId: input.streamId, dryRun: false, cutoff,
+      prunedEvents: 0, prunedPayloadBytes: emptyPayloadBytes(), batches: 0,
+      safeBeforeOffset: null, blockingConsumers: [], blockingConsumersHasMore: false,
+      prunedThroughOffset: null, retainedFromOffset: 1, nextOffset: 1,
+      hasMore: false, stopReason: "exhausted",
+    };
+    while (result.prunedEvents < maxEvents) {
+      // Acquire the SQLite writer reservation BEFORE reading consumers/history.
+      // Consumer creation/reset/commit use the same reservation; process-local locks
+      // would not protect other daemon/store connections.
+      const batch = this.inTransaction(() => {
+        if (!this.getStream(input.streamId)) throw new Error(`unknown stream: ${input.streamId}`);
+        const boundary = this.getOne(
+          "select min(next_offset) as next_offset from consumers where stream_id = ?",
+          [input.streamId],
+        );
+        const safeBeforeOffset = boundary?.next_offset == null ? null : Number(boundary.next_offset);
+        const blockers = safeBeforeOffset == null ? [] : this.getAll(
+          `select consumer_id, next_offset from consumers
+           where stream_id = ? and next_offset = ? order by consumer_id limit 101`,
+          [input.streamId, safeBeforeOffset],
+        );
+        const quota = Math.min(batchSize, maxEvents - result.prunedEvents);
+        const offsets: number[] = [];
+        const bytes = emptyPayloadBytes();
+        let stopReason: StreamCompactionResult["stopReason"] = "exhausted";
+        let hasMore = false;
+        let oversizedOffset: number | undefined;
+        let nextOffset: number | undefined;
+        if (safeBeforeOffset == null) {
+          stopReason = "no_consumers";
+        } else {
+          // Lengths are computed inside SQLite, never materializing sensitive payloads.
+          const rows = this.getAll(
+            `select offset, created_at,
+               length(cast(metadata_json as blob)) as metadata,
+               length(cast(raw_payload_json as blob)) as raw_payload,
+               coalesce(length(cast(provider_raw_payload_json as blob)), 0) as provider_raw_payload,
+               coalesce(length(cast(delivery_handle_json as blob)), 0) as delivery_handle
+             from stream_events where stream_id = ? and payload_pruned_at is null
+             order by offset limit ?`,
+            [input.streamId, quota + 1],
+          );
+          for (const row of rows) {
+            nextOffset = Number(row.offset);
+            if (nextOffset >= safeBeforeOffset) {
+              stopReason = "consumer_boundary";
+              break;
+            }
+            if (String(row.created_at) >= cutoff) {
+              stopReason = "retention_boundary";
+              break;
+            }
+            const rowBytes: StreamPayloadBytes = {
+              metadata: Number(row.metadata), rawPayload: Number(row.raw_payload),
+              providerRawPayload: Number(row.provider_raw_payload), deliveryHandle: Number(row.delivery_handle),
+              total: Number(row.metadata) + Number(row.raw_payload)
+                + Number(row.provider_raw_payload) + Number(row.delivery_handle),
+            };
+            if (rowBytes.total > maxPayloadBytes) {
+              stopReason = "oversized";
+              oversizedOffset = nextOffset;
+              hasMore = true;
+              break;
+            }
+            if (offsets.length === quota || bytes.total + rowBytes.total > maxPayloadBytes) {
+              stopReason = "event_limit";
+              hasMore = true;
+              break;
+            }
+            offsets.push(nextOffset);
+            nextOffset = undefined;
+            for (const key of Object.keys(bytes) as Array<keyof StreamPayloadBytes>) {
+              bytes[key] += rowBytes[key];
+            }
+          }
+        }
+        if (offsets.length > 0) {
+          this.run(
+            `update stream_events set metadata_json = '{}', raw_payload_json = '{}',
+               provider_raw_payload_json = null, delivery_handle_json = null, payload_pruned_at = ?
+             where stream_id = ? and payload_pruned_at is null and offset in (${offsets.map(() => "?").join(",")})`,
+            [prunedAt, input.streamId, ...offsets],
+          );
+        }
+        const bounds = this.getStreamHistoryBounds(input.streamId);
+        return {
+          ...bounds, safeBeforeOffset, offsets, bytes, stopReason, hasMore, oversizedOffset,
+          nextOffset: nextOffset ?? (safeBeforeOffset == null
+            ? bounds.retainedFromOffset : (bounds.highWatermarkOffset ?? 0) + 1),
+          blockingConsumers: blockers.slice(0, 100).map((row) => ({
+            consumerId: String(row.consumer_id), nextOffset: Number(row.next_offset),
+          })),
+          blockingConsumersHasMore: blockers.length > 100,
+        };
+      }, "immediate");
+      // Publish progress only after the batch commits. Failed batches roll back
+      // completely; already committed batches remain safe to resume on the next call.
+      result.prunedEvents += batch.offsets.length;
+      if (batch.offsets.length > 0) result.batches += 1;
+      for (const key of Object.keys(result.prunedPayloadBytes) as Array<keyof StreamPayloadBytes>) {
+        result.prunedPayloadBytes[key] += batch.bytes[key];
+      }
+      result.safeBeforeOffset = batch.safeBeforeOffset;
+      result.blockingConsumers = batch.blockingConsumers;
+      result.blockingConsumersHasMore = batch.blockingConsumersHasMore;
+      result.prunedThroughOffset = batch.prunedThroughOffset;
+      result.retainedFromOffset = batch.retainedFromOffset;
+      result.nextOffset = batch.nextOffset;
+      result.stopReason = batch.stopReason;
+      result.hasMore = batch.hasMore;
+      if (batch.oversizedOffset != null) result.oversizedOffset = batch.oversizedOffset;
+      if (!batch.hasMore || batch.stopReason === "oversized" || batch.offsets.length === 0) break;
+    }
+    return result;
+  }
+
   findOffsetAtOrAfter(streamId: string, occurredAt: string): number | null {
+    this.assertStreamHistory(streamId, { time: occurredAt, startPolicy: "at_time" });
     const row = this.getOne(
       `
       select offset
       from stream_events
-      where stream_id = ? and occurred_at >= ?
+      where stream_id = ? and occurred_at >= ? and payload_pruned_at is null
       order by occurred_at asc, offset asc
       limit 1
     `,
@@ -3017,34 +3201,27 @@ export class AgentInboxStore {
 
   countPendingEvents(streamId: string, nextOffset: number): number {
     const row = this.getOne(
-      "select count(*) as count from stream_events where stream_id = ? and offset >= ?",
+      "select count(*) as count from stream_events where stream_id = ? and offset >= ? and payload_pruned_at is null",
       [streamId, nextOffset],
     );
     return Number(row?.count ?? 0);
   }
 
   insertConsumer(consumer: ConsumerRecord): void {
-    this.run(
-      `
-      insert into consumers (
-        consumer_id, stream_id, subscription_id, consumer_key, start_policy,
-        start_offset, start_time, next_offset, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
-      [
-        consumer.consumerId,
-        consumer.streamId,
-        consumer.subscriptionId,
-        consumer.consumerKey,
-        consumer.startPolicy,
-        consumer.startOffset ?? null,
-        consumer.startTime ?? null,
-        consumer.nextOffset,
-        consumer.createdAt,
-        consumer.updatedAt,
-      ],
-    );
-    this.persist();
+    this.inTransaction(() => {
+      this.assertConsumerHistory(consumer.streamId, consumer);
+      this.run(
+        `insert into consumers (
+          consumer_id, stream_id, subscription_id, consumer_key, start_policy,
+          start_offset, start_time, next_offset, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          consumer.consumerId, consumer.streamId, consumer.subscriptionId, consumer.consumerKey,
+          consumer.startPolicy, consumer.startOffset ?? null, consumer.startTime ?? null,
+          consumer.nextOffset, consumer.createdAt, consumer.updatedAt,
+        ],
+      );
+    }, "immediate");
   }
 
   getConsumer(consumerId: string): ConsumerRecord | null {
@@ -3071,12 +3248,11 @@ export class AgentInboxStore {
   }
 
   updateConsumerOffset(consumerId: string, nextOffset: number, committedOffset: number): ConsumerRecord {
-    const consumer = this.getConsumer(consumerId);
-    if (!consumer) {
-      throw new Error(`unknown consumer: ${consumerId}`);
-    }
     const updatedAt = nowIso();
-    this.inTransaction(() => {
+    return this.inTransaction(() => {
+      const consumer = this.getConsumer(consumerId);
+      if (!consumer) throw new Error(`unknown consumer: ${consumerId}`);
+      this.assertStreamHistory(consumer.streamId, { offset: nextOffset });
       this.run(
         "update consumers set next_offset = ?, updated_at = ? where consumer_id = ?",
         [nextOffset, updatedAt, consumerId],
@@ -3089,9 +3265,8 @@ export class AgentInboxStore {
       `,
         [generateCanonicalId("cmt"), consumerId, consumer.streamId, committedOffset, updatedAt],
       );
-    });
-    this.persist();
-    return this.getConsumer(consumerId)!;
+      return this.getConsumer(consumerId)!;
+    }, "immediate");
   }
 
   resetConsumer(
@@ -3103,23 +3278,21 @@ export class AgentInboxStore {
       nextOffset: number;
     },
   ): ConsumerRecord {
-    this.run(
-      `
-      update consumers
-      set start_policy = ?, start_offset = ?, start_time = ?, next_offset = ?, updated_at = ?
-      where consumer_id = ?
-    `,
-      [
-        input.startPolicy,
-        input.startOffset ?? null,
-        input.startTime ?? null,
-        input.nextOffset,
-        nowIso(),
-        consumerId,
-      ],
-    );
-    this.persist();
-    return this.getConsumer(consumerId)!;
+    return this.inTransaction(() => {
+      const consumer = this.getConsumer(consumerId);
+      if (!consumer) throw new Error(`unknown consumer: ${consumerId}`);
+      this.assertConsumerHistory(consumer.streamId, input);
+      this.run(
+        `update consumers
+         set start_policy = ?, start_offset = ?, start_time = ?, next_offset = ?, updated_at = ?
+         where consumer_id = ?`,
+        [
+          input.startPolicy, input.startOffset ?? null, input.startTime ?? null,
+          input.nextOffset, nowIso(), consumerId,
+        ],
+      );
+      return this.getConsumer(consumerId)!;
+    }, "immediate");
   }
 
   getCounts(): Record<string, number> {
@@ -3930,6 +4103,11 @@ export class AgentInboxStore {
   }
 
   private mapStreamEvent(row: Record<string, unknown>): StreamEventRecord {
+    if (row.payload_pruned_at != null) {
+      // Identity stubs must never masquerade as normal events with empty payloads.
+      this.assertStreamHistory(String(row.stream_id), { offset: Number(row.offset) });
+      throw new Error("invalid compacted stream event");
+    }
     return {
       offset: Number(row.offset),
       streamEventId: String(row.stream_event_id),

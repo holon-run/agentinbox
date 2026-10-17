@@ -9,7 +9,7 @@ subscriptions, inboxes, activation targets, and daemon lifecycle.
 agentinbox stream compact <streamId> --retention 30d [--dry-run] [--scan-limit 1000]
 ```
 
-This command is **preview only**; `--apply` is not supported in this stage.
+Without `--apply`, this command is **read-only**, including explicit `--dry-run`.
 Retention must be explicit and positive (`ms`, `s`, `m`, `h`, `d`, or integer
 milliseconds). It never starts a source, creates a consumer, advances an offset,
 or changes a payload. No automatic retention policy is installed.
@@ -27,6 +27,59 @@ scan. `candidatePayloadBytes` is not a promise of physical file shrinkage.
 `blockingConsumersHasMore` indicating truncation. No raw payload is returned.
 The command uses the public source/stream ID; the result also identifies the
 internal event-log `streamId` and its `sourceId`.
+
+### Manual Payload Compaction
+
+```bash
+agentinbox stream compact <streamId> --retention 30d --apply \
+  [--batch-size 100] [--max-events 1000] [--max-payload-bytes 8388608]
+```
+
+Apply is manual and opt-in. `--apply` conflicts with `--dry-run` and
+`--scan-limit`; batch/event/byte limits require `--apply`. Invalid or cross-mode
+options fail with status 400. The defaults above are also hard upper bounds.
+Eligibility is recalculated inside each short batch transaction; a preview is
+not authorization to reuse its candidate set. No consumers means no compaction.
+A single event above the per-batch byte budget (at most 8 MiB) stops with
+`stopReason: oversized` and `oversizedOffset`, rather than starting an oversized
+transaction. Results report committed batches, pruned logical bytes, `hasMore`,
+`nextOffset`, and the stopping reason. Repeated invocations skip already pruned
+payloads; interrupted runs retain completed batches and roll back unfinished ones.
+
+`blockingConsumers` lists at most 100 consumers at the minimum `nextOffset`;
+`blockingConsumersHasMore` indicates truncation. `hasMore` means eligible
+candidates remain, including when an oversized event stops progress (reported as
+`oversizedOffset`); it does not guarantee another invocation can prune them.
+`prunedPayloadBytes` counts original logical bytes of the cleared fields.
+The `metadata` and `rawPayload` stubs still hold `{}` (four bytes combined), so
+this is neither exact net reclaimed space nor SQLite file savings.
+
+Compaction clears large payload fields but preserves lightweight identity stubs,
+timestamps, offsets, deduplication keys and the historical high watermark.
+Stubs are never returned as empty normal events. Existing consumers, including
+paused/offline ones, protect unread history. After any payload has been pruned:
+
+- `latest` starts at the historical high watermark plus one, even if no payload remains.
+- `earliest` fails with `history_unavailable`; explicitly choose `at_offset`
+  at or above `retainedFromOffset` to accept the available history.
+- `at_offset` below that bound fails; natural global offset gaps remain valid.
+- `at_time` fails if any pruned identity has `occurred_at` at or after the
+  requested time. The `created_at` retention cutoff is not a replay-time bound.
+- Reset, consumer commit and read enforce the same history boundary; they never
+  silently clamp an offset or skip pruned history.
+
+History failures exit nonzero and preserve structured `code`, `streamId`,
+`requested`, `retainedFromOffset` and `highWatermarkOffset` fields (HTTP 409).
+Unsupported backends return 501, not success.
+
+**Pruning is irreversible without a backup.** Disabling further compaction does
+not restore payloads. This is logical space reclamation, not immediate SQLite
+file shrinkage or bounded identity-row growth. It installs no automatic retention
+policy or GC and never runs `VACUUM`.
+Do not downgrade a compacted database to a version without replay guards:
+older versions do not recognize `payload_pruned_at` and may replay `{}` stubs
+as real events. Restore a valid pre-compaction backup before such a downgrade;
+turning off apply only stops future pruning and cannot recover history.
 
 ## Meta Commands
 
