@@ -10,6 +10,36 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-19
+
+### Added
+
+- Persistent agent delivery pause/resume controls stop notifications without
+  stopping source ingestion or removing inbox history.
+- Bounded, read-only stream payload compaction previews and manual opt-in
+  compaction preserve identity stubs, offsets and deduplication keys (#260).
+  Consumer creation, reset and read enforce explicit history-unavailable errors
+  rather than replaying pruned payloads as ordinary events.
+
+### Fixed
+
+- Webhook activation dispatch is serialized per agent/target, with eligibility
+  rechecked after queued work acquires the lock, preventing concurrent stale
+  dispatches for the same target (#261, #263).
+- Partial inbox policy updates preserve unspecified settings (#263).
+- Dedicated regression coverage exercises webhook single-flight delivery races
+  and retry behavior (#265).
+
+### Upgrade notes
+
+- Database migrations add agent delivery-pause state and payload-pruning
+  metadata. Existing source subscriptions and inbox history are retained.
+- Compaction is manual and irreversible without a backup. No automatic cleanup,
+  retention policy or `VACUUM` is enabled; logical payload pruning does not
+  immediately shrink the SQLite file.
+- Do not downgrade a compacted database to a version without replay guards.
+  Disabling compaction does not recover pruned history.
+
 ## [1.10.0] - 2026-10-14
 
 ### Added
