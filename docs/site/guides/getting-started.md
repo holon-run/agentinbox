@@ -9,7 +9,9 @@ is the preferred first-run path.
 
 ## Prerequisites
 
-- Node.js 20 or newer
+- Node.js 22.23.4+ (22.x), 24.22.1+ (24.x), or 26.12.1 or newer.
+  Node.js 24 LTS is recommended. Earlier versions lack the
+  [October 2026 security fixes](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
 - `uxc` 0.15.3 or newer if you want to use GitHub or Feishu source adapters:
   https://github.com/holon-run/uxc
 
@@ -18,6 +20,9 @@ Install `AgentInbox` globally:
 ```bash
 npm install -g @holon-run/agentinbox
 ```
+
+Updating the npm package alone does not patch Node.js. Upgrade Node.js first and
+restart any running AgentInbox daemon to activate the new runtime.
 
 Or run it directly:
 

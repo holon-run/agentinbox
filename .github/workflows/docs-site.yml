@@ -7,12 +7,10 @@ on:
       - 'docs/site/**'
       - 'package.json'
       - 'package-lock.json'
+      - '.nvmrc'
       - 'wrangler.jsonc'
       - '.github/workflows/docs-site.yml'
   workflow_dispatch:
-
-env:
-  NODE_VERSION: 22
 
 permissions:
   contents: read
@@ -29,7 +27,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: .nvmrc
           cache: npm
 
       - name: Install dependencies

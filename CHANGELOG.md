@@ -10,6 +10,24 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-22
+
+### Security
+
+- Require patched Node.js releases: 22.23.4+ on 22.x, 24.22.1+ on 24.x,
+  or 26.12.1 or newer, following the
+  [October 21, 2026 security advisory](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+  Node.js 20 and older unpatched releases are no longer supported.
+- Test all three patched release lines in CI. Release and documentation builds
+  use the Node.js 24.22.1 version recorded in `.nvmrc`.
+
+### Upgrade notes
+
+- Upgrade Node.js before updating AgentInbox, then restart the daemon. The npm
+  package does not bundle or update the Node.js runtime, and existing processes
+  keep using the executable with which they started.
+- No v1 API, database, subscription, or delivery configuration changes.
+
 ## [1.11.0] - 2026-10-19
 
 ### Added
