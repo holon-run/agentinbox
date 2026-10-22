@@ -86,7 +86,10 @@ database.
 
 Requires:
 
-- Node.js 20 or newer
+- Node.js 22.23.4+ (22.x), 24.22.1+ (24.x), or 26.12.1 or newer.
+  Node.js 24 LTS is recommended; `.nvmrc` pins the tested version.
+  Older versions are not supported because they lack the
+  [October 2026 security fixes](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
 - `uxc` 0.15.3 or newer if you want to use GitHub or Feishu adapters:
   https://github.com/holon-run/uxc
 
@@ -95,6 +98,9 @@ Install globally:
 ```bash
 npm install -g @holon-run/agentinbox
 ```
+
+Upgrading the npm package does not upgrade Node.js. Upgrade the runtime first,
+then restart any running AgentInbox daemon so it uses the patched executable.
 
 Or run directly:
 
