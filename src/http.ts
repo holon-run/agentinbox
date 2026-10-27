@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import swagger from "@fastify/swagger";
 import { summarizeActivationTarget } from "./current_agent";
 import { AgentInboxService } from "./service";
+import { readOwnPackageVersion } from "./version";
 import {
   ActivationMode,
   AuthDescriptor,
@@ -116,6 +117,9 @@ const authDescriptorSchema = {
 } as const;
 
 function buildFastifyServer(service: AgentInboxService) {
+  // Self-report the daemon's own build version so clients can observe the
+  // running daemon instead of their own package version (#269).
+  const daemonVersion = readOwnPackageVersion();
   const app = Fastify({
     logger: false,
     ajv: {
@@ -143,11 +147,12 @@ function buildFastifyServer(service: AgentInboxService) {
           required: ["ok"],
           properties: {
             ok: { type: "boolean" },
+            version: { anyOf: [{ type: "string" }, { type: "null" }] },
           },
         },
       },
     },
-  }, async () => ({ ok: true }));
+  }, async () => ({ ok: true, version: daemonVersion }));
 
   app.get("/status", {
     schema: {

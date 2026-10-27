@@ -10,6 +10,26 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+### Added
+
+- `GET /healthz` now returns the daemon's own build `version`, and
+  `daemon status` reports `daemonVersion` (daemon self-report) alongside
+  `cliVersion`, so mixed CLI/daemon builds are observable (#269).
+- Autostart daemon spawning can be pinned to an explicit install with
+  `AGENTINBOX_DAEMON_ENTRY`; an unusable entry fails explicitly (#269).
+
+### Changed
+
+- `daemon status` `version` now reflects the daemon's self-reported build
+  instead of the calling CLI's package version; it is `null` when the daemon
+  does not report one (older builds). Scripts that relied on `version`
+  matching the CLI must read `cliVersion` instead (#269).
+- Implicit daemon autostart no longer inherits the calling CLI's invocation
+  entry (`process.argv[1]`); it resolves the entry from the CLI install's own
+  layout (#269).
+- Client commands and `daemon start` print a stderr warning when a healthy
+  daemon reports a different version than the CLI (#269).
+
 ## [1.12.0] - 2026-10-22
 
 ### Security

@@ -641,9 +641,14 @@ test("unix socket control plane replaces stale socket files and serves requests"
         socketPath,
         source: "flag",
       });
-      const health = await client.request<{ ok: boolean }>("/healthz", undefined, "GET");
+      const health = await client.request<{ ok: boolean; version: string | null }>("/healthz", undefined, "GET");
       assert.equal(health.statusCode, 200);
-      assert.deepEqual(health.data, { ok: true });
+      // The daemon self-reports its build version (#269); it is null when
+      // the running build cannot determine its own version.
+      if (health.data.version != null) {
+        assert.equal(typeof health.data.version, "string");
+      }
+      assert.equal(health.data.ok, true);
 
       const openapi = await client.request<Record<string, unknown>>("/openapi.json", undefined, "GET");
       assert.equal(openapi.statusCode, 200);

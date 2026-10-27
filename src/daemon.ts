@@ -3,6 +3,7 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 import { AgentInboxClient } from "./client";
 import { daemonLockPath, resolveAgentInboxHome, resolveDaemonPaths, type ClientTransport } from "./paths";
+import { readOwnPackageVersion } from "./version";
 import { defaultLogLevel, isLogLevel, LogLevel, parseLogLevel } from "./logging";
 import { isEnvFlagEnabled, isPidAlive } from "./util";
 
@@ -30,7 +31,16 @@ export interface DaemonStatusResult {
   starting: boolean;
   pid: number | null;
   logLevel: LogLevel | null;
+  /**
+   * Daemon build version self-reported over healthz. Legacy alias of
+   * `daemonVersion`; never the calling CLI's version. Null when the daemon
+   * does not report one (e.g. builds predating #269) or is not running.
+   */
   version: string | null;
+  /** Daemon build version self-reported over healthz; null when unknown. */
+  daemonVersion: string | null;
+  /** Version of the AgentInbox install this CLI call runs from. */
+  cliVersion: string | null;
   startedAt: string | null;
   command: string | null;
   nodeVersion: string | null;
@@ -58,7 +68,9 @@ export async function ensureDaemonForClient(options: DaemonCliOptions = {}): Pro
     return transport;
   }
 
-  if (await canReachHealthz(transport)) {
+  const health = await fetchDaemonHealth(transport);
+  if (health?.ok === true) {
+    emitDaemonVersionMismatch(health.version);
     return transport;
   }
 
@@ -75,7 +87,9 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
   const { pidPath, logPath } = resolveDaemonPaths(env, options.homeDirOverride);
   fs.mkdirSync(homeDir, { recursive: true });
 
-  if (await canReachHealthz(transport)) {
+  const health = await fetchDaemonHealth(transport);
+  if (health?.ok === true) {
+    emitDaemonVersionMismatch(health.version);
     const pid = readPidFile(pidPath);
     return {
       started: false,
@@ -96,6 +110,7 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
   while (pendingHolder) {
     const outcome = await waitForDaemonReady(transport, lockPath, timeoutMs);
     if (outcome === "ready") {
+      emitDaemonVersionMismatch((await fetchDaemonHealth(transport))?.version ?? null);
       const pid = readPidFile(pidPath) ?? pendingHolder.pid;
       return {
         started: false,
@@ -115,10 +130,13 @@ export async function startDaemon(options: DaemonCliOptions = {}): Promise<Daemo
     pendingHolder = readLiveDaemonLockHolder(lockPath);
   }
 
+  // Resolve the daemon install before creating any files so an unusable
+  // entry fails explicitly without side effects (#269).
+  const daemonEntry = resolveDaemonEntry(env);
   const logFd = openLogFile(logPath);
   let child;
   try {
-    child = spawn(process.execPath, daemonChildArgs(), {
+    child = spawn(process.execPath, daemonChildArgs(daemonEntry), {
       cwd: process.cwd(),
       env: {
         ...env,
@@ -195,6 +213,8 @@ export async function daemonStatus(options: DaemonCliOptions = {}): Promise<Daem
         pid: null,
         logLevel: null,
         version: null,
+        daemonVersion: null,
+        cliVersion: PACKAGE_VERSION,
         startedAt: null,
         command: null,
         nodeVersion: null,
@@ -211,13 +231,17 @@ export async function daemonStatus(options: DaemonCliOptions = {}): Promise<Daem
 
   const processInfo = pid == null ? null : readProcessMetadata(pid);
   const daemonMetadata = readDaemonMetadata(metadataPath);
-  const running = await canReachHealthz(transport);
+  const health = await fetchDaemonHealth(transport);
+  const running = health?.ok === true;
+  const daemonVersion = health?.version ?? null;
   return {
     running,
     starting: !running && pid != null && isPidAlive(pid),
     pid,
     logLevel: daemonMetadata?.logLevel ?? null,
-    version: pid == null ? null : PACKAGE_VERSION,
+    version: daemonVersion,
+    daemonVersion,
+    cliVersion: PACKAGE_VERSION,
     startedAt: processInfo?.startedAt ?? null,
     command: processInfo?.command ?? null,
     nodeVersion: processInfo?.nodeVersion ?? null,
@@ -387,9 +411,39 @@ async function waitForDaemonReady(
   return "timeout";
 }
 
-function daemonChildArgs(): string[] {
+/**
+ * Resolves the entry script used to spawn the daemon.
+ *
+ * The daemon build must not be inherited from whichever CLI client happens to
+ * call first (#269): the entry is resolved structurally from this module's
+ * own install, or from AGENTINBOX_DAEMON_ENTRY when a deployment pins an
+ * explicit daemon install. An unusable resolved entry fails explicitly; there
+ * is no silent fallback to the caller's `process.argv[1]`.
+ */
+export function resolveDaemonEntry(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.AGENTINBOX_DAEMON_ENTRY?.trim();
+  if (explicit) {
+    const entry = path.resolve(explicit);
+    if (!fs.existsSync(entry)) {
+      throw new Error(`AGENTINBOX_DAEMON_ENTRY points to a missing daemon entry: ${entry}`);
+    }
+    return entry;
+  }
+  // Compiled layout: dist/src/cli.js next to dist/src/daemon.js; ts-node dev
+  // layout: src/cli.ts next to src/daemon.ts.
+  for (const entry of [path.join(__dirname, "cli.js"), path.join(__dirname, "cli.ts")]) {
+    if (fs.existsSync(entry)) {
+      return entry;
+    }
+  }
+  throw new Error(
+    `cannot resolve an AgentInbox daemon entry next to ${__dirname}; set AGENTINBOX_DAEMON_ENTRY to a CLI entry script`,
+  );
+}
+
+function daemonChildArgs(daemonEntry: string): string[] {
   const execArgv = [...process.execArgv];
-  return [...execArgv, process.argv[1], "serve"];
+  return [...execArgv, daemonEntry, "serve"];
 }
 
 function requireSocketTransport(
@@ -450,32 +504,63 @@ function openLogFile(logPath: string): number {
   return fs.openSync(logPath, "a");
 }
 
-async function canReachHealthz(transport: ClientTransport): Promise<boolean> {
+interface DaemonHealthInfo {
+  ok: boolean;
+  /** Daemon self-reported build version; null when the daemon omits it (pre-#269 builds). */
+  version: string | null;
+}
+
+/**
+ * Probes healthz and returns the daemon's self-reported health, or null when
+ * the socket is unreachable or the response is not healthy.
+ */
+async function fetchDaemonHealth(transport: ClientTransport): Promise<DaemonHealthInfo | null> {
   try {
     const client = new AgentInboxClient(transport);
-    const response = await client.request<{ ok: boolean }>("/healthz", undefined, "GET");
-    return response.statusCode === 200 && response.data.ok === true;
+    const response = await client.request<{ ok?: unknown; version?: unknown }>("/healthz", undefined, "GET");
+    if (response.statusCode !== 200) {
+      return null;
+    }
+    const body = response.data;
+    if (typeof body !== "object" || body === null || body.ok !== true) {
+      return null;
+    }
+    return {
+      ok: true,
+      version: typeof body.version === "string" && body.version.length > 0 ? body.version : null,
+    };
   } catch {
-    return false;
+    return null;
   }
 }
 
-function readOwnPackageVersion(): string | null {
-  const candidatePaths = [
-    path.join(__dirname, "..", "package.json"),
-    path.join(__dirname, "..", "..", "package.json"),
-  ];
-  for (const candidate of candidatePaths) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(candidate, "utf8")) as { version?: unknown };
-      if (typeof parsed.version === "string" && parsed.version.length > 0) {
-        return parsed.version;
-      }
-    } catch {
-      continue;
-    }
+async function canReachHealthz(transport: ClientTransport): Promise<boolean> {
+  return (await fetchDaemonHealth(transport))?.ok === true;
+}
+
+/**
+ * Returns a warning line when the running daemon reports a different build
+ * version than this CLI, so silent mixed-build takeovers stay visible (#269).
+ */
+export function daemonVersionMismatchMessage(
+  daemonVersion: string | null,
+  cliVersion: string | null,
+): string | null {
+  if (daemonVersion == null || cliVersion == null || daemonVersion === cliVersion) {
+    return null;
   }
-  return null;
+  return (
+    `warning: AgentInbox daemon version ${daemonVersion} differs from CLI version ${cliVersion}; ` +
+    `the running daemon is kept as-is. Restart it from the intended install, or set ` +
+    `AGENTINBOX_DAEMON_ENTRY to pin the autostart build.`
+  );
+}
+
+function emitDaemonVersionMismatch(daemonVersion: string | null): void {
+  const message = daemonVersionMismatchMessage(daemonVersion, PACKAGE_VERSION);
+  if (message != null) {
+    console.error(message);
+  }
 }
 
 async function waitForHealthz(transport: ClientTransport, timeoutMs: number): Promise<void> {
