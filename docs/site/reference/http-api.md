@@ -10,7 +10,11 @@ going forward.
 
 ## Meta
 
-- `GET /healthz`
+- `GET /healthz` — returns `{"ok":true,"version":"<daemon build version>"}`.
+  `version` is the running daemon's own package version, so clients can
+  observe the daemon build instead of their own. Daemons predating #269 omit
+  `version`; treat a missing or null `version` as unknown rather than
+  assuming it matches the client.
 - `GET /status`
 - `GET /openapi.json`
 - `POST /gc`

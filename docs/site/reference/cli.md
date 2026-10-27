@@ -102,8 +102,24 @@ agentinbox daemon status
 ```
 
 `daemon status` returns machine-readable JSON including the daemon PID,
-transport, and runtime metadata such as the running `version`, `startedAt`,
-`command`, and `nodeVersion` when they can be determined locally.
+transport, and runtime metadata such as `startedAt`, `command`, and
+`nodeVersion` when they can be determined locally. Version fields:
+
+- `daemonVersion` — the running daemon's build version, self-reported over
+  healthz. `null` when the daemon does not report one (builds predating
+  #269) or nothing is serving.
+- `cliVersion` — the version of the AgentInbox install making this call.
+- `version` — legacy alias of `daemonVersion`; it is never filled with the
+  CLI's version.
+
+When a client command or `daemon start` finds a healthy daemon reporting a
+different version than the CLI, a warning is printed to stderr.
+
+Autostart (`daemon start` and implicit client startup) spawns the daemon from
+a structurally resolved entry of the CLI's own install, not from the caller's
+invocation path. Set `AGENTINBOX_DAEMON_ENTRY` to pin an explicit daemon
+install entry script; an unusable entry fails explicitly instead of silently
+falling back to the caller's build.
 
 ## Agent
 
