@@ -10,6 +10,8 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-28
+
 ### Added
 
 - `GET /healthz` now returns the daemon's own build `version`, and
