@@ -4255,6 +4255,116 @@ test("cron timers accept sunday as 7 and leap-day schedules remain active", asyn
   }
 });
 
+test("cron timers catch up exactly once when daemon downtime spans fire slots", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-cron-catchup");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "14 2 * * *",
+      timezone: "UTC",
+      message: "Daily audit",
+    });
+    // Simulate downtime that started three daily slots ago (#272).
+    const staleSlot = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+    staleSlot.setUTCHours(2, 14, 0, 0);
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: staleSlot.toISOString(),
+      updatedAt: nowIso(),
+    });
+
+    (service as unknown as { refreshTimersOnStart(): void }).refreshTimersOnStart();
+
+    const recovered = service.getTimer(timer.scheduleId);
+    assert.equal(recovered.status, "active");
+    // The overdue slot survives restart recovery instead of being silently
+    // recomputed to a future occurrence.
+    assert.ok(recovered.nextFireAt);
+    assert.ok(Date.parse(recovered.nextFireAt) <= Date.now());
+
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    // Multi-slot downtime collapses into exactly one catch-up fire.
+    assert.equal(items.length, 1);
+    const firedItem = items[0];
+    assert.ok(firedItem);
+    assert.ok(firedItem.rawPayload);
+    assert.equal(firedItem.rawPayload.type, "timer_fired");
+    // The catch-up fire reports the most recent missed slot, not the stale one.
+    assert.ok(firedItem.occurredAt);
+    const firedSlotMs = Date.parse(firedItem.occurredAt);
+    const nowMs = Date.now();
+    assert.ok(firedSlotMs <= nowMs);
+    assert.ok(firedSlotMs > nowMs - 25 * 60 * 60 * 1000);
+
+    const updated = service.getTimer(timer.scheduleId);
+    assert.ok(updated.lastFiredAt);
+    assert.ok(updated.nextFireAt);
+    assert.ok(Date.parse(updated.nextFireAt) > nowMs);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("interval timers re-anchor instead of catching up after daemon downtime", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-every-restart");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      every: 60_000,
+      message: "Stand up reminder",
+    });
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: nowIso(),
+    });
+
+    (service as unknown as { refreshTimersOnStart(): void }).refreshTimersOnStart();
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const updated = service.getTimer(timer.scheduleId);
+    assert.equal(updated.status, "active");
+    assert.ok(updated.nextFireAt);
+    assert.ok(Date.parse(updated.nextFireAt) > Date.now());
+    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 0);
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("one-shot at timers stay due across restart recovery and fire late", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-at-restart");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      at: "2020-01-01T00:00:00.000Z",
+      message: "One-shot reminder",
+    });
+
+    (service as unknown as { refreshTimersOnStart(): void }).refreshTimersOnStart();
+
+    const recovered = service.getTimer(timer.scheduleId);
+    assert.equal(recovered.status, "active");
+    assert.equal(recovered.nextFireAt, "2020-01-01T00:00:00.000Z");
+
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    assert.equal(service.listInboxItems(alpha.agentId, { includeAcked: true }).length, 1);
+    assert.equal(service.getTimer(timer.scheduleId).status, "paused");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("timer firing is idempotent per scheduled occurrence", async () => {
   const { store, service, dir } = await makeService();
   try {

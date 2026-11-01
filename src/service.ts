@@ -4155,9 +4155,36 @@ export class AgentInboxService {
 
   private refreshTimersOnStart(): void {
     const now = nowIso();
+    const nowMs = Date.parse(now);
     for (const timer of this.store.listTimers()) {
       if (timer.status !== "active") {
         continue;
+      }
+      // Issue #272: a fire whose slot fell inside daemon downtime must not be
+      // silently dropped on restart. Overdue `cron` fires catch up once,
+      // mirroring one-shot `at` timers: multi-slot downtime collapses to the
+      // most recent missed slot, so recovery delivers exactly one late fire
+      // and then advances to the next future slot.
+      if (timer.mode === "cron" && timer.cronExpr && timer.nextFireAt) {
+        if (Date.parse(timer.nextFireAt) <= nowMs) {
+          const catchUpAt = lastOverdueCronOccurrence(timer.cronExpr, timer.timezone, timer.nextFireAt, nowMs);
+          console.warn(
+            `timer ${timer.scheduleId} cron fire due at ${timer.nextFireAt} was missed during daemon downtime; scheduling catch-up fire at ${catchUpAt}`,
+          );
+          this.store.updateTimer(timer.scheduleId, {
+            nextFireAt: catchUpAt,
+            status: "active",
+            updatedAt: now,
+          });
+          continue;
+        }
+      } else if (timer.mode === "every" && timer.nextFireAt && Date.parse(timer.nextFireAt) <= nowMs) {
+        // Interval timers keep their re-anchor semantics (replaying missed
+        // interval fires would be pure noise); the skipped boundary is logged
+        // so downtime gaps stay observable instead of silent (#272).
+        console.warn(
+          `timer ${timer.scheduleId} interval fire due at ${timer.nextFireAt} was missed during daemon downtime; re-anchoring to the next interval`,
+        );
       }
       const nextFireAt = computeNextTimerFire({
         mode: timer.mode,
@@ -5264,6 +5291,31 @@ function nextCronOccurrence(expr: string, timezone: string, after: Date): string
     candidate = addMinutes(candidate, 1);
   }
   return null;
+}
+
+/**
+ * Returns the most recent cron occurrence at or before `nowMs`, starting from
+ * an overdue `firstMissedIso` slot. Used by restart recovery to collapse
+ * daemon downtime that spans multiple cron slots into a single catch-up fire
+ * (#272). The guard bounds pathological schedules (for example an
+ * every-minute cron after long downtime) the same way `nextCronOccurrence`
+ * bounds its own search.
+ */
+function lastOverdueCronOccurrence(
+  cronExpr: string,
+  timezone: string,
+  firstMissedIso: string,
+  nowMs: number,
+): string {
+  let last = firstMissedIso;
+  for (let guard = 0; guard < 10_000; guard += 1) {
+    const next = nextCronOccurrence(cronExpr, timezone, new Date(Date.parse(last)));
+    if (!next || Date.parse(next) > nowMs) {
+      break;
+    }
+    last = next;
+  }
+  return last;
 }
 
 function matchesCron(parsed: ParsedCron, parts: ReturnType<typeof zonedDateParts>): boolean {

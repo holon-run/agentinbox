@@ -10,6 +10,17 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+### Fixed
+
+- Timer `cron` fires whose scheduled slot fell inside daemon downtime are no
+  longer silently dropped on restart. They now catch up once, mirroring
+  one-shot `at` timers: downtime spanning several slots collapses into a
+  single late fire at the most recent missed slot, followed by the next future
+  slot, and the recovery is logged as a daemon `warn` (#272).
+- Timer `every` fires skipped during daemon downtime are now logged as a
+  daemon `warn` when the timer re-anchors on restart, making the gap
+  observable instead of silent (#272).
+
 ## [1.13.0] - 2026-10-28
 
 ### Added
