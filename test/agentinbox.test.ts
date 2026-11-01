@@ -4309,6 +4309,54 @@ test("cron timers catch up exactly once when daemon downtime spans fire slots", 
   }
 });
 
+test("cron catch-up still collapses when downtime spans more than 10_000 slots", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-cron-catchup-huge");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "* * * * *",
+      timezone: "UTC",
+      message: "Dense audit",
+    });
+    // Twenty days of every-minute slots: ~28_800 missed occurrences, past the
+    // 10_000-step pass guard, so recovery must re-anchor near now (#273).
+    const staleSlot = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000);
+    staleSlot.setUTCSeconds(0, 0);
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: staleSlot.toISOString(),
+      updatedAt: nowIso(),
+    });
+
+    (service as unknown as { refreshTimersOnStart(): void }).refreshTimersOnStart();
+
+    const recovered = service.getTimer(timer.scheduleId);
+    assert.equal(recovered.status, "active");
+    assert.ok(recovered.nextFireAt);
+    // Collapsed to the most recent missed slot, not a stale intermediate one.
+    assert.ok(Date.parse(recovered.nextFireAt) <= Date.now());
+    assert.ok(Date.parse(recovered.nextFireAt) > Date.now() - 2 * 60 * 1000);
+
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(items.length, 1);
+    const firedItem = items[0];
+    assert.ok(firedItem);
+    assert.ok(firedItem.rawPayload);
+    assert.equal(firedItem.rawPayload.type, "timer_fired");
+
+    const updated = service.getTimer(timer.scheduleId);
+    assert.ok(updated.lastFiredAt);
+    assert.ok(updated.nextFireAt);
+    assert.ok(Date.parse(updated.nextFireAt) > Date.now());
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("interval timers re-anchor instead of catching up after daemon downtime", async () => {
   const { store, service, dir } = await makeService();
   try {
