@@ -5297,9 +5297,10 @@ function nextCronOccurrence(expr: string, timezone: string, after: Date): string
  * Returns the most recent cron occurrence at or before `nowMs`, starting from
  * an overdue `firstMissedIso` slot. Used by restart recovery to collapse
  * daemon downtime that spans multiple cron slots into a single catch-up fire
- * (#272). The guard bounds pathological schedules (for example an
- * every-minute cron after long downtime) the same way `nextCronOccurrence`
- * bounds its own search.
+ * (#272). Each pass is guarded the same way `nextCronOccurrence` bounds its
+ * own search; when downtime spans more occurrences than one pass covers, the
+ * search re-anchors near `nowMs` so extreme downtime still terminates on the
+ * most recent missed slot instead of replaying every missed occurrence.
  */
 function lastOverdueCronOccurrence(
   cronExpr: string,
@@ -5315,7 +5316,26 @@ function lastOverdueCronOccurrence(
     }
     last = next;
   }
-  return last;
+  // The guard exhausted: downtime spanned more than 10_000 occurrences of a
+  // dense schedule. Returning the intermediate slot here would leave the
+  // older missed slots queued, and firing would replay them one by one
+  // (#273 review). Instead, re-anchor the search near `nowMs` using the
+  // occurrence spacing observed above, then walk the short remaining tail so
+  // downtime of any length still collapses into a single catch-up slot.
+  const observedSpanMs = Date.parse(last) - Date.parse(firstMissedIso);
+  const anchorMs = Math.max(Date.parse(last), nowMs - Math.floor(observedSpanMs / 4));
+  let tail = nextCronOccurrence(cronExpr, timezone, new Date(anchorMs));
+  if (!tail || Date.parse(tail) > nowMs) {
+    return last;
+  }
+  for (let guard = 0; guard < 10_000; guard += 1) {
+    const next = nextCronOccurrence(cronExpr, timezone, new Date(Date.parse(tail)));
+    if (!next || Date.parse(next) > nowMs) {
+      break;
+    }
+    tail = next;
+  }
+  return tail;
 }
 
 function matchesCron(parsed: ParsedCron, parts: ReturnType<typeof zonedDateParts>): boolean {
