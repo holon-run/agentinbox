@@ -5297,10 +5297,16 @@ function nextCronOccurrence(expr: string, timezone: string, after: Date): string
  * Returns the most recent cron occurrence at or before `nowMs`, starting from
  * an overdue `firstMissedIso` slot. Used by restart recovery to collapse
  * daemon downtime that spans multiple cron slots into a single catch-up fire
- * (#272). Each pass is guarded the same way `nextCronOccurrence` bounds its
- * own search; when downtime spans more occurrences than one pass covers, the
- * search re-anchors near `nowMs` so extreme downtime still terminates on the
- * most recent missed slot instead of replaying every missed occurrence.
+ * (#272). Walking occurrence by occurrence cannot bound downtime that spans
+ * more occurrences than a guarded pass — including schedules whose long
+ * inactive periods hide the newest missed slot far from the overdue anchor
+ * (#274 review) — so this probes forward from the newest known occurrence
+ * with exponentially growing jumps, shrinking the jump whenever a probe finds
+ * nothing before `nowMs`. Cron occurrences are minute-aligned and at least
+ * one minute apart, so once the jump shrinks to that granularity the newest
+ * known occurrence is the most recent missed slot, and downtime of any
+ * length — across active or inactive periods — collapses into a single
+ * catch-up slot.
  */
 function lastOverdueCronOccurrence(
   cronExpr: string,
@@ -5308,34 +5314,31 @@ function lastOverdueCronOccurrence(
   firstMissedIso: string,
   nowMs: number,
 ): string {
-  let last = firstMissedIso;
-  for (let guard = 0; guard < 10_000; guard += 1) {
-    const next = nextCronOccurrence(cronExpr, timezone, new Date(Date.parse(last)));
-    if (!next || Date.parse(next) > nowMs) {
+  const minStepMs = 60_000;
+  let lastMs = Date.parse(firstMissedIso);
+  let stepMs = minStepMs;
+  for (let guard = 0; guard < 1_000; guard += 1) {
+    // Probe strictly inside the next jump so an occurrence landing exactly on
+    // the probe edge is still discovered.
+    const probeAfterMs = Math.min(lastMs + stepMs - 1, nowMs);
+    const occurrence = nextCronOccurrence(cronExpr, timezone, new Date(probeAfterMs));
+    if (occurrence != null && Date.parse(occurrence) <= nowMs) {
+      // A newer missed occurrence exists; resume jumping from it.
+      lastMs = Date.parse(occurrence);
+      stepMs *= 2;
+      continue;
+    }
+    // Nothing occurs after the probe and before `nowMs`. Either `lastMs`
+    // already is the most recent missed slot, or a closer one sits between
+    // `lastMs` and this probe; shrink the jump. Once the jump is down to the
+    // one-minute cron granularity, the probe above already covered the very
+    // next occurrence after `lastMs`, so `lastMs` is final.
+    if (stepMs <= minStepMs) {
       break;
     }
-    last = next;
+    stepMs = Math.floor(stepMs / 2);
   }
-  // The guard exhausted: downtime spanned more than 10_000 occurrences of a
-  // dense schedule. Returning the intermediate slot here would leave the
-  // older missed slots queued, and firing would replay them one by one
-  // (#273 review). Instead, re-anchor the search near `nowMs` using the
-  // occurrence spacing observed above, then walk the short remaining tail so
-  // downtime of any length still collapses into a single catch-up slot.
-  const observedSpanMs = Date.parse(last) - Date.parse(firstMissedIso);
-  const anchorMs = Math.max(Date.parse(last), nowMs - Math.floor(observedSpanMs / 4));
-  let tail = nextCronOccurrence(cronExpr, timezone, new Date(anchorMs));
-  if (!tail || Date.parse(tail) > nowMs) {
-    return last;
-  }
-  for (let guard = 0; guard < 10_000; guard += 1) {
-    const next = nextCronOccurrence(cronExpr, timezone, new Date(Date.parse(tail)));
-    if (!next || Date.parse(next) > nowMs) {
-      break;
-    }
-    tail = next;
-  }
-  return tail;
+  return new Date(lastMs).toISOString();
 }
 
 function matchesCron(parsed: ParsedCron, parts: ReturnType<typeof zonedDateParts>): boolean {

@@ -4357,6 +4357,134 @@ test("cron catch-up still collapses when downtime spans more than 10_000 slots",
   }
 });
 
+test("cron catch-up keeps the latest slot when recovery lands in an inactive month", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-cron-catchup-month");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "* * * 1 *", // every minute, January only
+      timezone: "UTC",
+      message: "January audit",
+    });
+    // Overdue since the start of the most recent fully-missed January while
+    // the daemon restarts outside the schedule's active month, so the newest
+    // missed slot hides behind a long inactive period (#274 review).
+    const now = new Date();
+    const januaryYear = now.getUTCMonth() === 0 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
+    const staleSlot = new Date(Date.UTC(januaryYear, 0, 1, 0, 0, 0));
+    const expectedIso = now.getUTCMonth() === 0
+      ? null
+      : new Date(Date.UTC(januaryYear, 0, 31, 23, 59, 0, 0)).toISOString();
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: staleSlot.toISOString(),
+      updatedAt: nowIso(),
+    });
+
+    (service as unknown as { refreshTimersOnStart(): void }).refreshTimersOnStart();
+
+    const recovered = service.getTimer(timer.scheduleId);
+    assert.equal(recovered.status, "active");
+    assert.ok(recovered.nextFireAt);
+    if (expectedIso != null) {
+      // Collapsed to the final January slot, not a stale intermediate one.
+      assert.equal(recovered.nextFireAt, expectedIso);
+    } else {
+      // The restart landed inside a later active January: still collapse to
+      // the most recent minute slot instead of a stale January.
+      assert.ok(Date.parse(recovered.nextFireAt) <= Date.now());
+      assert.ok(Date.parse(recovered.nextFireAt) > Date.now() - 2 * 60 * 1000);
+    }
+
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(items.length, 1);
+    const firedItem = items[0];
+    assert.ok(firedItem);
+    assert.ok(firedItem.rawPayload);
+    assert.equal(firedItem.rawPayload.type, "timer_fired");
+    if (expectedIso != null) {
+      assert.ok(firedItem.occurredAt);
+      assert.equal(Date.parse(firedItem.occurredAt ?? ""), Date.parse(expectedIso));
+    }
+
+    const updated = service.getTimer(timer.scheduleId);
+    assert.ok(updated.lastFiredAt);
+    assert.ok(updated.nextFireAt);
+    if (expectedIso != null) {
+      // After the single catch-up the timer advances to the next January.
+      assert.equal(updated.nextFireAt, new Date(Date.UTC(januaryYear + 1, 0, 1, 0, 0, 0)).toISOString());
+    } else {
+      assert.ok(Date.parse(updated.nextFireAt) > Date.now());
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cron catch-up keeps the latest slot when downtime spans inactive months", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const alpha = await registerTmuxAgent(service, "timer-cron-catchup-months");
+    const timer = service.registerTimer({
+      agentId: alpha.agentId,
+      cron: "* * * 1 *",
+      timezone: "UTC",
+      message: "January audit",
+    });
+    // Overdue since late January of the January before the most recent
+    // fully-missed one: the missed span crosses an inactive year plus a
+    // complete active January before recovery (#274 review).
+    const now = new Date();
+    const januaryYear = now.getUTCMonth() === 0 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
+    const staleSlot = new Date(Date.UTC(januaryYear - 1, 0, 25, 12, 0, 0));
+    const expectedIso = now.getUTCMonth() === 0
+      ? null
+      : new Date(Date.UTC(januaryYear, 0, 31, 23, 59, 0, 0)).toISOString();
+    store.updateTimer(timer.scheduleId, {
+      nextFireAt: staleSlot.toISOString(),
+      updatedAt: nowIso(),
+    });
+
+    (service as unknown as { refreshTimersOnStart(): void }).refreshTimersOnStart();
+
+    const recovered = service.getTimer(timer.scheduleId);
+    assert.equal(recovered.status, "active");
+    assert.ok(recovered.nextFireAt);
+    if (expectedIso != null) {
+      assert.equal(recovered.nextFireAt, expectedIso);
+    } else {
+      assert.ok(Date.parse(recovered.nextFireAt) <= Date.now());
+      assert.ok(Date.parse(recovered.nextFireAt) > Date.now() - 2 * 60 * 1000);
+    }
+
+    await (service as unknown as { syncTimers(): Promise<void> }).syncTimers();
+
+    const items = service.listInboxItems(alpha.agentId, { includeAcked: true });
+    assert.equal(items.length, 1);
+    const firedItem = items[0];
+    assert.ok(firedItem);
+    assert.ok(firedItem.rawPayload);
+    assert.equal(firedItem.rawPayload.type, "timer_fired");
+
+    const updated = service.getTimer(timer.scheduleId);
+    assert.ok(updated.lastFiredAt);
+    assert.ok(updated.nextFireAt);
+    if (expectedIso != null) {
+      assert.equal(updated.nextFireAt, new Date(Date.UTC(januaryYear + 1, 0, 1, 0, 0, 0)).toISOString());
+    } else {
+      assert.ok(Date.parse(updated.nextFireAt) > Date.now());
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("interval timers re-anchor instead of catching up after daemon downtime", async () => {
   const { store, service, dir } = await makeService();
   try {
