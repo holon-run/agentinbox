@@ -166,6 +166,15 @@ that target and never clears the agent delivery pause.
 
 Use exactly one of `at`, `every`, or `cron`. `every` is an interval in milliseconds. `timezone` is optional and defaults to the daemon host timezone.
 
+Restart recovery for missed fires depends on the mode (#272):
+
+- `at` and `cron` timers whose scheduled slot fell inside daemon downtime stay
+  due and fire once late after the daemon restarts. For `cron`, downtime that
+  spans several slots collapses into a single catch-up fire at the most recent
+  missed slot, and the daemon logs a `warn` line for the recovery.
+- `every` timers skip missed interval fires and re-anchor to the next interval
+  from daemon start; the skipped boundary is logged as a `warn` line.
+
 ## Subscriptions
 
 - `GET /subscriptions`
