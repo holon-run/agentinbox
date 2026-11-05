@@ -10,14 +10,30 @@ going forward.
 
 ## Meta
 
-- `GET /healthz` — returns `{"ok":true,"version":"<daemon build version>"}`.
+- `GET /healthz` — returns `{"ok":true,"version":"<daemon build version>","eventLoopLagMs":<number>}`.
   `version` is the running daemon's own package version, so clients can
   observe the daemon build instead of their own. Daemons predating #269 omit
   `version`; treat a missing or null `version` as unknown rather than
-  assuming it matches the client.
-- `GET /status`
+  assuming it matches the client. `eventLoopLagMs` is the latest event loop
+  lag sample; daemons predating #276 omit it.
+- `GET /status` — includes `diagnostics.database` (live journal/page facts plus
+  the result and timestamp of the last completed integrity scan) and
+  `diagnostics.runtime` (event loop lag and the most recent slow SQL
+  operations). The status endpoint never reruns an integrity scan: a scan
+  reads every page of the database file and would block the daemon event
+  loop. Use `agentinbox doctor` for an on-demand check.
 - `GET /openapi.json`
 - `POST /gc`
+
+After a control plane stall, control plane requests are shed with `503` and a
+`Retry-After` header for a short cooldown so the daemon drains its queued
+backlog quickly. Shedding engages once the event loop resumes: during a
+synchronous stall nothing on the loop can run, so clients still wait for the
+stall itself. `GET /healthz` is exempt from shedding so daemon discovery and
+liveness probes keep seeing the live daemon while it recovers. The stall
+threshold is configurable with
+`AGENTINBOX_CONTROL_PLANE_STALL_MS` (default `2000`) and the shed window with
+`AGENTINBOX_CONTROL_PLANE_STALL_COOLDOWN_MS` (default `5000`).
 
 ## Hosts
 

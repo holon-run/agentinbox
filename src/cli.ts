@@ -28,6 +28,7 @@ import {
   writeDaemonMetadata,
   writePidFile,
 } from "./daemon";
+import { checkDatabaseIntegrity } from "./db_integrity";
 import { createServer } from "./http";
 import { JsonLogger, parseLogLevel } from "./logging";
 import { daemonLockPath, resolveDaemonPaths, resolveServeConfig } from "./paths";
@@ -104,6 +105,15 @@ async function main(): Promise<void> {
       return;
     }
     await runBackup(normalized.slice(1));
+    return;
+  }
+
+  if (command === "doctor") {
+    if (hasHelpFlag(normalized.slice(1))) {
+      printHelp(["doctor"]);
+      return;
+    }
+    await runDoctor(normalized.slice(1));
     return;
   }
 
@@ -1306,6 +1316,7 @@ const COMMAND_SHELL_SPECS: Array<{ name: string; group: boolean; summary: string
   { name: "inbox", group: true, summary: "Read and manage agent inboxes." },
   { name: "gc", group: false, summary: "Run garbage collection." },
   { name: "backup", group: false, summary: "Write a local database backup snapshot." },
+  { name: "doctor", group: false, summary: "Check local database integrity." },
   { name: "deliver", group: true, summary: "Send outbound delivery actions." },
   { name: "status", group: false, summary: "Show daemon status." },
   { name: "version", group: false, summary: "Show CLI version." },
@@ -1364,6 +1375,28 @@ async function runBackup(args: string[]): Promise<void> {
     }));
   } finally {
     store.close();
+  }
+}
+
+async function runDoctor(args: string[]): Promise<void> {
+  const serveConfig = resolveServeConfig({
+    env: process.env,
+    homeDirOverride: takeFlagValue(args, "--home"),
+    statePathOverride: takeFlagValue(args, "--state"),
+  });
+  const integrity = checkDatabaseIntegrity(serveConfig.dbPath);
+  console.log(jsonResponse({
+    ok: integrity.ok,
+    dbPath: serveConfig.dbPath,
+    result: integrity.result,
+    mode: integrity.mode,
+    checkedAt: integrity.checkedAt,
+    durationMs: integrity.durationMs,
+    pageCount: integrity.pageCount,
+    fileBytes: integrity.fileBytes,
+  }));
+  if (!integrity.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -2171,6 +2204,15 @@ Usage:
 
 Writes a verified snapshot to <db>.bak (replaces the previous manual backup).
 Pre-migration backups (<db>.pre-migrate-v<N>.bak) are created automatically.
+`,
+    doctor: `agentinbox doctor
+
+Usage:
+  agentinbox doctor [--home ~/.agentinbox] [--state ~/.agentinbox/agentinbox.sqlite]
+
+Runs a read-only SQLite integrity check against the local database file.
+The scan uses its own connection, so it never occupies the running daemon's
+event loop.
 `,
     host: `agentinbox host
 

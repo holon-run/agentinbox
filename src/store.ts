@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import BetterSqlite3, { Database as BetterSqliteDatabase } from "better-sqlite3";
+import { DatabaseIntegritySnapshot, runIntegrityCheck } from "./db_integrity";
 import {
   ApplyStreamCompactionInput,
   compactionApplyOptions,
@@ -88,9 +89,23 @@ interface DigestThreadRecord {
 }
 
 export interface DatabaseHealth {
+  /**
+   * Result of the last completed integrity scan. The scan reads every page of
+   * the database file, so it is never recomputed inline: a request handler
+   * that triggers it blocks the whole daemon event loop for the duration of
+   * the scan (#276). Use `agentinbox doctor` for an on-demand fresh check.
+   */
   quickCheck: string;
+  /** ISO timestamp of the last completed integrity scan, if any. */
+  quickCheckAt: string | null;
+  /** Wall time of the last completed integrity scan, if any. */
+  quickCheckDurationMs: number | null;
   journalMode: string;
   foreignKeys: boolean;
+  /** Number of pages in the database file. */
+  pageCount: number;
+  /** Number of free pages in the database file. */
+  freelistCount: number;
 }
 
 function parseJson<T>(value: string | null): T {
@@ -115,11 +130,23 @@ function earlierLifecycleRetirement(
   return right;
 }
 
+/**
+ * Produces a compact, comparable label for a SQL statement so slow
+ * operations stay readable in status output.
+ */
+function slowOperationLabel(sql: string): string {
+  const normalized = sql.replace(/\s+/g, " ").trim();
+  return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
+}
+
 export class AgentInboxStore {
   private constructor(
     private readonly dbPath: string,
     private readonly db: BetterSqliteDatabase,
+    private readonly integrity: DatabaseIntegritySnapshot | null = null,
   ) {}
+
+  private slowOperationSink: ((label: string, durationMs: number) => void) | null = null;
 
   static async open(
     dbPath: string,
@@ -132,16 +159,18 @@ export class AgentInboxStore {
     // Legacy AGENTINBOX_STARTUP_BACKUP=1 mode pays for a full check and an
     // unconditional backup on every open, matching v1.5.2 behavior.
     const legacyStartupBackup = legacyStartupBackupEnabled(env);
-    let db = await this.openDatabaseWithRecovery(dbPath, legacyStartupBackup);
-    let store = new AgentInboxStore(dbPath, db);
+    let opened = await this.openDatabaseWithRecovery(dbPath, legacyStartupBackup);
+    let db = opened.db;
+    let store = new AgentInboxStore(dbPath, db, opened.integrity);
     let archivedPreV1 = false;
     if (existedBeforeOpen && store.shouldArchivePreV1Database()) {
       const archivedPath = store.archivePreV1Database();
       console.warn(
         `[agentinbox] archived pre-v1 local database to ${archivedPath}; starting with a fresh v1 database (no data imported).`,
       );
-      db = this.openDatabase(dbPath);
-      store = new AgentInboxStore(dbPath, db);
+      const reopened = this.openDatabase(dbPath);
+      db = reopened.db;
+      store = new AgentInboxStore(dbPath, db, reopened.integrity);
       archivedPreV1 = true;
     } else if (existedBeforeOpen && legacyStartupBackup) {
       await store.backupDatabase();
@@ -154,7 +183,7 @@ export class AgentInboxStore {
   private static async openDatabaseWithRecovery(
     dbPath: string,
     fullCheck: boolean,
-  ): Promise<BetterSqliteDatabase> {
+  ): Promise<{ db: BetterSqliteDatabase; integrity: DatabaseIntegritySnapshot }> {
     try {
       return this.openDatabase(dbPath, fullCheck);
     } catch (error) {
@@ -175,14 +204,14 @@ export class AgentInboxStore {
     }
   }
 
-  private static openDatabase(dbPath: string, fullCheck = false): BetterSqliteDatabase {
+  private static openDatabase(dbPath: string, fullCheck = false): { db: BetterSqliteDatabase; integrity: DatabaseIntegritySnapshot } {
     const db = new BetterSqlite3(dbPath);
     db.pragma("busy_timeout = 5000");
     db.pragma("journal_mode = WAL");
     db.pragma("synchronous = NORMAL");
     db.pragma("foreign_keys = ON");
-    this.assertHealthy(db, dbPath, fullCheck);
-    return db;
+    const integrity = this.assertHealthy(db, dbPath, fullCheck);
+    return { db, integrity };
   }
 
   /**
@@ -192,15 +221,17 @@ export class AgentInboxStore {
    * (legacy `AGENTINBOX_STARTUP_BACKUP=1` mode, recovery-candidate
    * validation) pass `fullCheck`.
    */
-  private static assertHealthy(db: BetterSqliteDatabase, dbPath: string, fullCheck: boolean): void {
-    if (!fullCheck && db.pragma("quick_check", { simple: true }) === "ok") {
-      return;
-    }
-    const result = db.pragma("integrity_check", { simple: true });
-    if (result !== "ok") {
+  private static assertHealthy(
+    db: BetterSqliteDatabase,
+    dbPath: string,
+    fullCheck: boolean,
+  ): DatabaseIntegritySnapshot {
+    const integrity = runIntegrityCheck(db, { full: fullCheck });
+    if (!integrity.ok) {
       db.close();
-      throw new Error(`sqlite integrity_check failed for ${dbPath}: ${String(result)}`);
+      throw new Error(`sqlite integrity_check failed for ${dbPath}: ${integrity.result}`);
     }
+    return integrity;
   }
 
   private static findRecoverableBackup(dbPath: string): string | null {
@@ -271,12 +302,30 @@ export class AgentInboxStore {
     return path.dirname(this.dbPath);
   }
 
+  /**
+   * Cheap health facts for request handlers. The integrity scan is reported
+   * from the last completed scan instead of being rerun here: scanning every
+   * page of the database file inside a request handler blocks the daemon
+   * event loop and stalls the whole control plane (#276).
+   */
   getDatabaseHealth(): DatabaseHealth {
     return {
-      quickCheck: String(this.db.pragma("quick_check", { simple: true })),
+      quickCheck: this.integrity?.result ?? "unknown",
+      quickCheckAt: this.integrity?.checkedAt ?? null,
+      quickCheckDurationMs: this.integrity?.durationMs ?? null,
       journalMode: String(this.db.pragma("journal_mode", { simple: true })),
       foreignKeys: Number(this.db.pragma("foreign_keys", { simple: true })) === 1,
+      pageCount: Number(this.db.pragma("page_count", { simple: true })),
+      freelistCount: Number(this.db.pragma("freelist_count", { simple: true })),
     };
+  }
+
+  /**
+   * Registers a sink that receives the duration of every completed SQL
+   * statement. The sink runs on the daemon event loop, so it must stay cheap.
+   */
+  setSlowOperationSink(sink: ((label: string, durationMs: number) => void) | null): void {
+    this.slowOperationSink = sink;
   }
 
   /**
@@ -2692,8 +2741,10 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  listActivations(): Activation[] {
-    const rows = this.getAll("select * from activations order by created_at desc");
+  listActivations(limit?: number): Activation[] {
+    const rows = typeof limit === "number"
+      ? this.getAll("select * from activations order by created_at desc limit ?", [limit])
+      : this.getAll("select * from activations order by created_at desc");
     return rows.map((row) => this.mapActivation(row));
   }
 
@@ -2721,8 +2772,10 @@ export class AgentInboxStore {
     this.persist();
   }
 
-  listDeliveries(): DeliveryAttempt[] {
-    const rows = this.getAll("select * from deliveries order by created_at desc");
+  listDeliveries(limit?: number): DeliveryAttempt[] {
+    const rows = typeof limit === "number"
+      ? this.getAll("select * from deliveries order by created_at desc limit ?", [limit])
+      : this.getAll("select * from deliveries order by created_at desc");
     return rows.map((row) => this.mapDelivery(row));
   }
 
@@ -3332,15 +3385,38 @@ export class AgentInboxStore {
   }
 
   private run(sql: string, params: SqlBindParams = []): SqlRunResult {
-    return this.db.prepare(sql).run(...params);
+    const startedAt = Date.now();
+    try {
+      return this.db.prepare(sql).run(...params);
+    } finally {
+      this.reportSlowOperation(sql, startedAt);
+    }
   }
 
   private getOne(sql: string, params: SqlBindParams = []): Record<string, unknown> | undefined {
-    return this.db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
+    const startedAt = Date.now();
+    try {
+      return this.db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
+    } finally {
+      this.reportSlowOperation(sql, startedAt);
+    }
   }
 
   private getAll(sql: string, params: SqlBindParams = []): Record<string, unknown>[] {
-    return this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    const startedAt = Date.now();
+    try {
+      return this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    } finally {
+      this.reportSlowOperation(sql, startedAt);
+    }
+  }
+
+  private reportSlowOperation(sql: string, startedAt: number): void {
+    const sink = this.slowOperationSink;
+    if (!sink) {
+      return;
+    }
+    sink(slowOperationLabel(sql), Date.now() - startedAt);
   }
 
   private mapSource(row: Record<string, unknown>): SourceStream {

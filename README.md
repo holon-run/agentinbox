@@ -336,9 +336,14 @@ Startup backups are event-driven, not unconditional:
   default 5; `0` keeps all)
 - `agentinbox backup [--home DIR] [--state PATH]` writes a manual snapshot to
   `<db>.bak` on demand, for scheduled or pre-upgrade snapshots
+- `agentinbox doctor [--home DIR] [--state PATH]` runs a read-only integrity
+  check against the local database file on its own connection, so a large
+  database never occupies the running daemon's event loop
 - regular opens verify the database with `PRAGMA quick_check` and escalate to
   a full `integrity_check` only when the quick pass fails; recovery considers
   manual and pre-migration backups, most recent first
+- the control plane reports the result and timestamp of the last completed
+  scan instead of rescanning inside a request handler
 
 Setting `AGENTINBOX_STARTUP_BACKUP=1` restores the legacy behavior of backing
 up (and fully checking) the database on every open.
