@@ -64,6 +64,7 @@ import {
 } from "./model";
 import { createHash } from "node:crypto";
 import { AgentInboxStore } from "./store";
+import { RuntimeMetrics } from "./runtime_metrics";
 import { AdapterRegistry } from "./adapters";
 import {
   ConsumerLag,
@@ -120,6 +121,8 @@ const DEFAULT_ACKED_RETENTION_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_OFFLINE_AGENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_GC_INTERVAL_MS = 60 * 1000;
 const DEFAULT_SYNC_INTERVAL_MS = 2_000;
+const DEFAULT_CONTROL_PLANE_STALL_MS = 2_000;
+const DEFAULT_CONTROL_PLANE_STALL_COOLDOWN_MS = 5_000;
 const DEFAULT_IDLE_SOURCE_GRACE_MS = 30 * 60 * 1000;
 const DEFAULT_INBOX_AGGREGATION_WINDOW_MS = 30 * 1000;
 const DEFAULT_INBOX_AGGREGATION_MAX_ITEMS = 20;
@@ -136,6 +139,34 @@ const SUBSCRIPTION_START_POLICIES = new Set<Subscription["startPolicy"]>(["lates
 interface ActivationPolicy {
   windowMs?: number;
   maxItems?: number;
+}
+
+export interface ControlPlaneHealth {
+  /** True when the daemon event loop is judged congested. */
+  congested: boolean;
+  /** Latest event loop lag sample, in milliseconds. */
+  eventLoopLagMs: number;
+  /** Largest event loop lag observed since startup, in milliseconds. */
+  maxEventLoopLagMs: number;
+  /** Lag at or above this value counts as a stalled sample. */
+  thresholdMs: number;
+  /** How long the control plane keeps shedding load after a stall. */
+  cooldownMs: number;
+  /** Consecutive stalled samples observed so far. */
+  consecutiveStallSamples: number;
+  /** ISO timestamp of the most recent stalled sample, if any. */
+  lastStallAt: string | null;
+  /** Seconds a shed client should wait before retrying. */
+  retryAfterSeconds: number;
+}
+
+function resolvePositiveIntEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 interface BufferedNotification {
@@ -205,6 +236,8 @@ export class AgentInboxService {
   private lastOfflineAgentGcAt = 0;
   private readonly emailBodyReader: EmailBodyReader;
   private readonly emailAttachmentContent: EmailAttachmentContentManager;
+  private readonly controlPlaneStallMs: number;
+  private readonly controlPlaneStallCooldownMs: number;
 
   constructor(
     private readonly store: AgentInboxStore,
@@ -218,6 +251,7 @@ export class AgentInboxService {
     gatingPolicy?: GatingPolicy,
     emailBodyUxcClient?: EmailBodyUxcClient,
     emailAttachmentOptions?: EmailAttachmentContentManagerOptions,
+    runtimeMetrics?: RuntimeMetrics,
   ) {
     this.activationDispatcher = activationDispatcher;
     this.backend = backend ?? new SqliteEventBusBackend(store);
@@ -234,6 +268,22 @@ export class AgentInboxService {
       emailBodyUxcClient,
       emailAttachmentOptions,
     );
+    this.controlPlaneStallMs = resolvePositiveIntEnv(
+      process.env,
+      "AGENTINBOX_CONTROL_PLANE_STALL_MS",
+      DEFAULT_CONTROL_PLANE_STALL_MS,
+    );
+    this.controlPlaneStallCooldownMs = resolvePositiveIntEnv(
+      process.env,
+      "AGENTINBOX_CONTROL_PLANE_STALL_COOLDOWN_MS",
+      DEFAULT_CONTROL_PLANE_STALL_COOLDOWN_MS,
+    );
+    this.runtimeMetrics = runtimeMetrics ?? new RuntimeMetrics({
+      stallThresholdMs: this.controlPlaneStallMs,
+    });
+    this.store.setSlowOperationSink((label, durationMs) => {
+      this.runtimeMetrics.recordOperation(label, durationMs);
+    });
   }
 
   private readonly activationDispatcher: ActivationDispatcher;
@@ -241,11 +291,14 @@ export class AgentInboxService {
   private readonly activationGate: ActivationGate;
   private readonly logger: Logger;
 
+  readonly runtimeMetrics: RuntimeMetrics;
+
   async start(): Promise<void> {
     if (this.syncInterval) {
       return;
     }
     this.stopping = false;
+    this.runtimeMetrics.start();
     this.syncInterval = setInterval(() => {
       void this.syncAllSubscriptions();
       void this.syncPendingDigestThreads();
@@ -264,6 +317,7 @@ export class AgentInboxService {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    this.runtimeMetrics.stop();
     for (const buffer of this.notificationBuffers.values()) {
       if (buffer.timer) {
         clearTimeout(buffer.timer);
@@ -2600,8 +2654,8 @@ export class AgentInboxService {
     const activationDispatchStates = this.store.listActivationDispatchStates();
     const streams = this.store.listStreams();
     const consumers = this.store.listConsumers();
-    const recentActivations = this.store.listActivations().slice(0, 10);
-    const recentDeliveries = this.store.listDeliveries().slice(0, 10);
+    const recentActivations = this.store.listActivations(10);
+    const recentDeliveries = this.store.listDeliveries(10);
     return {
       retention: {
         ackedInboxItemsMs: this.ackedRetentionMs,
@@ -2612,6 +2666,7 @@ export class AgentInboxService {
       diagnostics: {
         database: this.store.getDatabaseHealth(),
         daemon: { status: "running" },
+        runtime: this.runtimeMetrics.snapshot(),
         sources: summarizeByStatus(sources, ["active", "paused", "error"]),
         agents: summarizeByStatus(agents, ["active", "offline"]),
         activationTargets: summarizeByStatus(activationTargets, ["active", "offline"]),
@@ -2638,6 +2693,31 @@ export class AgentInboxService {
         gcIntervalMs: DEFAULT_GC_INTERVAL_MS,
         lastOfflineAgentGcAt: this.lastOfflineAgentGcAt > 0 ? new Date(this.lastOfflineAgentGcAt).toISOString() : null,
       },
+    };
+  }
+
+  /**
+   * Reports whether the daemon event loop is congested.
+   *
+   * A stalled daemon used to answer control plane requests by hanging, which
+   * piled clients up until new connections were refused. The control plane
+   * now sheds load with a fast error for a short window after a stall instead
+   * of queueing requests behind the stalled loop (#276).
+   */
+  controlPlaneHealth(): ControlPlaneHealth {
+    const metrics = this.runtimeMetrics.snapshot();
+    const lastStallAtMs = metrics.lastStallAt ? Date.parse(metrics.lastStallAt) : Number.NaN;
+    const stalledRecently = Number.isFinite(lastStallAtMs)
+      && Date.now() - lastStallAtMs <= this.controlPlaneStallCooldownMs;
+    return {
+      congested: stalledRecently,
+      eventLoopLagMs: metrics.eventLoopLagMs,
+      maxEventLoopLagMs: metrics.maxEventLoopLagMs,
+      thresholdMs: this.controlPlaneStallMs,
+      cooldownMs: this.controlPlaneStallCooldownMs,
+      consecutiveStallSamples: metrics.consecutiveStallSamples,
+      lastStallAt: metrics.lastStallAt,
+      retryAfterSeconds: 1,
     };
   }
 

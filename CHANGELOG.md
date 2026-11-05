@@ -10,6 +10,29 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+### Added
+
+- `GET /status` reports `diagnostics.runtime` with the event loop lag and the
+  most recent slow SQL operations, and `GET /healthz` reports the latest event
+  loop lag. Control plane stalls become observable metrics instead of
+  occasional "the daemon stopped answering" reports (#276).
+- `agentinbox doctor` runs a read-only integrity check against the local
+  database file on its own connection, so an on-demand check never occupies
+  the running daemon's event loop (#276).
+
+### Fixed
+
+- The control plane no longer runs a full SQLite integrity scan inside
+  `GET /status`. The scan reads every page of the database file, so on a large
+  database it blocked the daemon's single event loop: every control plane
+  request stalled (including the in-memory `/healthz`), and a long stall
+  could exhaust the Unix socket listen backlog until new connections were
+  refused. `/status` now reports the result and timestamp of the last
+  completed scan instead of starting a new one (#276).
+- Control plane requests are shed with `503` and a `Retry-After` header while
+  the daemon event loop is congested, instead of hanging until clients pile
+  up behind the stalled loop (#276).
+
 ### Fixed
 
 - Timer `cron` fires whose scheduled slot fell inside daemon downtime are no

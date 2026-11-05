@@ -291,8 +291,13 @@ agentinbox timer remove <schedule_id>
 
 ```bash
 agentinbox gc
+agentinbox doctor
 agentinbox status
 ```
+
+`agentinbox doctor` runs a read-only SQLite integrity check against the local
+database file on its own connection, so the scan never occupies the running
+daemon's event loop.
 
 ## HTTP API
 
