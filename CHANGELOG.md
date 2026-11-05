@@ -10,6 +10,8 @@ The format is intentionally simple during public beta:
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-11-05
+
 ### Added
 
 - `GET /status` reports `diagnostics.runtime` with the event loop lag and the
@@ -35,8 +37,6 @@ The format is intentionally simple during public beta:
   once the event loop resumes — during a synchronous stall nothing on the loop
   can run. `GET /healthz` stays exempt so daemon discovery keeps seeing the
   live daemon while it recovers (#276).
-
-### Fixed
 
 - Timer `cron` fires whose scheduled slot fell inside daemon downtime are no
   longer silently dropped on restart. They now catch up once, mirroring
