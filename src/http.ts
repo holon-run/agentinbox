@@ -2456,20 +2456,29 @@ export function createServer(service: AgentInboxService): http.Server {
   const ready = app.ready();
   const server = http.createServer((req, res) => {
     // A stalled daemon used to leave clients hanging until the listen backlog
-    // overflowed and new connections were refused. Shed load with a fast
-    // error while the loop is congested so clients can retry instead of
-    // queueing behind the stall (#276).
-    const health = service.controlPlaneHealth();
-    if (health.congested) {
-      res.statusCode = 503;
-      res.setHeader("retry-after", String(health.retryAfterSeconds));
-      res.setHeader("content-type", "application/json; charset=utf-8");
-      res.end(jsonResponse({
-        error: "control plane is congested",
-        eventLoopLagMs: health.eventLoopLagMs,
-        retryAfterSeconds: health.retryAfterSeconds,
-      }));
-      return;
+    // overflowed and new connections were refused. Once the loop resumes
+    // after a stall, shed queued control plane load with a fast error so the
+    // daemon drains the backlog instead of grinding through a pile-up (#276).
+    //
+    // This cannot shed mid-stall: the request callback runs on the same
+    // event loop as the blocking work, so during a synchronous stall it
+    // waits like every other callback and shedding engages only after the
+    // loop unblocks. `/healthz` is exempt so liveness discovery (CLI daemon
+    // auto-start probes) keeps seeing a live daemon while it recovers.
+    const requestPath = (req.url ?? "/").split("?")[0] || "/";
+    if (requestPath !== "/healthz") {
+      const health = service.controlPlaneHealth();
+      if (health.congested) {
+        res.statusCode = 503;
+        res.setHeader("retry-after", String(health.retryAfterSeconds));
+        res.setHeader("content-type", "application/json; charset=utf-8");
+        res.end(jsonResponse({
+          error: "control plane is congested",
+          eventLoopLagMs: health.eventLoopLagMs,
+          retryAfterSeconds: health.retryAfterSeconds,
+        }));
+        return;
+      }
     }
     void Promise.resolve(ready)
       .then(() => {

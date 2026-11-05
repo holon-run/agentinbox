@@ -25,9 +25,13 @@ going forward.
 - `GET /openapi.json`
 - `POST /gc`
 
-When the daemon event loop is congested, control plane requests are shed with
-`503` and a `Retry-After` header instead of being queued behind the stalled
-loop. The stall threshold is configurable with
+After a control plane stall, control plane requests are shed with `503` and a
+`Retry-After` header for a short cooldown so the daemon drains its queued
+backlog quickly. Shedding engages once the event loop resumes: during a
+synchronous stall nothing on the loop can run, so clients still wait for the
+stall itself. `GET /healthz` is exempt from shedding so daemon discovery and
+liveness probes keep seeing the live daemon while it recovers. The stall
+threshold is configurable with
 `AGENTINBOX_CONTROL_PLANE_STALL_MS` (default `2000`) and the shed window with
 `AGENTINBOX_CONTROL_PLANE_STALL_COOLDOWN_MS` (default `5000`).
 

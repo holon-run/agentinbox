@@ -2700,9 +2700,11 @@ export class AgentInboxService {
    * Reports whether the daemon event loop is congested.
    *
    * A stalled daemon used to answer control plane requests by hanging, which
-   * piled clients up until new connections were refused. The control plane
-   * now sheds load with a fast error for a short window after a stall instead
-   * of queueing requests behind the stalled loop (#276).
+   * piled clients up until new connections were refused. While the loop is
+   * blocked nothing on it can run, so no shedding is possible mid-stall;
+   * once the loop resumes, the control plane sheds queued load with a fast
+   * error for a short cooldown window so the daemon drains the backlog
+   * quickly instead of processing a pile-up (#276).
    */
   controlPlaneHealth(): ControlPlaneHealth {
     const metrics = this.runtimeMetrics.snapshot();

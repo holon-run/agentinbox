@@ -29,9 +29,12 @@ The format is intentionally simple during public beta:
   could exhaust the Unix socket listen backlog until new connections were
   refused. `/status` now reports the result and timestamp of the last
   completed scan instead of starting a new one (#276).
-- Control plane requests are shed with `503` and a `Retry-After` header while
-  the daemon event loop is congested, instead of hanging until clients pile
-  up behind the stalled loop (#276).
+- After a control plane stall, queued requests are shed with `503` and a
+  `Retry-After` header for a short cooldown so the daemon drains the backlog
+  quickly instead of processing a pile-up of waiting clients. Shedding engages
+  once the event loop resumes — during a synchronous stall nothing on the loop
+  can run. `GET /healthz` stays exempt so daemon discovery keeps seeing the
+  live daemon while it recovers (#276).
 
 ### Fixed
 

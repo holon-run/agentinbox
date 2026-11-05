@@ -105,7 +105,7 @@ test("status exposes event loop lag and slow operation metrics", async () => {
   }
 });
 
-test("control plane sheds load with 503 while the event loop is congested", async () => {
+test("control plane sheds load after a stall while healthz stays available", async () => {
   const homeDir = createTempDir("agentinbox-stall-shed-");
   const socketPath = path.join(homeDir, "agentinbox.sock");
   const dbPath = path.join(homeDir, "agentinbox.sqlite");
@@ -123,11 +123,18 @@ test("control plane sheds load with 503 while the event loop is congested", asyn
       const healthy = await client.request<{ ok: boolean }>("/healthz", undefined, "GET");
       assert.equal(healthy.statusCode, 200);
       assert.equal(healthy.data.ok, true);
+      // A lag over the stall threshold marks a recent stall; the daemon then
+      // sheds queued control plane load during the cooldown window.
       service.runtimeMetrics.recordEventLoopLag(10_000);
-      const shed = await requestOverSocket(socketPath, "/healthz");
+      const shed = await requestOverSocket(socketPath, "/status");
       assert.equal(shed.statusCode, 503);
       assert.match(shed.body, /congested/);
       assert.equal(shed.headers["retry-after"], "1");
+      // Liveness must stay reachable while shedding: CLI daemon discovery
+      // treats a non-200 healthz as "no daemon" and would try to start one.
+      const liveness = await requestOverSocket(socketPath, "/healthz");
+      assert.equal(liveness.statusCode, 200);
+      assert.equal(JSON.parse(liveness.body).ok, true);
     } finally {
       await started.close();
     }
