@@ -10,14 +10,16 @@ import { SqliteEventBusBackend } from "../src/backend";
 test("compaction migration only adds nullable identity markers/indexes and preserves historical payloads", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stream-compaction-migration-"));
   const dbPath = path.join(dir, "inbox.sqlite");
+  const migrations = path.resolve(__dirname, "../drizzle/migrations");
+  const migrationFiles = fs.readdirSync(migrations)
+    .filter((file) => /^\d{4}_.*\.sql$/.test(file)).sort();
   let store: AgentInboxStore | undefined;
   const db = new BetterSqlite3(dbPath);
   try {
-    const migrations = path.resolve(__dirname, "../drizzle/migrations");
     db.exec(`create table __drizzle_migrations (
       id integer primary key autoincrement, tag text not null unique, applied_at text not null
     )`);
-    for (const file of fs.readdirSync(migrations).filter((file) => /^\d{4}_.*\.sql$/.test(file)).sort()) {
+    for (const file of migrationFiles) {
       if (file.startsWith("0013_")) break;
       db.exec(fs.readFileSync(path.join(migrations, file), "utf8"));
       db.prepare("insert into __drizzle_migrations (tag, applied_at) values (?, ?)")
@@ -40,7 +42,7 @@ test("compaction migration only adds nullable identity markers/indexes and prese
     assert.deepEqual(originalColumns, before);
     assert.equal(store.getStreamStats("str_migration").prunedEventCount, 0);
     assert.equal(store.readStreamEvents("str_migration", 1, 10)[0].rawPayload.secret, "原始负载");
-    const backup = new BetterSqlite3(`${dbPath}.pre-migrate-v14.bak`, { readonly: true });
+    const backup = new BetterSqlite3(`${dbPath}.pre-migrate-v${migrationFiles.length}.bak`, { readonly: true });
     try {
       assert.deepEqual(backup.prepare("select * from stream_events").get(), before);
       assert.equal((backup.prepare("pragma table_info(stream_events)").all() as Array<{ name: string }>)

@@ -21,6 +21,7 @@ const EXPECTED_MIGRATION_TAGS = [
   "0011_digest_notification_state_lifecycle",
   "0012_agent_delivery_pause",
   "0013_stream_payload_compaction",
+  "0014_activations_created_at_index",
 ];
 
 async function createLegacyDb(dbPath: string): Promise<void> {
@@ -134,6 +135,7 @@ async function readMigrationState(dbPath: string): Promise<{
   hasNewIndex: boolean;
   retirementColumns: string[];
   hasTrackedResourceIndex: boolean;
+  hasActivationsCreatedAtIndex: boolean;
 }> {
   const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
   const appliedTags = db.prepare("select tag from __drizzle_migrations order by id asc;")
@@ -145,11 +147,14 @@ async function readMigrationState(dbPath: string): Promise<{
   const hasTrackedResourceIndex = db.prepare("pragma index_list('subscriptions');")
     .all()
     .some((row) => String((row as Record<string, unknown>).name) === "idx_subscriptions_tracked_resource_source");
+  const hasActivationsCreatedAtIndex = db.prepare("pragma index_list('activations');")
+    .all()
+    .some((row) => String((row as Record<string, unknown>).name) === "idx_activations_created_at");
   const retirementColumns = db.prepare("pragma table_info('subscription_lifecycle_retirements');")
     .all()
     .map((row) => String((row as Record<string, unknown>).name));
   db.close();
-  return { appliedTags, hasNewIndex, retirementColumns, hasTrackedResourceIndex };
+  return { appliedTags, hasNewIndex, retirementColumns, hasTrackedResourceIndex, hasActivationsCreatedAtIndex };
 }
 
 test("store migrates a new database using drizzle SQL migrations", async () => {
@@ -162,6 +167,7 @@ test("store migrates a new database using drizzle SQL migrations", async () => {
     assert.equal(state.hasNewIndex, true);
     assert.deepEqual(state.retirementColumns.includes("host_id"), true);
     assert.equal(state.hasTrackedResourceIndex, true);
+    assert.equal(state.hasActivationsCreatedAtIndex, true);
     const backups = fs.readdirSync(dir).filter((name) => name.includes(".pre-v1."));
     assert.equal(backups.length, 0);
   } finally {
