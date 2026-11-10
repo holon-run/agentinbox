@@ -343,7 +343,9 @@ export const activations = sqliteTable("activations", {
   itemsJson: text("items_json"),
   createdAt: text("created_at").notNull(),
   deliveredAt: text("delivered_at"),
-});
+}, (table) => ({
+  createdAtIdx: index("idx_activations_created_at").on(table.createdAt),
+}));
 
 export const deliveries = sqliteTable("deliveries", {
   deliveryId: text("delivery_id").primaryKey(),
