@@ -336,6 +336,15 @@ Startup backups are event-driven, not unconditional:
   default 5; `0` keeps all)
 - `agentinbox backup [--home DIR] [--state PATH]` writes a manual snapshot to
   `<db>.bak` on demand, for scheduled or pre-upgrade snapshots
+- `agentinbox backup prune [--keep N] [--apply]` lists (dry run by default)
+  reclaimable backup artifacts — pre-migration snapshots beyond the keep
+  policy, corrupt/malformed database quarantines, and orphaned backup
+  temporaries — and deletes them with `--apply`. `--keep` must be a plain
+  non-negative integer and its quota counts only snapshots that pass a
+  read-only header check, so the newest usable snapshot is always retained
+  and an invalid snapshot never displaces a usable backup; the live
+  database, the manual `<db>.bak` snapshot, and WAL sidecars are never
+  touched
 - `agentinbox doctor [--home DIR] [--state PATH]` runs a read-only integrity
   check against the local database file on its own connection, so a large
   database never occupies the running daemon's event loop
