@@ -29,6 +29,7 @@ import {
   writePidFile,
 } from "./daemon";
 import { checkDatabaseIntegrity } from "./db_integrity";
+import { applyBackupPrune, planBackupPrune } from "./backup_prune";
 import { createServer } from "./http";
 import { JsonLogger, parseLogLevel } from "./logging";
 import { daemonLockPath, resolveDaemonPaths, resolveServeConfig } from "./paths";
@@ -100,6 +101,14 @@ async function main(): Promise<void> {
   }
 
   if (command === "backup") {
+    if (normalized[1] === "prune") {
+      if (hasHelpFlag(normalized.slice(1))) {
+        printHelp(["backup"]);
+        return;
+      }
+      await runBackupPrune(normalized.slice(2));
+      return;
+    }
     if (hasHelpFlag(normalized.slice(1))) {
       printHelp(["backup"]);
       return;
@@ -1315,7 +1324,7 @@ const COMMAND_SHELL_SPECS: Array<{ name: string; group: boolean; summary: string
   { name: "subscription", group: true, summary: "Manage source subscriptions." },
   { name: "inbox", group: true, summary: "Read and manage agent inboxes." },
   { name: "gc", group: false, summary: "Run garbage collection." },
-  { name: "backup", group: false, summary: "Write a local database backup snapshot." },
+  { name: "backup", group: false, summary: "Write a local database backup snapshot; prune reclaimable backup artifacts." },
   { name: "doctor", group: false, summary: "Check local database integrity." },
   { name: "deliver", group: true, summary: "Send outbound delivery actions." },
   { name: "status", group: false, summary: "Show daemon status." },
@@ -1375,6 +1384,53 @@ async function runBackup(args: string[]): Promise<void> {
     }));
   } finally {
     store.close();
+  }
+}
+
+async function runBackupPrune(args: string[]): Promise<void> {
+  const serveConfig = resolveServeConfig({
+    env: process.env,
+    homeDirOverride: takeFlagValue(args, "--home"),
+    statePathOverride: takeFlagValue(args, "--state"),
+  });
+  let keep: number | undefined;
+  const keepFlag = takeFlagValue(args, "--keep");
+  if (keepFlag !== undefined) {
+    keep = Number.parseInt(keepFlag, 10);
+    if (!Number.isInteger(keep) || keep < 0) {
+      throw new Error("usage: agentinbox backup prune --keep must be a non-negative integer");
+    }
+  }
+  const plan = planBackupPrune(serveConfig.dbPath, { keep, env: process.env });
+  const retained = plan.entries
+    .filter((entry) => entry.action === "keep")
+    .map((entry) => ({ path: entry.path, category: entry.category, bytes: entry.bytes, reason: entry.reason }));
+  if (!hasFlag(args, "--apply")) {
+    console.log(jsonResponse({
+      ok: true,
+      dryRun: true,
+      dbPath: serveConfig.dbPath,
+      keep: plan.keep,
+      reclaimableBytes: plan.reclaimableBytes,
+      wouldDelete: plan.entries
+        .filter((entry) => entry.action === "delete")
+        .map((entry) => ({ path: entry.path, category: entry.category, bytes: entry.bytes })),
+      retained,
+    }));
+    return;
+  }
+  const result = applyBackupPrune(plan);
+  console.log(jsonResponse({
+    ok: result.failed.length === 0,
+    dryRun: false,
+    dbPath: serveConfig.dbPath,
+    keep: plan.keep,
+    deleted: result.deleted,
+    deletedBytes: result.deletedBytes,
+    failed: result.failed,
+  }));
+  if (result.failed.length > 0) {
+    process.exitCode = 1;
   }
 }
 
@@ -2201,9 +2257,16 @@ Usage:
 
 Usage:
   agentinbox backup [--home ~/.agentinbox] [--state ~/.agentinbox/agentinbox.sqlite]
+  agentinbox backup prune [--home ~/.agentinbox] [--state ~/.agentinbox/agentinbox.sqlite] [--keep N] [--apply]
 
 Writes a verified snapshot to <db>.bak (replaces the previous manual backup).
 Pre-migration backups (<db>.pre-migrate-v<N>.bak) are created automatically.
+
+backup prune lists reclaimable backup artifacts (dry run by default):
+pre-migration snapshots beyond --keep (default AGENTINBOX_MIGRATION_BACKUP_KEEP,
+5; values <= 0 keep all), corrupt/malformed database quarantines, and backup
+temporaries (.tmp / .tmp-journal) whose owning process is gone. --apply deletes
+the listed files. The live database, <db>.bak, and WAL sidecars are never touched.
 `,
     doctor: `agentinbox doctor
 

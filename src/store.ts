@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import BetterSqlite3, { Database as BetterSqliteDatabase } from "better-sqlite3";
+import { listOrphanBackupTmpFiles } from "./backup_prune";
 import { DatabaseIntegritySnapshot, runIntegrityCheck } from "./db_integrity";
 import {
   ApplyStreamCompactionInput,
@@ -55,7 +56,7 @@ import {
   WebhookActivationTarget,
 } from "./model";
 import { buildSubscriptionListQuery } from "./store_queries";
-import { formatEntryRef, formatThreadRef, generateCanonicalId, isEnvFlagEnabled, isPidAlive, nowIso, parseEntryRef } from "./util";
+import { formatEntryRef, formatThreadRef, generateCanonicalId, isEnvFlagEnabled, nowIso, parseEntryRef } from "./util";
 
 const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const V1_BASELINE_TAG = "0000_v1_initial";
@@ -4282,30 +4283,18 @@ function backupMtimeMs(candidatePath: string): number {
 }
 
 /**
- * Removes leftover `<db>.*.bak.<pid>.tmp` files (manual and pre-migration
- * backup temporaries) whose owning process is dead. Tmp files owned by a live
- * pid belong to a concurrent open and are preserved.
+ * Removes leftover `<db>.*.bak.<pid>.tmp` and `.tmp-journal` files (manual
+ * and pre-migration backup temporaries plus their SQLite rollback journals)
+ * whose owning process is dead. Tmp files owned by a live pid belong to a
+ * concurrent open and are preserved.
  */
 function removeOrphanBackupTmps(dbPath: string): void {
-  const dir = path.dirname(dbPath);
-  const pattern = new RegExp(`^${escapeRegExp(path.basename(dbPath))}\\.(?:.+\\.)?bak\\.(\\d+)\\.tmp$`);
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    const match = pattern.exec(name);
-    if (!match) {
-      continue;
-    }
-    const pid = Number.parseInt(match[1], 10);
-    if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) {
+  for (const orphan of listOrphanBackupTmpFiles(dbPath)) {
+    if (orphan.live) {
       continue;
     }
     try {
-      fs.rmSync(path.join(dir, name), { force: true });
+      fs.rmSync(orphan.path, { force: true });
     } catch {
       // Best-effort GC.
     }
