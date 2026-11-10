@@ -4,7 +4,12 @@ import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { AgentInboxStore } from "../src/store";
-import { applyBackupPrune, listOrphanBackupTmpFiles, planBackupPrune } from "../src/backup_prune";
+import {
+  applyBackupPrune,
+  listOrphanBackupTmpFiles,
+  parseBackupPruneKeep,
+  planBackupPrune,
+} from "../src/backup_prune";
 
 /** No Linux process owns this pid, so isPidAlive() reports it as dead. */
 const DEAD_PID = 2147483647;
@@ -19,6 +24,29 @@ function write(filePath: string, bytes = 16): string {
   return filePath;
 }
 
+/** Writes a snapshot with a valid SQLite header (magic, page size, page count). */
+function writeUsableSnapshot(filePath: string, pages = 2): string {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const pageSize = 4096;
+  const buffer = Buffer.alloc(pageSize * pages, 0);
+  buffer.write("SQLite format 3\u0000", 0, "latin1");
+  buffer.writeUInt16BE(pageSize, 16);
+  buffer.writeUInt32BE(pages, 28);
+  fs.writeFileSync(filePath, buffer);
+  return filePath;
+}
+
+/** Writes a snapshot with a valid SQLite header that claims more pages than the file holds. */
+function writeTruncatedSnapshot(filePath: string): string {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const buffer = Buffer.alloc(8192, 0);
+  buffer.write("SQLite format 3\u0000", 0, "latin1");
+  buffer.writeUInt16BE(4096, 16);
+  buffer.writeUInt32BE(10, 28); // claims 10 pages but only 2 are present
+  fs.writeFileSync(filePath, buffer);
+  return filePath;
+}
+
 function seedArtifacts(dbPath: string): void {
   // Protected artifacts: never listed by a prune plan.
   write(dbPath, 2048);
@@ -29,7 +57,7 @@ function seedArtifacts(dbPath: string): void {
   write(path.join(path.dirname(dbPath), "unrelated.txt"), 8);
   // Pre-migration snapshots v1..v7.
   for (let version = 1; version <= 7; version += 1) {
-    write(`${dbPath}.pre-migrate-v${version}.bak`, 100 + version);
+    writeUsableSnapshot(`${dbPath}.pre-migrate-v${version}.bak`);
   }
   // Corrupt / malformed quarantines (current and legacy naming).
   write(`${dbPath}.corrupt`, 4096);
@@ -96,7 +124,7 @@ test("planBackupPrune keep policy: flag beats env beats default; 0 keeps all", (
   try {
     const dbPath = path.join(dir, "test.sqlite");
     for (let version = 1; version <= 4; version += 1) {
-      write(`${dbPath}.pre-migrate-v${version}.bak`, 10);
+      writeUsableSnapshot(`${dbPath}.pre-migrate-v${version}.bak`);
     }
     assert.equal(planBackupPrune(dbPath, { env: {} }).keep, 5);
     assert.equal(
@@ -113,6 +141,68 @@ test("planBackupPrune keep policy: flag beats env beats default; 0 keeps all", (
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("planBackupPrune protects the newest usable snapshot; invalid snapshots never consume quota", () => {
+  const dir = tempDir();
+  try {
+    const dbPath = path.join(dir, "test.sqlite");
+    write(dbPath, 32);
+    // Newest snapshot is garbage (no SQLite magic) and would displace the
+    // only usable backup under pure filename-count retention.
+    write(`${dbPath}.pre-migrate-v3.bak`, 4096);
+    writeUsableSnapshot(`${dbPath}.pre-migrate-v2.bak`);
+    writeUsableSnapshot(`${dbPath}.pre-migrate-v1.bak`);
+    const plan = planBackupPrune(dbPath, { keep: 1, env: {} });
+    const byPath = new Map(plan.entries.map((entry) => [entry.path, entry]));
+    const invalid = byPath.get(`${dbPath}.pre-migrate-v3.bak`);
+    assert.equal(invalid?.action, "delete");
+    assert.match(invalid?.reason ?? "", /not a usable SQLite snapshot/);
+    // The newest usable snapshot stays protected even though an invalid file
+    // sorts ahead of it; the older usable one is beyond the keep=1 quota.
+    assert.equal(byPath.get(`${dbPath}.pre-migrate-v2.bak`)?.action, "keep");
+    assert.equal(byPath.get(`${dbPath}.pre-migrate-v1.bak`)?.action, "delete");
+    // With the policy disabled (keep 0) even invalid snapshots are retained.
+    const disabled = planBackupPrune(dbPath, { keep: 0, env: {} });
+    assert.equal(
+      disabled.entries.filter((entry) => entry.action === "delete").length,
+      0,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("planBackupPrune treats a truncated snapshot header as unusable", () => {
+  const dir = tempDir();
+  try {
+    const dbPath = path.join(dir, "test.sqlite");
+    write(dbPath, 32);
+    writeUsableSnapshot(`${dbPath}.pre-migrate-v2.bak`);
+    writeTruncatedSnapshot(`${dbPath}.pre-migrate-v1.bak`);
+    const plan = planBackupPrune(dbPath, { keep: 5, env: {} });
+    const byPath = new Map(plan.entries.map((entry) => [entry.path, entry]));
+    // Even with quota to spare, the truncated snapshot is deletable and the
+    // usable one is retained.
+    assert.equal(byPath.get(`${dbPath}.pre-migrate-v1.bak`)?.action, "delete");
+    assert.match(byPath.get(`${dbPath}.pre-migrate-v1.bak`)?.reason ?? "", /not a usable SQLite snapshot/);
+    assert.equal(byPath.get(`${dbPath}.pre-migrate-v2.bak`)?.action, "keep");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseBackupPruneKeep accepts only complete decimal integers", () => {
+  assert.equal(parseBackupPruneKeep("0"), 0);
+  assert.equal(parseBackupPruneKeep("3"), 3);
+  assert.equal(parseBackupPruneKeep("1.5"), undefined);
+  assert.equal(parseBackupPruneKeep("1e2"), undefined);
+  assert.equal(parseBackupPruneKeep("-1"), undefined);
+  assert.equal(parseBackupPruneKeep("0x10"), undefined);
+  assert.equal(parseBackupPruneKeep("abc"), undefined);
+  assert.equal(parseBackupPruneKeep(""), undefined);
+  assert.equal(parseBackupPruneKeep(" 3"), undefined);
+  assert.equal(parseBackupPruneKeep("99999999999999999999"), undefined);
 });
 
 test("applyBackupPrune deletes exactly the planned deletions", () => {

@@ -11,7 +11,9 @@ import { isPidAlive } from "./util";
  * - `<db>.bak` — manual snapshot written by `agentinbox backup`. Always kept:
  *   it is the most recent operator-controlled backup.
  * - `<db>.pre-migrate-v<N>.bak` — pre-migration snapshots, automatically kept
- *   bounded by `AGENTINBOX_MIGRATION_BACKUP_KEEP` (default 5).
+ *   bounded by `AGENTINBOX_MIGRATION_BACKUP_KEEP` (default 5). The quota
+ *   counts only snapshots that pass a read-only header validation, so an
+ *   invalid or truncated snapshot never displaces a usable backup.
  * - `<db>.corrupt[.<suffix>]` — quarantined copies of a database that failed
  *   integrity checks during recovery.
  * - `<db>.malformed[.<suffix>]` — legacy quarantine naming from older
@@ -69,6 +71,51 @@ function fileSize(filePath: string): number {
   }
 }
 
+const SQLITE_HEADER_MAGIC = "SQLite format 3\u0000";
+const SQLITE_HEADER_BYTES = 100;
+
+/**
+ * Best-effort read-only check that a candidate snapshot is a complete SQLite
+ * database file: valid magic, a sane page size, and a page count consistent
+ * with the file size. Deliberately conservative — when the header cannot be
+ * read the snapshot is reported usable, so it still consumes retention quota
+ * and is never deleted merely because validation itself failed.
+ */
+function isUsableSqliteSnapshot(filePath: string): boolean {
+  let handle: number;
+  try {
+    handle = fs.openSync(filePath, "r");
+  } catch {
+    return true;
+  }
+  const header = Buffer.alloc(SQLITE_HEADER_BYTES);
+  try {
+    const bytesRead = fs.readSync(handle, header, 0, SQLITE_HEADER_BYTES, 0);
+    const { size } = fs.fstatSync(handle);
+    if (bytesRead < SQLITE_HEADER_BYTES || size < SQLITE_HEADER_BYTES) {
+      return false;
+    }
+    if (header.subarray(0, 16).toString("latin1") !== SQLITE_HEADER_MAGIC) {
+      return false;
+    }
+    const pageSize = header.readUInt16BE(16);
+    const effectivePageSize = pageSize === 1 ? 65536 : pageSize;
+    const sanePageSize =
+      effectivePageSize >= 512 &&
+      effectivePageSize <= 65536 &&
+      (effectivePageSize & (effectivePageSize - 1)) === 0;
+    if (!sanePageSize) {
+      return false;
+    }
+    const pageCount = header.readUInt32BE(28);
+    return pageCount === 0 || size >= pageCount * effectivePageSize;
+  } catch {
+    return true;
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
 /**
  * Lists leftover `<db>.*.bak.<pid>.tmp` / `.tmp-journal` files (manual and
  * pre-migration backup temporaries plus their SQLite rollback journals).
@@ -111,6 +158,9 @@ export function listOrphanBackupTmpFiles(
  * files are touched. `keep` defaults to the `AGENTINBOX_MIGRATION_BACKUP_KEEP`
  * environment value (default 5), matching automatic migration-backup pruning;
  * values <= 0 disable deletion of pre-migration snapshots entirely.
+ * The quota counts only snapshots whose header passes the read-only
+ * usability check, so the newest usable snapshot is always retained and an
+ * invalid snapshot never displaces a usable backup.
  */
 export function planBackupPrune(
   dbPath: string,
@@ -123,7 +173,7 @@ export function planBackupPrune(
   const corruptPattern = new RegExp(`^${base}\\.corrupt(?:\\..+)?$`);
   const malformedPattern = new RegExp(`^${base}\\.malformed(?:\\..+)?$`);
   const entries: BackupPruneEntry[] = [];
-  const preMigrationFiles: Array<{ path: string; version: number }> = [];
+  const preMigrationFiles: Array<{ path: string; version: number; usable: boolean }> = [];
   let names: string[];
   try {
     names = fs.readdirSync(dir);
@@ -137,6 +187,7 @@ export function planBackupPrune(
       preMigrationFiles.push({
         path: candidatePath,
         version: Number.parseInt(preMigration[1]!, 10),
+        usable: isUsableSqliteSnapshot(candidatePath),
       });
       continue;
     }
@@ -150,18 +201,33 @@ export function planBackupPrune(
     }
   }
   preMigrationFiles.sort((left, right) => right.version - left.version);
-  const keepReason =
-    keep <= 0 ? "keep policy disabled (keep <= 0)" : `within keep policy (keep ${keep})`;
-  preMigrationFiles.forEach((file, index) => {
-    const deleteFile = keep > 0 && index >= keep;
+  // Retention counts only usable snapshots: the newest usable snapshot is
+  // always within quota, and an invalid snapshot never displaces a usable
+  // backup by consuming one of the retained slots.
+  const usablePaths = new Set(
+    keep > 0
+      ? preMigrationFiles
+          .filter((file) => file.usable)
+          .slice(0, keep)
+          .map((file) => file.path)
+      : [],
+  );
+  for (const file of preMigrationFiles) {
+    const retained = keep <= 0 || usablePaths.has(file.path);
     entries.push({
       path: file.path,
       category: "pre-migrate",
       bytes: fileSize(file.path),
-      action: deleteFile ? "delete" : "keep",
-      reason: deleteFile ? `beyond keep policy (keep ${keep})` : keepReason,
+      action: retained ? "keep" : "delete",
+      reason: retained
+        ? keep <= 0
+          ? "keep policy disabled (keep <= 0)"
+          : `within keep policy (keep ${keep})`
+        : file.usable
+          ? `beyond keep policy (keep ${keep})`
+          : "not a usable SQLite snapshot",
     });
-  });
+  }
   for (const orphan of listOrphanBackupTmpFiles(dbPath)) {
     entries.push({
       path: orphan.path,
@@ -180,9 +246,23 @@ export function planBackupPrune(
   };
 }
 
+/**
+ * Strictly parses a keep value: only a complete decimal integer is accepted.
+ * `Number.parseInt` alone silently truncates `1.5` to 1 and `1e2` to 1, which
+ * with `--apply` would delete more backups than the operator requested. The
+ * CLI rejects an invalid `--keep` flag outright; an invalid environment value
+ * falls back to the default, matching migration-time pruning.
+ */
+export function parseBackupPruneKeep(value: string): number | undefined {
+  if (!/^\d+$/.test(value)) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
 function backupPruneKeep(env: NodeJS.ProcessEnv | undefined): number {
-  const parsed = Number.parseInt(env?.AGENTINBOX_MIGRATION_BACKUP_KEEP ?? "", 10);
-  return Number.isInteger(parsed) ? parsed : DEFAULT_BACKUP_PRUNE_KEEP;
+  return parseBackupPruneKeep(env?.AGENTINBOX_MIGRATION_BACKUP_KEEP ?? "") ?? DEFAULT_BACKUP_PRUNE_KEEP;
 }
 
 /**

@@ -29,7 +29,7 @@ import {
   writePidFile,
 } from "./daemon";
 import { checkDatabaseIntegrity } from "./db_integrity";
-import { applyBackupPrune, planBackupPrune } from "./backup_prune";
+import { applyBackupPrune, parseBackupPruneKeep, planBackupPrune } from "./backup_prune";
 import { createServer } from "./http";
 import { JsonLogger, parseLogLevel } from "./logging";
 import { daemonLockPath, resolveDaemonPaths, resolveServeConfig } from "./paths";
@@ -1396,8 +1396,8 @@ async function runBackupPrune(args: string[]): Promise<void> {
   let keep: number | undefined;
   const keepFlag = takeFlagValue(args, "--keep");
   if (keepFlag !== undefined) {
-    keep = Number.parseInt(keepFlag, 10);
-    if (!Number.isInteger(keep) || keep < 0) {
+    keep = parseBackupPruneKeep(keepFlag);
+    if (keep === undefined) {
       throw new Error("usage: agentinbox backup prune --keep must be a non-negative integer");
     }
   }
