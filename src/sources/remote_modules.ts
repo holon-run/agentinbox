@@ -24,6 +24,7 @@ import {
   deriveGithubTrackedResource,
   expandGithubFollowTemplate,
   expandGithubSubscriptionShortcut,
+  DEFAULT_GITHUB_REPO_PER_PAGE,
   GITHUB_ENDPOINT,
   GithubCallClient,
   GithubUxcClient,
@@ -520,7 +521,7 @@ export function createGithubRepoRemoteModule(options?: { callClient?: GithubCall
         args: {
           owner: config.owner,
           repo: config.repo,
-          per_page: config.perPage ?? 10,
+          per_page: config.perPage ?? DEFAULT_GITHUB_REPO_PER_PAGE,
         },
         mode: "poll",
         poll_config: {
