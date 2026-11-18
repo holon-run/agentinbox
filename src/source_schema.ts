@@ -75,6 +75,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "owner", type: "string", required: true, description: "GitHub repository owner." },
       { name: "repo", type: "string", required: true, description: "GitHub repository name." },
       { name: "uxcAuth", type: "string", required: false, description: "Optional uxc auth profile." },
+      { name: "perPage", type: "number", required: false, description: "Events requested per poll (default 100, the GitHub /events page maximum). Bursts larger than one page between polls can still be dropped." },
       { name: "eventTypes", type: "string[]", required: false, description: "Optional GitHub event type allowlist." },
     ],
   },

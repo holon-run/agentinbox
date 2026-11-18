@@ -13,6 +13,10 @@ import {
 import type { ExpandedFollowPlan, ExpandFollowTemplateInput } from "./remote_modules";
 
 export const GITHUB_ENDPOINT = "https://api.github.com";
+// GitHub /events serves at most 100 events per page and only the newest 300
+// events overall. Polling one small page silently drops any burst exceeding it
+// between two cycles, so the default requests the full page (issue #282).
+export const DEFAULT_GITHUB_REPO_PER_PAGE = 100;
 const DEFAULT_GITHUB_CALL_CLIENT = new UxcDaemonClient({ env: process.env });
 const GITHUB_EVENT_HYDRATION_MIN_PER_PAGE = 10;
 const GITHUB_EVENT_HYDRATION_MAX_PER_PAGE = 30;
@@ -780,7 +784,7 @@ export function parseGithubSourceConfig(source: SourceStream): GithubSourceConfi
       repo: fallbackRepo,
       uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
       pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? 30,
-      perPage: asNumber(config.perPage) ?? 10,
+      perPage: asNumber(config.perPage) ?? DEFAULT_GITHUB_REPO_PER_PAGE,
       eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_GITHUB_EVENT_TYPES,
     };
   }
@@ -789,7 +793,7 @@ export function parseGithubSourceConfig(source: SourceStream): GithubSourceConfi
     repo,
     uxcAuth: asString(config.uxcAuth) ?? asString(config.credentialRef) ?? undefined,
     pollIntervalSecs: asNumber(config.pollIntervalSecs) ?? 30,
-    perPage: asNumber(config.perPage) ?? 10,
+    perPage: asNumber(config.perPage) ?? DEFAULT_GITHUB_REPO_PER_PAGE,
     eventTypes: asStringArray(config.eventTypes) ?? DEFAULT_GITHUB_EVENT_TYPES,
   };
 }

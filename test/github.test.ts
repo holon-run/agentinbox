@@ -250,11 +250,35 @@ test("github_repo remote module hydrates truncated review events before mapping"
     payload: {
       owner: "holon-run",
       repo: "agentinbox",
-      per_page: 10,
+      per_page: 30,
       page: 1,
     },
     options: { auth: "github-default", artifact_compaction: false },
   });
+});
+
+test("github_repo managed poll spec requests the full events page by default", () => {
+  const module = createGithubRepoRemoteModule();
+  const source: SourceStream = {
+    sourceId: "src_per_page_default",
+    sourceType: "github_repo",
+    sourceKey: "holon-run/agentinbox",
+    config: { owner: "holon-run", repo: "agentinbox" },
+    configRef: null,
+    status: "active",
+    checkpoint: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const spec = module.buildManagedSourceSpec(source);
+  assert.equal((spec.args as Record<string, unknown>).per_page, 100);
+
+  const tuned = module.buildManagedSourceSpec({
+    ...source,
+    config: { owner: "holon-run", repo: "agentinbox", perPage: 25 },
+  });
+  assert.equal((tuned.args as Record<string, unknown>).per_page, 25);
 });
 
 test("github_repo remote module falls back to raw truncated review events when hydration fails", async () => {
