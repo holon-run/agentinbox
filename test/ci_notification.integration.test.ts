@@ -107,7 +107,7 @@ async function fixture(config: Record<string, unknown> = {}) {
       ...state, leaseExpiresAt: new Date(Date.now() - 1_000).toISOString(),
     });
   }
-  return { ...opened, dir, dispatcher, agentId, targetId, append, expire };
+  return { ...opened, dir, dispatcher, agentId, targetId, subscriptionId: subscription.subscriptionId, append, expire };
 }
 
 test("CI success waits for every declared workflow, not the threshold or a force sweep", async () => {
@@ -159,6 +159,50 @@ test("CI pending success evidence survives the digest thread age limit", async (
     assert.doesNotMatch(entries[0]!.summary, /incomplete|unknown/);
     await f.internal.flushAllPendingNotifications();
     assert.equal(f.dispatcher.calls.length, 1);
+  } finally {
+    await f.service.stop();
+    f.store.close();
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("digest snapshot activation keeps the subscription attribution", async () => {
+  const f = await fixture();
+  try {
+    await f.append(f.service, 11, "success");
+    await f.append(f.service, 22, "success");
+    await f.internal.syncPendingDigestThreads(true);
+    const entry = f.service.listInboxItems(f.agentId).find((candidate) => candidate.kind === "digest_snapshot");
+    assert.ok(entry, "the digest snapshot must materialize");
+    assert.deepEqual(entry.subscriptionIds, [f.subscriptionId]);
+    await f.internal.flushAllPendingNotifications();
+    assert.equal(f.dispatcher.calls.length, 1);
+    assert.deepEqual(
+      f.dispatcher.calls[0]!.subscriptionIds,
+      [f.subscriptionId],
+      "the activation must carry the subscription that produced the digest snapshot",
+    );
+  } finally {
+    await f.service.stop();
+    f.store.close();
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("lease-held digest flush keeps the subscription attribution in the pending dispatch state", async () => {
+  const f = await fixture();
+  try {
+    await f.service.addDirectInboxTextMessage(f.agentId, { message: "already notified" });
+    await f.internal.flushAllPendingNotifications();
+    assert.equal(f.dispatcher.calls.length, 1);
+    await f.append(f.service, 11, "success");
+    await f.append(f.service, 22, "success");
+    await f.internal.syncPendingDigestThreads(true);
+    await f.internal.flushAllPendingNotifications();
+    assert.equal(f.dispatcher.calls.length, 1, "the active lease is respected");
+    const state = f.store.getActivationDispatchState(f.agentId, f.targetId);
+    assert.ok(state);
+    assert.deepEqual(state.pendingSubscriptionIds, [f.subscriptionId]);
   } finally {
     await f.service.stop();
     f.store.close();

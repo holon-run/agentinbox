@@ -174,7 +174,7 @@ interface BufferedNotification {
   targetId: string;
   targetKind: ActivationTarget["kind"];
   pending: Array<{
-    subscriptionId: string | null;
+    subscriptionIds: string[];
     sourceId: string;
     summary: string;
     entry: InboxEntry;
@@ -1848,7 +1848,6 @@ export class AgentInboxService {
     for (const target of targets) {
       this.enqueueActivationTarget(target, {
         agentId,
-        subscriptionId: null,
         sourceId: input.sourceId,
         summary: input.summary,
         entry,
@@ -2348,7 +2347,6 @@ export class AgentInboxService {
             for (const target of targets) {
               this.enqueueActivationTarget(target, {
                 agentId: subscription.agentId,
-                subscriptionId: subscription.subscriptionId,
                 sourceId: source.sourceId,
                 summary: entry.summary,
                 entry,
@@ -3040,7 +3038,6 @@ export class AgentInboxService {
     target: ActivationTarget,
     input: {
       agentId: string;
-      subscriptionId: string | null;
       sourceId: string;
       summary: string;
       entry: InboxEntry;
@@ -3063,7 +3060,7 @@ export class AgentInboxService {
     }
 
     buffer.pending.push({
-      subscriptionId: input.subscriptionId,
+      subscriptionIds: input.entry.subscriptionIds,
       sourceId: input.sourceId,
       summary: input.summary,
       entry: input.entry,
@@ -3086,7 +3083,7 @@ export class AgentInboxService {
 
   private clearSubscriptionRuntimeState(subscription: Subscription): void {
     for (const [key, buffer] of this.notificationBuffers.entries()) {
-      const retained = buffer.pending.filter((entry) => entry.subscriptionId !== subscription.subscriptionId);
+      const retained = buffer.pending.filter((entry) => !entry.subscriptionIds.includes(subscription.subscriptionId));
       if (retained.length === buffer.pending.length) {
         continue;
       }
@@ -3190,8 +3187,8 @@ export class AgentInboxService {
           totalUnackedCount: unackedItems.length,
           summary: pendingState ? latestSummary(entries) ?? pendingState.pendingSummary : latestSummary(entries),
           subscriptionIds: pendingState
-            ? uniqueSortedNullable([...pendingState.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)])
-            : uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
+            ? uniqueSortedNullable([...pendingState.pendingSubscriptionIds, ...entries.flatMap((entry) => entry.subscriptionIds)])
+            : uniqueSortedNullable(entries.flatMap((entry) => entry.subscriptionIds)),
           sourceIds: pendingState
             ? uniqueSorted([...pendingState.pendingSourceIds, ...entries.map((entry) => entry.sourceId)])
             : uniqueSorted(entries.map((entry) => entry.sourceId)),
@@ -3216,7 +3213,7 @@ export class AgentInboxService {
               pendingFingerprint: null,
               pendingNewItemCount: pendingState.pendingNewItemCount + entries.length,
               pendingSummary: latestSummary(entries) ?? pendingState.pendingSummary,
-              pendingSubscriptionIds: uniqueSortedNullable([...pendingState.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]),
+              pendingSubscriptionIds: uniqueSortedNullable([...pendingState.pendingSubscriptionIds, ...entries.flatMap((entry) => entry.subscriptionIds)]),
               pendingSourceIds: uniqueSorted([...pendingState.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]),
               updatedAt: nowIso(),
             });
@@ -3227,7 +3224,7 @@ export class AgentInboxService {
       } else {
         const mergedNewItemCount = state.pendingNewItemCount + entries.length;
         const mergedSummary = latestSummary(entries) ?? state.pendingSummary;
-        const mergedSubscriptionIds = uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.map((entry) => entry.subscriptionId)]);
+        const mergedSubscriptionIds = uniqueSortedNullable([...state.pendingSubscriptionIds, ...entries.flatMap((entry) => entry.subscriptionIds)]);
         const mergedSourceIds = uniqueSorted([...state.pendingSourceIds, ...entries.map((entry) => entry.sourceId)]);
         let deferReason = state.deferReason;
         let deferAttempts = state.deferAttempts;
@@ -3801,7 +3798,7 @@ export class AgentInboxService {
   private upsertDirtyDispatchState(
     agentId: string,
     targetId: string,
-    entries: Array<{ subscriptionId: string | null; sourceId: string; summary: string }>,
+    entries: Array<{ subscriptionIds: string[]; sourceId: string; summary: string }>,
   ): void {
     this.store.upsertActivationDispatchState({
       agentId,
@@ -3816,7 +3813,7 @@ export class AgentInboxService {
       pendingFingerprint: null,
       pendingNewItemCount: entries.length,
       pendingSummary: latestSummary(entries),
-      pendingSubscriptionIds: uniqueSortedNullable(entries.map((entry) => entry.subscriptionId)),
+      pendingSubscriptionIds: uniqueSortedNullable(entries.flatMap((entry) => entry.subscriptionIds)),
       pendingSourceIds: uniqueSorted(entries.map((entry) => entry.sourceId)),
       updatedAt: nowIso(),
     });
@@ -4185,7 +4182,6 @@ export class AgentInboxService {
         for (const target of targets) {
           this.enqueueActivationTarget(target, {
             agentId: inbox.ownerAgentId,
-            subscriptionId: null,
             sourceId: thread.sourceId,
             summary: entry.summary,
             entry,
