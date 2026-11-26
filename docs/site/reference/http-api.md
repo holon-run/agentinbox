@@ -236,6 +236,31 @@ Restart recovery for missed fires depends on the mode (#272):
 Non-shortcut creation returns one element. A shortcut may expand into multiple
 subscriptions, so callers should always read `subscriptions[]`.
 
+`DELETE /subscriptions/{subscriptionId}` returns the destroyed subscription's
+ownership, so a removal is attributable without a second lookup:
+
+```json
+{
+  "removed": true,
+  "subscriptionId": "sub_...",
+  "agentId": "agt_...",
+  "sourceId": "src_...",
+  "trackedResourceRef": "pr:373"
+}
+```
+
+`trackedResourceRef` is `null` when the subscription had none. Every removal
+also emits a `subscription.removed` structured log line with the same fields
+plus `reason` (`manual`, `source_removed`, `registration_rollback`,
+`orphaned_source_missing`, `cleanup_policy`, `auto_retire`). The last two cover
+lifecycle GC: `cleanup_policy` for a subscription whose declared `at` deadline
+passed, `auto_retire` for a terminal-signal retirement.
+
+`subscription_lifecycle_retirements` only holds subscriptions waiting for their
+auto-retire deadline; rows are deleted when consumed. An empty table therefore
+does not mean no subscription was ever removed — use the log line and the
+`DELETE` response for removal traceability.
+
 ## Inbox
 
 - `GET /agents/{agentId}/inbox`

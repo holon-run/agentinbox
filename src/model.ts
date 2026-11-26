@@ -194,6 +194,18 @@ export interface Subscription {
   createdAt: string;
 }
 
+/**
+ * Why a subscription row was deleted. Recorded on the `subscription.removed`
+ * log event so a removal is traceable without an audit ledger.
+ */
+export type SubscriptionRemovalReason =
+  | "manual"
+  | "source_removed"
+  | "registration_rollback"
+  | "orphaned_source_missing"
+  | "cleanup_policy"
+  | "auto_retire";
+
 export interface SubscriptionLifecycleRetirement {
   subscriptionId: string;
   hostId: string;
