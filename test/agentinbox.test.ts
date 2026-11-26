@@ -3277,6 +3277,99 @@ test("github bursts materialize digest snapshot entries when inbox aggregation i
   }
 });
 
+test("digest entries expose their member raw items through the read path", async () => {
+  const dispatcher = new RecordingActivationDispatcher();
+  const { service, store } = await makeService({ dispatcher, activationWindowMs: 10, activationMaxItems: 10 });
+  try {
+    const agent = await service.registerAgent({
+      runtimeKind: "codex",
+      backend: "tmux",
+      tmuxPaneId: "%raw-items",
+    });
+    const agentId = agent.agent.agentId;
+    await service.updateInboxAggregationPolicy(agentId, {
+      enabled: true,
+      windowMs: 60_000,
+      maxItems: 20,
+      maxThreadAgeMs: 60_000,
+    });
+    const source = await service.registerSource({
+      sourceType: "github_repo",
+      sourceKey: "holon-run/agentinbox",
+      config: { owner: "holon-run", repo: "agentinbox" },
+    });
+    const subscription = await service.registerSubscription({
+      agentId,
+      sourceId: source.sourceId,
+      filter: {},
+      cleanupPolicy: { mode: "manual" },
+      startPolicy: "earliest",
+    });
+
+    for (let index = 1; index <= 2; index += 1) {
+      await service.appendSourceEvent({
+        sourceId: source.sourceId,
+        sourceNativeId: `github-raw-item-${index}`,
+        eventVariant: "PullRequestReviewCommentEvent.created",
+        metadata: {
+          number: 286,
+          isPullRequest: true,
+          repoFullName: "holon-run/agentinbox",
+        },
+        rawPayload: {
+          id: index,
+          type: "PullRequestReviewCommentEvent",
+          action: "created",
+          body: `comment ${index}`,
+        },
+      });
+    }
+    await service.pollSubscription(subscription.subscriptionId);
+    await (service as any).syncPendingDigestThreads(true);
+
+    const digest = service.listInboxItems(agentId).find((entry) => entry.kind === "digest_snapshot");
+    assert.ok(digest, "expected a digest_snapshot entry");
+    assert.equal(digest.itemIds.length, 2);
+
+    const expanded = service.readRawInboxItems(agentId, { entryId: digest.entryId });
+    assert.equal(expanded.agentId, agentId);
+    assert.deepEqual(
+      expanded.items.map((item) => item.itemId).sort(),
+      [...digest.itemIds].sort(),
+    );
+    assert.deepEqual(
+      expanded.items.map((item) => item.rawPayload.body).sort(),
+      ["comment 1", "comment 2"],
+    );
+
+    const digestBody = await service.readInboxEmailBody(agentId, digest.entryId);
+    assert.equal(digestBody.status, "unavailable");
+    if (digestBody.status !== "unavailable") {
+      throw new Error("expected a digest body read to be unavailable");
+    }
+    assert.deepEqual(digestBody.itemIds, digest.itemIds);
+    assert.match(digestBody.message, /inbox items --entry/);
+
+    // Ack state belongs to stream listing: an addressed expansion must still work.
+    await service.ackInbox(agentId, { entryIds: [digest.entryId] });
+    assert.equal(service.listRawInboxItems(agentId).length, 0);
+    assert.equal(service.readRawInboxItems(agentId, { entryId: digest.entryId }).items.length, 2);
+
+    const firstItemId = digest.itemIds[0]!;
+    assert.equal(
+      service.readRawInboxItems(agentId, { itemIds: [firstItemId] }).items[0]?.itemId,
+      firstItemId,
+    );
+    assert.throws(
+      () => service.readRawInboxItems(agentId, { itemIds: ["itm_missing"] }),
+      /unknown inbox item: itm_missing/,
+    );
+  } finally {
+    await service.stop();
+    store.close();
+  }
+});
+
 test("github activation summaries include actionable pull request details", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const { service, store, dir } = await makeService({

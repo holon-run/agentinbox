@@ -1080,6 +1080,38 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "inbox" && normalized[1] === "items") {
+    const args = normalized.slice(2);
+    const allowedFlags = ["--agent-id", "--entry", "--item", "--include-acked", "--limit"];
+    const positionals = positionalArgs(args, ["--agent-id", "--entry", "--item", "--limit"]);
+    if (positionals.length > 0 || unexpectedFlags(args, allowedFlags).length > 0) {
+      throw new Error("usage: agentinbox inbox items [--agent-id ID] [--entry <entryId> | --item <itemId>]... [--include-acked] [--limit N]");
+    }
+    const entryId = takeFlagValue(normalized, "--entry");
+    const itemIds = takeFlagValues(normalized, "--item");
+    if (entryId && itemIds.length > 0) {
+      throw new Error("usage: agentinbox inbox items accepts either --entry or --item, not both");
+    }
+    const selection = await selectAgentForCommand(client, {
+      explicitAgentId: takeFlagValue(normalized, "--agent-id"),
+      autoRegister: false,
+    });
+    const query = buildQuery({
+      entry_id: entryId,
+      item_ids: itemIds.length > 0 ? itemIds.join(",") : undefined,
+      include_acked: hasFlag(normalized, "--include-acked") ? "true" : undefined,
+      limit: parseOptionalLimitArg(normalized),
+    });
+    const response = await requestRemote<Record<string, unknown>>(
+      client,
+      `/agents/${encodeURIComponent(selection.agentId)}/inbox/items${query}`,
+      undefined,
+      "GET",
+    );
+    console.log(jsonResponse(withCommandMetadata(response.data, selection)));
+    return;
+  }
+
   if (command === "inbox" && normalized[1] === "send") {
     const args = normalized.slice(2);
     const allowedFlags = ["--agent-id", "--message", "--sender"];
@@ -1796,6 +1828,22 @@ function takeFlagValue(args: string[], flag: string): string | undefined {
   return value;
 }
 
+function takeFlagValues(args: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== flag) {
+      continue;
+    }
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) {
+      throw new Error(`flag ${flag} requires a value`);
+    }
+    values.push(value);
+    index += 1;
+  }
+  return values;
+}
+
 function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
 }
@@ -2373,6 +2421,7 @@ Usage:
   agentinbox inbox show <agentId>
   agentinbox inbox read [--agent-id ID] [--after-entry ID] [--include-acked] [--limit N] [--full]  (list; aliases: inbox get, inbox entries, inbox peek)
   agentinbox inbox read <entryId> [--agent-id ID] [--max-bytes N] [--no-fetch] [--cursor TOKEN] [--full]  (read one email body)
+  agentinbox inbox items [--agent-id ID] [--entry <entryId> | --item <itemId>]... [--include-acked] [--limit N]  (expand a digest entry into its raw items)
   agentinbox inbox attachment inspect <attachmentRef> [--agent-id ID]
   agentinbox inbox attachment get <attachmentRef> [--agent-id ID] --output PATH
   agentinbox inbox attachment delete <attachmentRef> [--agent-id ID]

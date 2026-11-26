@@ -26,6 +26,9 @@ import {
   InboxEntry,
   InboxItem,
   InboxWatchEvent,
+  ListRawInboxItemsOptions,
+  RawInboxItemsRead,
+  ReadRawInboxItemsOptions,
   NotificationGrouping,
   NotificationPolicy,
   OperatorIngressInput,
@@ -1681,7 +1684,8 @@ export class AgentInboxService {
         entryId: entry.entryId,
         code: "unsupported",
         retryable: false,
-        message: "Digest entries do not represent one email body.",
+        itemIds: entry.itemIds,
+        message: `Digest entries do not represent one email body. Expand its ${entry.itemIds.length} member raw item(s) with "agentinbox inbox items --entry ${entry.entryId}" or GET /agents/{agentId}/inbox/items?entry_id=${entry.entryId}.`,
       };
     }
     const source = entry.sourceId ? this.store.getSource(entry.sourceId) : null;
@@ -1729,8 +1733,47 @@ export class AgentInboxService {
     );
   }
 
-  listRawInboxItems(agentId: string, options?: WatchInboxOptions): InboxItem[] {
+  listRawInboxItems(agentId: string, options?: ListRawInboxItemsOptions): InboxItem[] {
     return this.store.listInboxItems(this.ensureInboxForAgent(agentId).inboxId, options);
+  }
+
+  readRawInboxItems(agentId: string, options?: ReadRawInboxItemsOptions): RawInboxItemsRead {
+    const inbox = this.ensureInboxForAgent(agentId);
+    const entryId = options?.entryId?.trim() || undefined;
+    const explicitItemIds = (options?.itemIds ?? [])
+      .map((itemId) => itemId.trim())
+      .filter((itemId) => itemId.length > 0);
+    if (entryId && explicitItemIds.length > 0) {
+      throw new Error("invalid inbox items read: pass either an entry or explicit item ids, not both");
+    }
+
+    // An addressed read (entry or explicit ids) names concrete records, so ack
+    // state must not hide them: ack filtering belongs to unfiltered listings.
+    const addressed = Boolean(entryId) || explicitItemIds.length > 0;
+    const includeAcked = options?.includeAcked ?? (addressed ? true : undefined);
+
+    let itemIds: string[] | undefined = explicitItemIds.length > 0 ? explicitItemIds : undefined;
+    if (entryId) {
+      const entry = this.store.getInboxEntryForInbox(inbox.inboxId, entryId);
+      if (!entry) {
+        throw new Error(`unknown inbox entry: ${entryId}`);
+      }
+      itemIds = entry.itemIds;
+    }
+
+    if (explicitItemIds.length > 0) {
+      const missing = explicitItemIds.filter(
+        (itemId) => !this.store.getInboxItemForInbox(inbox.inboxId, itemId),
+      );
+      if (missing.length > 0) {
+        throw new Error(`unknown inbox item: ${missing.join(", ")}`);
+      }
+    }
+
+    const items = this.store
+      .listInboxItems(inbox.inboxId, { itemIds, includeAcked, limit: options?.limit })
+      .map((item) => this.projectPublicInboxEntry(item));
+    return { agentId, items };
   }
 
   getInboxAggregationPolicy(agentId: string): InboxAggregationPolicy {

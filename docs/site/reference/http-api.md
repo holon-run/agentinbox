@@ -256,6 +256,21 @@ subscriptions, so callers should always read `subscriptions[]`.
 
 `message` is required. `sender` is optional.
 
+`GET /agents/{agentId}/inbox/items` returns the raw items behind inbox entries,
+so a `digest_snapshot` entry can be expanded into the events it summarizes:
+
+- `entry_id=<entryId>` returns every raw item referenced by that entry; it works
+  for both `item` and `digest_snapshot` entries.
+- `item_ids=<id1>,<id2>` returns exactly those raw items. An id that does not
+  exist for the agent fails with `404`.
+- `include_acked` defaults to `true` for addressed reads (`entry_id` or
+  `item_ids`) and to `false` for an unfiltered listing.
+- `limit` bounds how many items are returned.
+
+The response is `{ "agentId": "agt_...", "items": [...] }`. Each item carries
+`itemId`, `sourceNativeId`, `eventVariant`, `metadata`, `rawPayload`, and
+`ackedAt`.
+
 `POST /agents/{agentId}/inbox/ack` accepts exactly one of:
 
 ```json
