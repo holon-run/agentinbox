@@ -1566,19 +1566,23 @@ export class AgentInboxService {
   }> {
     const subscription = this.getSubscription(subscriptionId);
     await this.backend.deleteConsumer({ subscriptionId });
-    this.store.deleteSubscription(subscriptionId);
+    const deleted = this.store.deleteSubscription(subscriptionId);
+    const trackedResourceRef = subscription.trackedResourceRef ?? null;
+    if (!deleted) {
+      // A concurrent removal won the race; do not claim or log this deletion.
+      return {
+        removed: false,
+        subscriptionId,
+        agentId: subscription.agentId,
+        sourceId: subscription.sourceId,
+        trackedResourceRef,
+      };
+    }
+    // Log immediately after the row is gone, before runtime cleanup, so a
+    // cleanup failure cannot hide an already-completed removal.
+    this.recordSubscriptionRemoval(subscription, options?.reason ?? "manual");
     this.clearSubscriptionRuntimeState(subscription);
     this.refreshSourceIdleState(subscription.sourceId);
-    const trackedResourceRef = subscription.trackedResourceRef ?? null;
-    // The retirement table is a transient retire scheduler, so a removal is
-    // otherwise invisible: log the destroyed subscription's ownership.
-    this.logger.info("subscription.removed", {
-      subscriptionId,
-      agentId: subscription.agentId,
-      sourceId: subscription.sourceId,
-      trackedResourceRef,
-      reason: options?.reason ?? "manual",
-    });
     return {
       removed: true,
       subscriptionId,
@@ -1586,6 +1590,18 @@ export class AgentInboxService {
       sourceId: subscription.sourceId,
       trackedResourceRef,
     };
+  }
+
+  // The retirement table is a transient retire scheduler, so a removal is
+  // otherwise invisible: log the destroyed subscription's ownership.
+  private recordSubscriptionRemoval(subscription: Subscription, reason: SubscriptionRemovalReason): void {
+    this.logger.info("subscription.removed", {
+      subscriptionId: subscription.subscriptionId,
+      agentId: subscription.agentId,
+      sourceId: subscription.sourceId,
+      trackedResourceRef: subscription.trackedResourceRef ?? null,
+      reason,
+    });
   }
 
   listSubscriptions(filters?: {
@@ -4077,6 +4093,7 @@ export class AgentInboxService {
       if (this.store.deleteSubscription(subscription.subscriptionId)) {
         removed.add(subscription.subscriptionId);
         affectedSourceIds.add(subscription.sourceId);
+        this.recordSubscriptionRemoval(subscription, "cleanup_policy");
         this.clearSubscriptionRuntimeState(subscription);
       }
     }
@@ -4095,6 +4112,7 @@ export class AgentInboxService {
       if (this.store.deleteSubscription(retirement.subscriptionId)) {
         removed.add(retirement.subscriptionId);
         affectedSourceIds.add(subscription.sourceId);
+        this.recordSubscriptionRemoval(subscription, "auto_retire");
         this.clearSubscriptionRuntimeState(subscription);
       }
     }

@@ -2791,7 +2791,8 @@ test("gc removes subscriptions whose cleanupPolicy deadline has passed", async (
 });
 
 test("terminal lifecycle signals schedule retirements and gc removes matching subscriptions after delivery", async () => {
-  const { store, service, dir } = await makeService();
+  const logger = new RecordingLogger();
+  const { store, service, dir } = await makeService({ logger });
   try {
     const moduleDir = path.join(dir, "source-modules");
     fs.mkdirSync(moduleDir, { recursive: true });
@@ -2880,6 +2881,101 @@ test("terminal lifecycle signals schedule retirements and gc removes matching su
     assert.equal(store.getConsumerBySubscriptionId(subA.subscriptionId), null);
     assert.equal(store.getConsumerBySubscriptionId(subB.subscriptionId), null);
     assert.ok(store.getSubscription(subOther.subscriptionId));
+    // Auto-retired subscriptions are the most common silent-disappearance
+    // case, so the GC retirement path must log the removed ownership too.
+    const retirementLogs = logger.records.filter((record) => record.event === "subscription.removed");
+    assert.equal(retirementLogs.length, 2);
+    for (const record of retirementLogs) {
+      assert.equal(record.level, "info");
+      assert.equal(record.fields?.reason, "auto_retire");
+      assert.equal(record.fields?.sourceId, source.sourceId);
+      assert.equal(record.fields?.trackedResourceRef, "pr:1");
+    }
+    assert.deepEqual(
+      retirementLogs.map((record) => record.fields?.agentId).sort(),
+      [agentA.agentId, agentB.agentId].sort(),
+    );
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle gc cleanupPolicy removals log the removed subscription ownership", async () => {
+  const logger = new RecordingLogger();
+  const { store, service, dir } = await makeService({ logger });
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "lifecycle-at-demo",
+      config: {},
+    });
+    const agent = await registerTmuxAgent(service, "lifecycle-at");
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "issue:42",
+      cleanupPolicy: { mode: "at", at: "2020-01-01T00:00:00.000Z" },
+      startPolicy: "earliest",
+    });
+
+    const gc = service.gc();
+    assert.equal(gc.removedSubscriptions, 1);
+    assert.equal(store.getSubscription(subscription.subscriptionId), null);
+
+    const removalLog = logger.records.find((record) => record.event === "subscription.removed");
+    assert.ok(removalLog, "cleanupPolicy removal must emit a subscription.removed log event");
+    assert.equal(removalLog.level, "info");
+    assert.equal(removalLog.fields?.subscriptionId, subscription.subscriptionId);
+    assert.equal(removalLog.fields?.agentId, agent.agentId);
+    assert.equal(removalLog.fields?.sourceId, source.sourceId);
+    assert.equal(removalLog.fields?.trackedResourceRef, "issue:42");
+    assert.equal(removalLog.fields?.reason, "cleanup_policy");
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("subscription remove reports removed=false and logs nothing when a concurrent removal already deleted the row", async () => {
+  const logger = new RecordingLogger();
+  const { store, service, dir } = await makeService({ logger });
+  try {
+    const source = await service.registerSource({
+      sourceType: "local_event",
+      sourceKey: "concurrent-remove-demo",
+      config: {},
+    });
+    const agent = await registerTmuxAgent(service, "concurrent-remove");
+    const subscription = await service.registerSubscription({
+      agentId: agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "issue:43",
+      startPolicy: "earliest",
+    });
+
+    const storeWithSpy = store as unknown as { deleteSubscription(id: string): unknown };
+    const originalDelete = storeWithSpy.deleteSubscription.bind(store);
+    storeWithSpy.deleteSubscription = () => null;
+    try {
+      const removed = await service.removeSubscription(subscription.subscriptionId);
+      assert.deepEqual(removed, {
+        removed: false,
+        subscriptionId: subscription.subscriptionId,
+        agentId: agent.agentId,
+        sourceId: source.sourceId,
+        trackedResourceRef: "issue:43",
+      });
+      assert.equal(
+        logger.records.some((record) => record.event === "subscription.removed"),
+        false,
+        "a removal that lost the race must not claim the deletion",
+      );
+    } finally {
+      storeWithSpy.deleteSubscription = originalDelete;
+    }
   } finally {
     await service.stop();
     store.close();

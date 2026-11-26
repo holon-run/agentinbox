@@ -252,7 +252,9 @@ ownership, so a removal is attributable without a second lookup:
 `trackedResourceRef` is `null` when the subscription had none. Every removal
 also emits a `subscription.removed` structured log line with the same fields
 plus `reason` (`manual`, `source_removed`, `registration_rollback`,
-`orphaned_source_missing`).
+`orphaned_source_missing`, `cleanup_policy`, `auto_retire`). The last two cover
+lifecycle GC: `cleanup_policy` for a subscription whose declared `at` deadline
+passed, `auto_retire` for a terminal-signal retirement.
 
 `subscription_lifecycle_retirements` only holds subscriptions waiting for their
 auto-retire deadline; rows are deleted when consumed. An empty table therefore

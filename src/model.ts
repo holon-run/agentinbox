@@ -202,7 +202,9 @@ export type SubscriptionRemovalReason =
   | "manual"
   | "source_removed"
   | "registration_rollback"
-  | "orphaned_source_missing";
+  | "orphaned_source_missing"
+  | "cleanup_policy"
+  | "auto_retire";
 
 export interface SubscriptionLifecycleRetirement {
   subscriptionId: string;
