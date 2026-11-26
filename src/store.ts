@@ -40,6 +40,7 @@ import {
   InboxEntry,
   InboxItem,
   ListInboxItemsOptions,
+  ListRawInboxItemsOptions,
   NotificationGrouping,
   OperatorReplyRoute,
   OperatorTransportBinding,
@@ -2601,13 +2602,21 @@ export class AgentInboxStore {
     return rows.map((row) => this.mapDigestThread(row));
   }
 
-  listInboxItems(inboxId: string, options?: ListInboxItemsOptions): InboxItem[] {
+  listInboxItems(inboxId: string, options?: ListRawInboxItemsOptions): InboxItem[] {
     const includeAcked = options?.includeAcked ?? false;
     const filters = ["inbox_id = ?"];
     const params: Array<string | number | null> = [inboxId];
 
     if (!includeAcked) {
       filters.push("acked_at is null");
+    }
+
+    if (options?.itemIds) {
+      if (options.itemIds.length === 0) {
+        return [];
+      }
+      filters.push(`item_id in (${options.itemIds.map(() => "?").join(", ")})`);
+      params.push(...options.itemIds);
     }
 
     const sql = `select * from inbox_items where ${filters.join(" and ")} order by coalesce(inbox_sequence, rowid) asc${typeof options?.limit === "number" ? " limit ?" : ""}`;

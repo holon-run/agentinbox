@@ -1873,6 +1873,60 @@ function buildFastifyServer(service: AgentInboxService) {
     };
   });
 
+  app.get("/agents/:agentId/inbox/items", {
+    schema: {
+      tags: ["inbox"],
+      params: {
+        type: "object",
+        required: ["agentId"],
+        properties: {
+          agentId: { type: "string", minLength: 1 },
+        },
+      },
+      querystring: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          entry_id: { type: "string", minLength: 1 },
+          item_ids: { type: "string", minLength: 1 },
+          include_acked: { type: "string", enum: ["true", "false"] },
+          limit: { type: "string", pattern: "^[1-9][0-9]*$" },
+        },
+      },
+      response: {
+        200: {
+          type: "object",
+          required: ["agentId", "items"],
+          properties: {
+            agentId: { type: "string" },
+            items: { type: "array", items: jsonObjectSchema },
+          },
+        },
+        400: errorResponseSchema,
+        404: errorResponseSchema,
+      },
+    },
+  }, async (request) => {
+    const params = request.params as { agentId: string };
+    const query = request.query as {
+      entry_id?: string;
+      item_ids?: string;
+      include_acked?: "true" | "false";
+      limit?: string;
+    };
+    return service.readRawInboxItems(decodeURIComponent(params.agentId), {
+      entryId: query.entry_id,
+      itemIds: query.item_ids
+        ? query.item_ids
+            .split(",")
+            .map((itemId) => itemId.trim())
+            .filter((itemId) => itemId.length > 0)
+        : undefined,
+      includeAcked: query.include_acked ? query.include_acked === "true" : undefined,
+      limit: parseOptionalPositiveInteger(query.limit),
+    });
+  });
+
   app.get("/agents/:agentId/inbox/attachments/:attachmentRef", {
     schema: {
       tags: ["inbox"],
@@ -2584,6 +2638,7 @@ function normalizeValidationMessage(message: string): string {
 function isBadRequestError(message: string): boolean {
   return (
     message.startsWith("direct inbox ") ||
+    message.startsWith("invalid inbox ") ||
     message.startsWith("timers require ") ||
     message.startsWith("timer ") ||
     message.startsWith("invalid timezone: ") ||

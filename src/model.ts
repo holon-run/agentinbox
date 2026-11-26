@@ -464,6 +464,8 @@ export interface UnavailableEmailBodyRead {
   code: string;
   retryable: boolean;
   message: string;
+  /** Raw member item ids when the addressed entry aggregates items (digest_snapshot). */
+  itemIds?: string[];
 }
 
 export type EmailBodyReadResult = AvailableEmailBodyRead | UnavailableEmailBodyRead;
@@ -864,6 +866,32 @@ export interface ListInboxItemsOptions {
   afterEntryId?: string;
   includeAcked?: boolean;
   limit?: number;
+}
+
+export interface ListRawInboxItemsOptions extends ListInboxItemsOptions {
+  /** Restrict the listing to these raw item ids. An empty array yields no rows. */
+  itemIds?: string[];
+}
+
+export interface ReadRawInboxItemsOptions {
+  /**
+   * Expand every raw item referenced by this entry. Works for both `item` and
+   * `digest_snapshot` entries; mutually exclusive with `itemIds`.
+   */
+  entryId?: string;
+  /** Restrict the read to these raw item ids; every id must exist for the agent. */
+  itemIds?: string[];
+  /**
+   * Include acked items. Addressed reads (entry or explicit ids) default to
+   * true: ack state belongs to stream listing, not to an explicitly named record.
+   */
+  includeAcked?: boolean;
+  limit?: number;
+}
+
+export interface RawInboxItemsRead {
+  agentId: string;
+  items: InboxItem[];
 }
 
 export interface WatchInboxOptions extends ListInboxItemsOptions {

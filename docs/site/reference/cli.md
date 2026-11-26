@@ -246,6 +246,7 @@ agentinbox inbox list
 agentinbox inbox show <agent_id>
 agentinbox inbox read [--agent-id <agent_id>]
 agentinbox inbox read <entry_id> [--agent-id <agent_id>] [--max-bytes <bytes>] [--no-fetch] [--cursor <token>] [--full]
+agentinbox inbox items [--agent-id <agent_id>] [--entry <entry_id> | --item <item_id>]... [--include-acked] [--limit <n>]
 agentinbox inbox attachment inspect <attachment_ref> [--agent-id <agent_id>]
 agentinbox inbox attachment get <attachment_ref> [--agent-id <agent_id>] --output <path>
 agentinbox inbox attachment delete <attachment_ref> [--agent-id <agent_id>]
@@ -256,6 +257,12 @@ agentinbox inbox ack [--agent-id <agent_id>] --item <entry_id>
 agentinbox inbox ack [--agent-id <agent_id>] --all
 agentinbox inbox compact <agent_id>
 ```
+
+`inbox items` returns the raw items behind inbox entries. Use it to expand a
+`digest_snapshot` entry: `--entry <entry_id>` returns every raw item that entry
+summarizes, and repeated `--item <item_id>` flags select raw items directly.
+Addressed reads include acked items by default, because ack state belongs to
+stream listing; `--include-acked` only matters for an unfiltered listing.
 
 Without an entry ID, `inbox read` retains its existing list behavior. With an
 email entry ID, it returns a bounded normalized text page. Reading is local

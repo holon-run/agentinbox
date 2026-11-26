@@ -5009,6 +5009,108 @@ test("control plane source remove rejects invalid with_subscriptions query value
   }
 });
 
+test("inbox items route reads raw items for an addressed entry", async () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-http-raw-items-"));
+  const socketPath = path.join(homeDir, "agentinbox.sock");
+  const dbPath = path.join(homeDir, "agentinbox.sqlite");
+
+  const store = await AgentInboxStore.open(dbPath);
+  let service: AgentInboxService;
+  const adapters = new AdapterRegistry(store, async (input) => service.appendSourceEvent(input), {
+    homeDir,
+    remoteSourceClient: new FakeRemoteSourceClient(),
+    githubCallClient: new FakeGithubCallClient(),
+  });
+  service = new AgentInboxService(store, adapters);
+  const server = createServer(service);
+
+  try {
+    await adapters.start();
+    await service.start();
+    const started = await startControlServer(server, { kind: "socket", socketPath });
+    try {
+      const client = new AgentInboxClient({ kind: "socket", socketPath, source: "flag" });
+      const agent = await client.request<{ agent: { agentId: string } }>("/agents", {
+        backend: "tmux",
+        runtimeKind: "codex",
+        runtimeSessionId: "thread-http-raw-items",
+        tmuxPaneId: "%902",
+      });
+      assert.equal(agent.statusCode, 200);
+      const agentId = agent.data.agent.agentId;
+      const agentPath = `/agents/${encodeURIComponent(agentId)}`;
+
+      const sent = await client.request(`${agentPath}/inbox/items`, {
+        message: "raw item body",
+        sender: "integration-test",
+      });
+      assert.equal(sent.statusCode, 200);
+
+      const entries = await client.request<{
+        entries: Array<{ entryId: string; kind: string; itemIds: string[] }>;
+      }>(`${agentPath}/inbox/entries`, undefined, "GET");
+      assert.equal(entries.statusCode, 200);
+      const entry = entries.data.entries[0];
+      assert.ok(entry);
+      assert.equal(entry.kind, "item");
+      assert.equal(entry.itemIds.length, 1);
+      const itemId = entry.itemIds[0]!;
+
+      const byEntry = await client.request<{
+        agentId: string;
+        items: Array<{ itemId: string; rawPayload: Record<string, unknown> }>;
+      }>(
+        `${agentPath}/inbox/items?entry_id=${encodeURIComponent(entry.entryId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(byEntry.statusCode, 200);
+      assert.equal(byEntry.data.agentId, agentId);
+      assert.equal(byEntry.data.items.length, 1);
+      assert.equal(byEntry.data.items[0]?.itemId, itemId);
+      assert.equal(byEntry.data.items[0]?.rawPayload.message, "raw item body");
+
+      const byId = await client.request<{ items: Array<{ itemId: string }> }>(
+        `${agentPath}/inbox/items?item_ids=${encodeURIComponent(itemId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(byId.statusCode, 200);
+      assert.deepEqual(byId.data.items.map((item) => item.itemId), [itemId]);
+
+      const missing = await client.request<{ error: string }>(
+        `${agentPath}/inbox/items?item_ids=itm_missing`,
+        undefined,
+        "GET",
+      );
+      assert.equal(missing.statusCode, 404);
+      assert.match(missing.data.error, /unknown inbox item/);
+
+      const mixedQuery = await client.request<{ error: string }>(
+        `${agentPath}/inbox/items?entry_id=${encodeURIComponent(entry.entryId)}&item_ids=${encodeURIComponent(itemId)}`,
+        undefined,
+        "GET",
+      );
+      assert.equal(mixedQuery.statusCode, 400);
+
+      // A raw item id is not an entry id: the body route must reject it as a client error.
+      const wrongEntry = await client.request<{ error: string }>(
+        `${agentPath}/inbox/entries/${encodeURIComponent(itemId)}/body`,
+        undefined,
+        "GET",
+      );
+      assert.equal(wrongEntry.statusCode, 400);
+      assert.match(wrongEntry.data.error, /invalid inbox entry id/);
+    } finally {
+      await started.close();
+    }
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 async function waitFor<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeout = new Promise<never>((_, reject) => {
