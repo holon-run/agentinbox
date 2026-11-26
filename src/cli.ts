@@ -787,45 +787,49 @@ async function main(): Promise<void> {
   }
 
   if (command === "subscription" && normalized[1] === "show") {
-    const subscriptionId = normalized[2];
-    if (!subscriptionId) {
-      throw new Error("usage: agentinbox subscription show <subscriptionId>");
-    }
+    const subscriptionId = requireSubscriptionIdArg(
+      normalized.slice(2),
+      "usage: agentinbox subscription show <subscriptionId>",
+    );
     await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}`, undefined, "GET");
     return;
   }
 
   if (command === "subscription" && normalized[1] === "remove") {
-    const subscriptionId = normalized[2];
-    if (!subscriptionId) {
-      throw new Error("usage: agentinbox subscription remove <subscriptionId>");
-    }
+    const subscriptionId = requireSubscriptionIdArg(
+      normalized.slice(2),
+      "usage: agentinbox subscription remove <subscriptionId>",
+    );
     await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}`, undefined, "DELETE");
     return;
   }
 
   if (command === "subscription" && normalized[1] === "poll") {
-    const subscriptionId = normalized[2];
-    if (!subscriptionId) {
-      throw new Error("usage: agentinbox subscription poll <subscriptionId>");
-    }
+    const subscriptionId = requireSubscriptionIdArg(
+      normalized.slice(2),
+      "usage: agentinbox subscription poll <subscriptionId>",
+    );
     await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}/poll`, {});
     return;
   }
 
   if (command === "subscription" && normalized[1] === "lag") {
-    const subscriptionId = normalized[2];
-    if (!subscriptionId) {
-      throw new Error("usage: agentinbox subscription lag <subscriptionId>");
-    }
+    const subscriptionId = requireSubscriptionIdArg(
+      normalized.slice(2),
+      "usage: agentinbox subscription lag <subscriptionId>",
+    );
     await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}/lag`, undefined, "GET");
     return;
   }
 
   if (command === "subscription" && normalized[1] === "reset") {
-    const subscriptionId = normalized[2];
+    const subscriptionId = requireSubscriptionIdArg(
+      normalized.slice(2),
+      "usage: agentinbox subscription reset <subscriptionId> --start-policy latest|earliest|at_offset|at_time [--start-offset N] [--start-time ISO8601]",
+      ["--start-policy", "--start-offset", "--start-time"],
+    );
     const startPolicy = takeFlagValue(normalized, "--start-policy");
-    if (!subscriptionId || !startPolicy) {
+    if (!startPolicy) {
       throw new Error("usage: agentinbox subscription reset <subscriptionId> --start-policy latest|earliest|at_offset|at_time [--start-offset N] [--start-time ISO8601]");
     }
     await printRemote(client, `/subscriptions/${encodeURIComponent(subscriptionId)}/reset`, {
@@ -2267,6 +2271,23 @@ function positionalArgs(args: string[], flagsWithValues: string[]): string[] {
 function unexpectedFlags(args: string[], allowedFlags: string[]): string[] {
   const allowed = new Set(allowedFlags);
   return args.filter((token) => token.startsWith("--") && !allowed.has(token));
+}
+
+/**
+ * Resolves the single subscription-id positional for a `subscription <sub>`
+ * command. Rejects unrecognized `--flag` tokens instead of letting them leak
+ * into the request path as a subscription id.
+ */
+function requireSubscriptionIdArg(args: string[], usage: string, allowedFlags: string[] = []): string {
+  const unexpected = unexpectedFlags(args, allowedFlags);
+  if (unexpected.length > 0) {
+    throw new Error(`unexpected argument ${unexpected[0]}; ${usage}`);
+  }
+  const positionals = positionalArgs(args, allowedFlags);
+  if (positionals.length !== 1 || !positionals[0]) {
+    throw new Error(usage);
+  }
+  return positionals[0];
 }
 
 function renderRootHelp(): string {

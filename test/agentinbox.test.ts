@@ -17,6 +17,7 @@ import { AgentInboxStore } from "../src/store";
 import { createServer } from "../src/http";
 import { assignedAgentIdFromContext, TerminalDispatcher, TerminalProbeStatus } from "../src/terminal";
 import { nowIso } from "../src/util";
+import { Logger } from "../src/logging";
 
 class RecordingActivationDispatcher extends ActivationDispatcher {
   public readonly calls: Array<{ targetUrl: string; activation: Activation }> = [];
@@ -298,6 +299,35 @@ class FailOnNthEnsureConsumerBackend extends SqliteEventBusBackend {
   }
 }
 
+class RecordingLogger implements Logger {
+  public readonly records: Array<{ level: string; event: string; fields?: Record<string, unknown> }> = [];
+  public readonly level: Logger["level"] = "trace";
+
+  enabled(_level: Logger["level"]): boolean {
+    return true;
+  }
+
+  child(_component: string): Logger {
+    return this;
+  }
+
+  error(event: string, fields?: Record<string, unknown>): void {
+    this.records.push({ level: "error", event, fields });
+  }
+  warn(event: string, fields?: Record<string, unknown>): void {
+    this.records.push({ level: "warn", event, fields });
+  }
+  info(event: string, fields?: Record<string, unknown>): void {
+    this.records.push({ level: "info", event, fields });
+  }
+  debug(event: string, fields?: Record<string, unknown>): void {
+    this.records.push({ level: "debug", event, fields });
+  }
+  trace(event: string, fields?: Record<string, unknown>): void {
+    this.records.push({ level: "trace", event, fields });
+  }
+}
+
 async function makeService(options?: {
   dispatcher?: ActivationDispatcher;
   terminalDispatcher?: TerminalDispatcher;
@@ -306,6 +336,7 @@ async function makeService(options?: {
   activationMaxItems?: number;
   backend?: EventBusBackend;
   feishuCallClient?: FeishuCallClient;
+  logger?: Logger;
 }): Promise<{ store: AgentInboxStore; service: AgentInboxService; dir: string }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-test-"));
   const store = await AgentInboxStore.open(path.join(dir, "agentinbox.sqlite"));
@@ -330,6 +361,7 @@ async function makeService(options?: {
       stderr: "",
     })),
     options?.activationGate,
+    options?.logger,
   );
   return { store, service, dir };
 }
@@ -2468,11 +2500,13 @@ test("manual pause does not create idle auto-pause state after the last subscrip
 test("subscription remove deletes the subscription, its consumer, and transient runtime state", async () => {
   const dispatcher = new RecordingActivationDispatcher();
   const terminalDispatcher = new RecordingTerminalDispatcher();
+  const logger = new RecordingLogger();
   const { store, service, dir } = await makeService({
     dispatcher,
     terminalDispatcher,
     activationWindowMs: 20,
     activationMaxItems: 20,
+    logger,
   });
   try {
     const registered = service.registerAgent({
@@ -2515,10 +2549,23 @@ test("subscription remove deletes the subscription, its consumer, and transient 
 
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length > 0, true);
     const removed = await service.removeSubscription(subscription.subscriptionId);
-    assert.equal(removed.removed, true);
+    assert.deepEqual(removed, {
+      removed: true,
+      subscriptionId: subscription.subscriptionId,
+      agentId: registered.agent.agentId,
+      sourceId: source.sourceId,
+      trackedResourceRef: "thread:remove-sub-demo",
+    });
     assert.equal(store.getSubscription(subscription.subscriptionId), null);
     assert.equal(store.getConsumerBySubscriptionId(subscription.subscriptionId), null);
     assert.equal(store.listActivationDispatchStatesForAgent(registered.agent.agentId).length, 0);
+    const removalLog = logger.records.find((record) => record.event === "subscription.removed");
+    assert.ok(removalLog, "removal must emit a subscription.removed log event");
+    assert.equal(removalLog.level, "info");
+    assert.equal(removalLog.fields?.agentId, registered.agent.agentId);
+    assert.equal(removalLog.fields?.sourceId, source.sourceId);
+    assert.equal(removalLog.fields?.trackedResourceRef, "thread:remove-sub-demo");
+    assert.equal(removalLog.fields?.reason, "manual");
 
     await assert.rejects(
       service.pollSubscription(subscription.subscriptionId),

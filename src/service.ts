@@ -56,6 +56,7 @@ import {
   SourceStream,
   Subscription,
   CleanupPolicy,
+  SubscriptionRemovalReason,
   SubscriptionLifecycleRetirement,
   SubscriptionPollResult,
   TerminalActivationTarget,
@@ -752,7 +753,7 @@ export class AgentInboxService {
         pausedSource = true;
       }
       for (const subscription of subscriptions) {
-        await this.removeSubscription(subscription.subscriptionId);
+        await this.removeSubscription(subscription.subscriptionId, { reason: "source_removed" });
       }
     }
     await this.adapters.removeSource(source);
@@ -1455,7 +1456,7 @@ export class AgentInboxService {
   private async rollbackRegisteredSubscriptions(subscriptions: Subscription[]): Promise<void> {
     for (const subscription of [...subscriptions].reverse()) {
       try {
-        await this.removeSubscription(subscription.subscriptionId);
+        await this.removeSubscription(subscription.subscriptionId, { reason: "registration_rollback" });
       } catch (error) {
         console.warn(`failed to roll back subscription ${subscription.subscriptionId}:`, error);
       }
@@ -1553,13 +1554,38 @@ export class AgentInboxService {
     };
   }
 
-  async removeSubscription(subscriptionId: string): Promise<{ removed: boolean; subscriptionId: string }> {
+  async removeSubscription(
+    subscriptionId: string,
+    options?: { reason?: SubscriptionRemovalReason },
+  ): Promise<{
+    removed: boolean;
+    subscriptionId: string;
+    agentId: string;
+    sourceId: string;
+    trackedResourceRef: string | null;
+  }> {
     const subscription = this.getSubscription(subscriptionId);
     await this.backend.deleteConsumer({ subscriptionId });
     this.store.deleteSubscription(subscriptionId);
     this.clearSubscriptionRuntimeState(subscription);
     this.refreshSourceIdleState(subscription.sourceId);
-    return { removed: true, subscriptionId };
+    const trackedResourceRef = subscription.trackedResourceRef ?? null;
+    // The retirement table is a transient retire scheduler, so a removal is
+    // otherwise invisible: log the destroyed subscription's ownership.
+    this.logger.info("subscription.removed", {
+      subscriptionId,
+      agentId: subscription.agentId,
+      sourceId: subscription.sourceId,
+      trackedResourceRef,
+      reason: options?.reason ?? "manual",
+    });
+    return {
+      removed: true,
+      subscriptionId,
+      agentId: subscription.agentId,
+      sourceId: subscription.sourceId,
+      trackedResourceRef,
+    };
   }
 
   listSubscriptions(filters?: {
@@ -4166,7 +4192,9 @@ export class AgentInboxService {
         // clean up the subscription to stop repeated errors on every cycle.
         if (!this.store.getSource(subscription.sourceId)) {
           try {
-            await this.removeSubscription(subscription.subscriptionId);
+            await this.removeSubscription(subscription.subscriptionId, {
+              reason: "orphaned_source_missing",
+            });
           } catch {
             this.store.deleteSubscription(subscription.subscriptionId);
             this.clearSubscriptionRuntimeState(subscription);

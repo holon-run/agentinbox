@@ -431,6 +431,35 @@ test("cli did-you-mean suggests closest command for typos", () => {
   }
 });
 
+test("cli subscription commands reject flag-like positionals instead of requesting them as ids", () => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agentinbox-cli-sub-id-home-"));
+  const env = {
+    ...process.env,
+    AGENTINBOX_HOME: homeDir,
+    ITERM_SESSION_ID: "",
+    TERM_SESSION_ID: "",
+    TERM_PROGRAM: "",
+    TMUX_PANE: "%subid",
+    CODEX_THREAD_ID: "thread-sub-id",
+  };
+
+  try {
+    const removeTypo = runCli(
+      ["subscription", "remove", "--agent-id", "agt_demo", "--subscription-id", "sub_aaaaaaaabbbb"],
+      env,
+    );
+    assert.equal(removeTypo.status, 1);
+    assert.match(removeTypo.stderr, /unexpected argument --agent-id/);
+    assert.match(removeTypo.stderr, /agentinbox subscription remove <subscriptionId>/);
+
+    const extraPositional = runCli(["subscription", "lag", "sub_aaaaaaaabbbb", "extra"], env);
+    assert.equal(extraPositional.status, 1);
+    assert.match(extraPositional.stderr, /usage: agentinbox subscription lag <subscriptionId>/);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("resolveServeConfig derives home, db, and socket defaults from AGENTINBOX_HOME", () => {
   const homeDir = path.join(os.tmpdir(), `agentinbox-home-${Date.now()}`);
   const config = resolveServeConfig({
@@ -3628,13 +3657,24 @@ test("e2e control plane can register an agent, route events, watch inbox, and se
       assert.equal(historyAfterAck.statusCode, 200);
       assert.equal(historyAfterAck.data.entries.length, 1);
 
-      const removeSubscriptionResponse = await client.request<{ removed: boolean; subscriptionId: string }>(
-        `/subscriptions/${encodeURIComponent(subscriptionResponse.data.subscriptions[0]?.subscriptionId ?? "")}`,
+      const removedSubscriptionId = subscriptionResponse.data.subscriptions[0]?.subscriptionId ?? "";
+      const removeSubscriptionResponse = await client.request<{
+        removed: boolean;
+        subscriptionId: string;
+        agentId: string;
+        sourceId: string;
+        trackedResourceRef: string | null;
+      }>(
+        `/subscriptions/${encodeURIComponent(removedSubscriptionId)}`,
         undefined,
         "DELETE",
       );
       assert.equal(removeSubscriptionResponse.statusCode, 200);
       assert.equal(removeSubscriptionResponse.data.removed, true);
+      assert.equal(removeSubscriptionResponse.data.subscriptionId, removedSubscriptionId);
+      assert.equal(removeSubscriptionResponse.data.agentId, agentId);
+      assert.equal(removeSubscriptionResponse.data.sourceId, sourceResponse.data.sourceId);
+      assert.equal(removeSubscriptionResponse.data.trackedResourceRef, "pr:69");
 
       const subscriptionsAfterDelete = await client.request<{ subscriptions: Array<{ subscriptionId: string }> }>(
         `/subscriptions?agent_id=${encodeURIComponent(agentId)}`,
