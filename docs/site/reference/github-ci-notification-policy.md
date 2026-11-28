@@ -24,6 +24,15 @@ not discovery of every CI provider, third-party check, individual job, matrix
 job, or branch-protection requirement. The adapter does not proactively discover
 the expected set through the GitHub API.
 
+When `expectedWorkflowIds` is omitted, the completion barrier is **derived
+from observation**: the sync path records in the source checkpoint which
+workflow IDs have run for each trigger event (`pull_request`, `push`, …).
+A generation then expects the union of the observed sets of its own trigger
+events, so pull-request generations and push generations can carry different
+barriers on the same source. A trigger event without observation history
+leaves the expected set unknown, not empty. Derivation uses only workflow
+runs this source has already observed.
+
 Ensure source filters and agent interests admit updates for every configured
 workflow. Filtering only failures hides successful or running members of the
 barrier and can result in an incomplete digest.
@@ -38,17 +47,25 @@ barrier and can result in an incomplete digest.
 - A success summary requires every expected workflow to be present and every
   observed workflow to have a successful latest run attempt. Observing only
   successful runs is not enough.
+  Successful-run-only observation is enough only when the expected set itself
+  is unknown, and such a summary is explicitly qualified as observed-set-only.
 - `cancelled`, `skipped`, and `neutral` are terminal but neither successful nor
   urgent. A complete terminal set containing them gets an accurate non-success
   summary, not an “all succeeded” summary.
-- With no explicit set, or with missing or running members, the hard timeout
-  produces an **incomplete** summary. An unknown set remains unknown even when
-  every observed run succeeded.
+- With a known expected set (explicit or derived), missing or running members
+  at the hard timeout produce an **incomplete** summary naming the missing
+  workflows.
+- With an unknown expected set (no explicit set and no observation history for
+  the generation's trigger events), the adapter never claims incompleteness:
+  an all-terminal, all-success observed set flushes early as
+  `final: all observed workflows succeeded (observed set only)`, while the
+  hard timeout reports `timed out (observed set only)` for still-pending runs
+  or `final (observed set only)` once every observed run is terminal.
 
 `digestQuietWindowSecs` (default `120`) is a scheduling hint only; silence is
 never evidence of a complete workflow set. `digestFlushTimeoutSecs` defaults to
 `3600`. After an incomplete notification, duplicate updates do not repeat it;
-a subsequently completed explicit set can still produce a final summary.
+a subsequently completed expected set can still produce a final summary.
 
 ## SHA cycles, reruns, and acknowledgement
 

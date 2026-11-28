@@ -65,9 +65,12 @@ new attempt is admitted while duplicate polls of that attempt stay deduplicated.
 
 For coordinated workflow notifications, optionally configure
 `expectedWorkflowIds` as a non-empty array of unique positive workflow IDs.
-Without this explicit scope, the adapter never claims that all expected CI
-succeeded: it sends first actionable failures immediately and otherwise falls
-back to an incomplete hard-timeout summary. See
+Without this explicit scope, the completion barrier is derived from workflows
+the source has previously observed per trigger event; when the generation's
+trigger events have no observation history, the adapter claims only an
+observed-set-only result: first actionable failures immediately, an
+all-terminal all-success observed set as a qualified success summary, and
+timeout summaries that never claim incompleteness. See
 [GitHub CI Notification Policy](./github-ci-notification-policy.md) for the
 completion barrier, reruns, acknowledgement, and workflow-level limitations.
 

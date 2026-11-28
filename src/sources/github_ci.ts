@@ -20,6 +20,8 @@ const GITHUB_CI_DIGEST_MIN_RECHECK_MS = 1_000;
 const MAX_PAGES_PER_SYNC = 10;
 const MAX_SEEN_KEYS = 512;
 const MAX_ERROR_BACKOFF_MULTIPLIER = 8;
+const MAX_OBSERVED_WORKFLOW_EVENT_TYPES = 16;
+const MAX_OBSERVED_WORKFLOWS_PER_EVENT = 32;
 
 export interface GithubCiSourceConfig {
   owner: string;
@@ -32,13 +34,19 @@ export interface GithubCiSourceConfig {
   statusFilter?: string;
   digestQuietWindowSecs?: number;
   digestFlushTimeoutSecs?: number;
-  /** Explicit workflow scope for the completion barrier (not jobs or checks). */
+  /**
+   * Explicit workflow scope for the completion barrier (not jobs or checks).
+   * When omitted, the barrier is derived from workflows previously observed
+   * per trigger event, falling back to observed-set-only completion (#288).
+   */
   expectedWorkflowIds?: number[];
 }
 
 interface GithubCiSourceCheckpoint {
   lastSeenUpdatedAt?: string;
   seenRunKeys?: string[];
+  /** Workflows observed per trigger event, deriving the expected set when unconfigured (#288). */
+  observedWorkflowsByEvent?: Record<string, number[]>;
   lastEventAt?: string;
   lastError?: string;
 }
@@ -212,6 +220,7 @@ export class GithubCiSourceRuntime {
       const checkpointLastSeenUpdatedAt = checkpoint.lastSeenUpdatedAt ?? undefined;
       let lastSeenUpdatedAt: string | undefined = checkpointLastSeenUpdatedAt;
       const seenKeys = new Set<string>(checkpoint.seenRunKeys ?? []);
+      const observedByEvent = parseObservedWorkflowsByEvent(checkpoint.observedWorkflowsByEvent);
 
       const perPage = config.perPage ?? DEFAULT_GITHUB_CI_PER_PAGE;
       for (let page = 1; page <= MAX_PAGES_PER_SYNC; page += 1) {
@@ -225,6 +234,10 @@ export class GithubCiSourceRuntime {
           if (!normalized) {
             continue;
           }
+          // Learning the derived expected set is observational and independent
+          // of event emission, so even deduplicated runs keep it warm (#288).
+          recordObservedWorkflow(
+            observedByEvent, asString(normalized.metadata?.event), asNumber(normalized.metadata?.workflowId));
           const eventUpdatedAt = normalized.metadata?.updatedAt;
           const runKey = `${normalized.sourceNativeId}:${normalized.eventVariant}`;
           const isNewerThanCheckpoint =
@@ -261,6 +274,7 @@ export class GithubCiSourceRuntime {
         checkpoint: JSON.stringify({
           lastSeenUpdatedAt,
           seenRunKeys: Array.from(seenKeys).slice(-MAX_SEEN_KEYS),
+          observedWorkflowsByEvent: observedByEvent,
           lastEventAt: new Date().toISOString(),
           lastError: undefined,
         } satisfies GithubCiSourceCheckpoint),
@@ -502,6 +516,8 @@ const ACTIONABLE_CI_FAILURES = new Set(["failure", "timed_out", "action_required
 interface GithubCiRunEvidence {
   runId: number;
   workflowId: number | null;
+  /** GitHub trigger event (pull_request, push, ...); null when unknown. */
+  event: string | null;
   attempt: number;
   headSha: string;
   createdAt: string;
@@ -530,6 +546,46 @@ interface GithubCiNotificationState extends Record<string, unknown> {
 }
 
 /**
+ * Resolve the completion barrier's expected workflow set. An explicit
+ * `expectedWorkflowIds` stays authoritative. Without one, the set is derived
+ * from workflows previously observed for every trigger event of the current
+ * generation (#288): any trigger event without observation history leaves the
+ * set unknown rather than empty, so completion stays observed-set-only.
+ */
+function resolveExpectedWorkflowIds(
+  config: GithubCiSourceConfig,
+  state: GithubCiNotificationState,
+  observedWorkflowsByEvent?: Record<string, number[]>,
+): number[] | undefined {
+  if (config.expectedWorkflowIds) {
+    return config.expectedWorkflowIds;
+  }
+  if (!observedWorkflowsByEvent) {
+    return undefined;
+  }
+  const eventTypes = new Set<string>();
+  for (const run of state.runs) {
+    if (run.event) {
+      eventTypes.add(run.event);
+    }
+  }
+  if (eventTypes.size === 0) {
+    return undefined;
+  }
+  const derived = new Set<number>();
+  for (const eventType of eventTypes) {
+    const workflows = observedWorkflowsByEvent[eventType];
+    if (!Array.isArray(workflows) || workflows.length === 0) {
+      return undefined;
+    }
+    for (const workflowId of workflows) {
+      derived.add(workflowId);
+    }
+  }
+  return derived.size > 0 ? [...derived].sort((a, b) => a - b) : undefined;
+}
+
+/**
  * Merge persisted evidence with unacked items. The caller commits the returned
  * notification state atomically with a snapshot only when flush is true.
  */
@@ -537,6 +593,7 @@ export function decideGithubCiDigestFlush(
   items: ActivationItem[],
   config: GithubCiSourceConfig,
   context: DigestThreadFlushContext,
+  observedWorkflowsByEvent?: Record<string, number[]>,
 ): DigestFlushDecision {
   const state = mergeGithubCiEvidence(items, config, context);
   if (!state) {
@@ -546,10 +603,15 @@ export function decideGithubCiDigestFlush(
   const createdMs = Date.parse(state.startedAt);
   const timeoutMs = githubCiDigestFlushTimeoutMs(config);
   const timedOut = Number.isFinite(nowMs) && Number.isFinite(createdMs) && nowMs - createdMs >= timeoutMs;
-  const missing = config.expectedWorkflowIds?.filter((id) => !state.runs.some((run) => run.workflowId === id));
+  const expected = resolveExpectedWorkflowIds(config, state, observedWorkflowsByEvent);
+  const missing = expected?.filter((id) => !state.runs.some((run) => run.workflowId === id));
   // A completed status without an outcome is not a complete result barrier.
   const pending = state.runs.filter((run) => !isTerminalRun(run) || !run.conclusion).length;
-  const complete = Boolean(missing && missing.length === 0 && pending === 0);
+  // An unknown expected set cannot certify completeness: only an all-terminal,
+  // all-success observed set may claim an observed-set-only completion (#288).
+  const complete = expected !== undefined
+    ? Boolean(missing && missing.length === 0 && pending === 0)
+    : state.runs.length > 0 && pending === 0 && state.runs.every((run) => run.conclusion === "success");
   const failures = state.runs.filter((run) => ACTIONABLE_CI_FAILURES.has(run.conclusion ?? ""));
   const newFailure = failures.some((run) => !state.notifiedFailures?.includes(failureEvidenceKey(run)));
   const fingerprint = JSON.stringify([
@@ -575,20 +637,36 @@ export function decideGithubCiDigestFlush(
     state.finalFingerprint = fingerprint;
     state.notifiedFailures = failures.map(failureEvidenceKey);
     const allSuccessful = state.runs.every((run) => run.conclusion === "success");
+    // The summary qualifies where the completion barrier came from: an
+    // explicit set, a set derived from observed history, or the observed set
+    // itself when the expected set is unknown (#288).
+    const summaryPhase = expected === undefined
+      ? "final: all observed workflows succeeded (observed set only)"
+      : config.expectedWorkflowIds
+        ? (allSuccessful ? "final: all expected workflows succeeded" : "final")
+        : (allSuccessful ? "final: all expected workflows succeeded (derived expected set)" : "final");
     return {
-      flush: true, reason: `all expected runs terminal on ${shortSha(state.headSha)}`,
+      flush: true,
+      reason: expected === undefined
+        ? `all observed runs terminal and successful on ${shortSha(state.headSha)}`
+        : `all expected runs terminal on ${shortSha(state.headSha)}`,
       notificationState: state,
-      summary: summarizeCiEvidence(state, allSuccessful ? "final: all expected workflows succeeded" : "final"),
+      summary: summarizeCiEvidence(state, summaryPhase),
     };
   }
   if (!complete && timedOut && !state.incompleteFingerprint) {
     state.phase = "incomplete";
     state.incompleteFingerprint = fingerprint;
     state.notifiedFailures = failures.map(failureEvidenceKey);
-    const detail = missing ? `missing workflows: ${missing.join(", ") || "none"}` : "expected workflow set unknown";
+    // With a known expected set the timeout honestly reports what is missing.
+    // With an unknown set it reports the observed outcome instead of claiming
+    // incompleteness (#288).
+    const summaryPhase = missing
+      ? `incomplete: missing workflows: ${missing.join(", ") || "none"}`
+      : pending > 0 ? "timed out (observed set only)" : "final (observed set only)";
     return {
       flush: true, reason: `hard timeout on ${shortSha(state.headSha)}`,
-      notificationState: state, summary: summarizeCiEvidence(state, `incomplete: ${detail}`),
+      notificationState: state, summary: summarizeCiEvidence(state, summaryPhase),
     };
   }
   const remaining = createdMs + timeoutMs - nowMs;
@@ -665,6 +743,7 @@ function evidenceFromItem(item: ActivationItem): GithubCiRunEvidence | null {
   }
   return {
     runId, headSha, workflowId: asNumber(item.metadata.workflowId),
+    event: asString(item.metadata.event),
     attempt: asNumber(item.metadata.runAttempt) ?? 1,
     // Run creation time is the only ordering proof between SHA generations.
     // occurredAt mirrors run updated_at, so a late completion of an old SHA
@@ -790,6 +869,52 @@ function mergeGithubCiEvidence(
 
 function shortSha(sha: string | null): string {
   return sha ? sha.slice(0, 7) : "unknown";
+}
+
+/**
+ * Workflows this source has observed per trigger event, learned by the sync
+ * path into the source checkpoint. Feeds the derived expected set (#288).
+ */
+export function githubCiObservedWorkflowsByEvent(source: SourceStream): Record<string, number[]> {
+  return parseObservedWorkflowsByEvent(parseGithubCiCheckpoint(source.checkpoint).observedWorkflowsByEvent);
+}
+
+function parseObservedWorkflowsByEvent(value: unknown): Record<string, number[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const observed: Record<string, number[]> = {};
+  for (const [event, workflowIds] of Object.entries(value)) {
+    if (Array.isArray(workflowIds)
+        && workflowIds.every((id) => typeof id === "number" && Number.isSafeInteger(id) && id > 0)) {
+      observed[event] = [...new Set(workflowIds)].slice(-MAX_OBSERVED_WORKFLOWS_PER_EVENT);
+    }
+  }
+  return observed;
+}
+
+function recordObservedWorkflow(
+  observed: Record<string, number[]>,
+  event: string | null | undefined,
+  workflowId: number | null,
+): void {
+  if (!event || workflowId == null || workflowId <= 0) {
+    return;
+  }
+  const existing = observed[event];
+  if (Array.isArray(existing)) {
+    // Recency ordering keeps the most recently observed workflow last, so
+    // overflow drops the stalest workflow first.
+    const next = existing.filter((id) => id !== workflowId);
+    next.push(workflowId);
+    observed[event] = next.slice(-MAX_OBSERVED_WORKFLOWS_PER_EVENT);
+    return;
+  }
+  const eventTypes = Object.keys(observed);
+  if (eventTypes.length >= MAX_OBSERVED_WORKFLOW_EVENT_TYPES) {
+    delete observed[eventTypes[0]];
+  }
+  observed[event] = [workflowId];
 }
 
 function parseGithubCiCheckpoint(checkpoint: string | null | undefined): GithubCiSourceCheckpoint {

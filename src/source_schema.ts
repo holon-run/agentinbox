@@ -124,7 +124,7 @@ const SOURCE_SCHEMAS: Record<SourceType, SourceSchema> = {
       { name: "eventFilter", type: "string", required: false, description: "Optional GitHub workflow event filter." },
       { name: "branch", type: "string", required: false, description: "Optional branch filter for workflow runs." },
       { name: "statusFilter", type: "string", required: false, description: "Optional workflow status filter." },
-      { name: "expectedWorkflowIds", type: "number[]", required: false, description: "Unique positive workflow IDs defining the minimum notification completion barrier; all observed runs also participate, and no success claim is made without this explicit set." },
+      { name: "expectedWorkflowIds", type: "number[]", required: false, description: "Unique positive workflow IDs defining the notification completion barrier; all observed runs also participate. When omitted, the barrier is derived from workflows previously observed per trigger event, falling back to observed-set-only completion (all observed runs terminal and successful)." },
       { name: "digestQuietWindowSecs", type: "number", required: false, description: "Digest scheduling hint, not proof that all expected workflows were observed." },
       { name: "digestFlushTimeoutSecs", type: "number", required: false, description: "Hard timeout for an incomplete workflow digest (default 3600 seconds)." },
     ],
