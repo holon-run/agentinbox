@@ -81,7 +81,7 @@ async function fixture(config: Record<string, unknown> = {}) {
     instance: AgentInboxService,
     workflowId: number,
     conclusion: string | null,
-    options: { attempt?: number; sha?: string; status?: string; createdAt?: string; updatedAt?: string } = {},
+    options: { attempt?: number; sha?: string; status?: string; createdAt?: string; updatedAt?: string; event?: string } = {},
   ) {
     sequence += 1;
     const event = normalizeGithubWorkflowRunEvent(source, sourceConfig, {
@@ -91,6 +91,7 @@ async function fixture(config: Record<string, unknown> = {}) {
       head_sha: options.sha ?? "abcdef123456",
       status: options.status ?? (conclusion ? "completed" : "in_progress"),
       conclusion,
+      event: options.event,
       name: `workflow-${workflowId}`,
       pull_requests: [{ number: 42 }],
       created_at: options.createdAt ?? now,
@@ -430,20 +431,58 @@ for (const generation of ["new SHA", "rerun"] as const) {
   });
 }
 
-test("CI unknown expected set reports incomplete at timeout, never complete success", async () => {
-  const f = await fixture({ expectedWorkflowIds: undefined, digestFlushTimeoutSecs: 1 });
+test("CI unknown expected set flushes observed-set-only success, never incomplete", async () => {
+  const f = await fixture({ expectedWorkflowIds: undefined });
   try {
     await f.append(f.service, 11, "success");
-    await f.append(f.service, 22, "success");
+    await f.internal.syncPendingDigestThreads(true);
+    const final = f.service.listInboxItems(f.agentId)[0]!;
+    assert.ok(final);
+    assert.match(final.summary, /all observed workflows succeeded \(observed set only\)/);
+    assert.doesNotMatch(final.summary, /incomplete/i);
+    await f.internal.syncPendingDigestThreads(true);
+    assert.equal(f.service.listInboxItems(f.agentId)[0]!.entryId, final.entryId);
+  } finally {
+    await f.service.stop();
+    f.store.close();
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("CI unknown expected set timeout reports the observed outcome, never incomplete", async () => {
+  const f = await fixture({ expectedWorkflowIds: undefined, digestFlushTimeoutSecs: 1 });
+  try {
+    await f.append(f.service, 11, null);
     await f.internal.syncPendingDigestThreads(true);
     assert.equal(f.service.listInboxItems(f.agentId).length, 0);
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     await f.internal.syncPendingDigestThreads(true);
-    const incomplete = f.service.listInboxItems(f.agentId)[0]!;
-    assert.ok(incomplete);
-    assert.match(incomplete.summary, /incomplete|unknown/i);
+    const timedOut = f.service.listInboxItems(f.agentId)[0]!;
+    assert.ok(timedOut);
+    assert.match(timedOut.summary, /timed out \(observed set only\)/);
+    assert.doesNotMatch(timedOut.summary, /incomplete/i);
+  } finally {
+    await f.service.stop();
+    f.store.close();
+    fs.rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("CI derived expected set from the source checkpoint converges one digest", async () => {
+  const f = await fixture({ expectedWorkflowIds: undefined });
+  try {
+    f.store.updateSourceRuntime("ci-source", {
+      checkpoint: JSON.stringify({ observedWorkflowsByEvent: { pull_request: [11, 22] } }),
+    });
+    await f.append(f.service, 11, "success", { event: "pull_request" });
     await f.internal.syncPendingDigestThreads(true);
-    assert.equal(f.service.listInboxItems(f.agentId)[0]!.entryId, incomplete.entryId);
+    assert.equal(f.service.listInboxItems(f.agentId).length, 0, "a missing derived member blocks completion");
+    await f.append(f.service, 22, "success", { event: "pull_request" });
+    await f.internal.syncPendingDigestThreads(true);
+    const final = f.service.listInboxItems(f.agentId)[0]!;
+    assert.ok(final);
+    assert.match(final.summary, /all expected workflows succeeded \(derived expected set\)/);
+    assert.match(final.summary, /2 passed/);
   } finally {
     await f.service.stop();
     f.store.close();

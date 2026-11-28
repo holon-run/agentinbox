@@ -209,19 +209,181 @@ function policyRun(
   });
 }
 
-test("CI policy requires an explicit complete workflow barrier, never a quiet window", () => {
+test("CI policy flushes observed-set-only success without an explicit barrier, never a quiet window", () => {
+  // A quiet window alone never completes anything: pending evidence blocks.
+  assert.equal(decideGithubCiDigestFlush([policyRun(1, 10, null)], CI_DIGEST_CONFIG, CI_CONTEXT).flush, false);
   const success = policyRun(1, 10, "success");
-  assert.equal(decideGithubCiDigestFlush([success], CI_DIGEST_CONFIG, CI_CONTEXT).flush, false);
   assert.equal(decideGithubCiDigestFlush([success], CI_BARRIER_CONFIG, CI_CONTEXT).flush, false);
+  const observedOnly = decideGithubCiDigestFlush([success], CI_DIGEST_CONFIG, CI_CONTEXT);
+  assert.equal(observedOnly.flush, true);
+  assert.match(observedOnly.summary ?? "", /all observed workflows succeeded \(observed set only\)/);
+  assert.doesNotMatch(observedOnly.summary ?? "", /incomplete/);
   const complete = decideGithubCiDigestFlush([success, policyRun(2, 20, "success")], CI_BARRIER_CONFIG, CI_CONTEXT);
   assert.equal(complete.flush, true);
   assert.match(complete.summary ?? "", /all expected workflows succeeded/);
+  assert.equal(decideGithubCiDigestFlush([success], CI_DIGEST_CONFIG, {
+    ...CI_CONTEXT, notificationState: observedOnly.notificationState,
+  }).flush, false, "a committed observed-set-only final must suppress replay");
   const timeout = decideGithubCiDigestFlush([success], CI_DIGEST_CONFIG, {
     ...CI_CONTEXT, now: "2026-04-06T11:01:00Z",
   });
   assert.equal(timeout.flush, true);
-  assert.match(timeout.summary ?? "", /incomplete.*expected workflow set unknown/);
-  assert.doesNotMatch(timeout.summary ?? "", /all expected workflows succeeded/);
+  assert.match(timeout.summary ?? "", /all observed workflows succeeded \(observed set only\)/);
+  assert.doesNotMatch(timeout.summary ?? "", /incomplete/);
+  const pendingTimeout = decideGithubCiDigestFlush([policyRun(1, 10, null)], CI_DIGEST_CONFIG, {
+    ...CI_CONTEXT, now: "2026-04-06T11:01:00Z",
+  });
+  assert.equal(pendingTimeout.flush, true);
+  assert.match(pendingTimeout.summary ?? "", /timed out \(observed set only\)/);
+  assert.doesNotMatch(pendingTimeout.summary ?? "", /incomplete/);
+  assert.doesNotMatch(pendingTimeout.summary ?? "", /all observed workflows succeeded/);
+});
+
+test("CI policy unknown set reports the observed outcome at timeout, never incomplete", () => {
+  const first = decideGithubCiDigestFlush([policyRun(1, 10, "failure")], CI_DIGEST_CONFIG, CI_CONTEXT);
+  assert.equal(first.flush, true);
+  assert.match(first.summary ?? "", /first failure/);
+  const terminal = [policyRun(1, 10, "failure"), policyRun(2, 20, "success")];
+  const context = { ...CI_CONTEXT, notificationState: first.notificationState };
+  assert.equal(decideGithubCiDigestFlush(terminal, CI_DIGEST_CONFIG, context).flush, false,
+    "mixed terminal outcomes cannot certify completion without an expected set");
+  const timeout = decideGithubCiDigestFlush(terminal, CI_DIGEST_CONFIG, {
+    ...context, now: "2026-04-06T11:01:00Z",
+  });
+  assert.equal(timeout.flush, true);
+  assert.match(timeout.summary ?? "", /final \(observed set only\)/);
+  assert.doesNotMatch(timeout.summary ?? "", /incomplete/);
+  assert.equal(decideGithubCiDigestFlush(terminal, CI_DIGEST_CONFIG, {
+    ...context, now: "2026-04-06T11:05:00Z", notificationState: timeout.notificationState,
+  }).flush, false, "the committed timeout snapshot must suppress replay");
+  const recovered = decideGithubCiDigestFlush([
+    policyRun(1, 10, "success", { runAttempt: 2, updatedAt: "2026-04-06T11:10:00Z" }),
+    policyRun(2, 20, "success"),
+  ], CI_DIGEST_CONFIG, {
+    ...context, now: "2026-04-06T11:11:00Z", notificationState: timeout.notificationState,
+  });
+  assert.equal(recovered.flush, true, "a rerun reaching all success notifies observed-set-only completion");
+  assert.match(recovered.summary ?? "", /all observed workflows succeeded \(observed set only\)/);
+});
+
+test("CI policy derives the expected workflow set from observed workflows per trigger event", () => {
+  const observed = { pull_request: [10], push: [10, 20] };
+  // A pull_request generation expects only its own observed workflows.
+  const prComplete = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success", { event: "pull_request" })], CI_DIGEST_CONFIG, CI_CONTEXT, observed,
+  );
+  assert.equal(prComplete.flush, true);
+  assert.match(prComplete.summary ?? "", /all expected workflows succeeded \(derived expected set\)/);
+  // A push generation expects the union: a missing member blocks completion.
+  assert.equal(decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success", { event: "push" })], CI_DIGEST_CONFIG, CI_CONTEXT, observed,
+  ).flush, false);
+  const pushComplete = decideGithubCiDigestFlush([
+    policyRun(1, 10, "success", { event: "push" }),
+    policyRun(2, 20, "success", { event: "push" }),
+  ], CI_DIGEST_CONFIG, CI_CONTEXT, observed);
+  assert.equal(pushComplete.flush, true);
+  assert.match(pushComplete.summary ?? "", /all expected workflows succeeded \(derived expected set\)/);
+  assert.match(pushComplete.reason ?? "", /all expected runs terminal/);
+  // A missing derived member times out as incomplete, like an explicit set.
+  const pushTimeout = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success", { event: "push" })], CI_DIGEST_CONFIG,
+    { ...CI_CONTEXT, now: "2026-04-06T11:01:00Z" }, observed,
+  );
+  assert.equal(pushTimeout.flush, true);
+  assert.match(pushTimeout.summary ?? "", /incomplete.*missing workflows: 20/);
+  // A trigger event without observation history keeps the set unknown.
+  const cold = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success", { event: "workflow_dispatch" })], CI_DIGEST_CONFIG, CI_CONTEXT, observed,
+  );
+  assert.equal(cold.flush, true);
+  assert.match(cold.summary ?? "", /all observed workflows succeeded \(observed set only\)/);
+  // A generation mixing trigger events expects the union of both sets.
+  assert.equal(decideGithubCiDigestFlush([
+    policyRun(1, 10, "success", { event: "pull_request" }),
+    policyRun(2, 20, null, { event: "push" }),
+  ], CI_DIGEST_CONFIG, CI_CONTEXT, observed).flush, false);
+});
+
+test("CI policy derived barrier still reports failures and recaps without the success claim", () => {
+  const observed = { push: [10, 20] };
+  const first = decideGithubCiDigestFlush(
+    [policyRun(1, 10, "failure", { event: "push" })], CI_DIGEST_CONFIG, CI_CONTEXT, observed,
+  );
+  assert.equal(first.flush, true);
+  assert.match(first.summary ?? "", /first failure/);
+  const recap = decideGithubCiDigestFlush([
+    policyRun(1, 10, "failure", { event: "push" }),
+    policyRun(2, 20, "failure", { event: "push" }),
+  ], CI_DIGEST_CONFIG, { ...CI_CONTEXT, notificationState: first.notificationState }, observed);
+  assert.equal(recap.flush, true);
+  assert.match(recap.summary ?? "", /final/);
+  assert.doesNotMatch(recap.summary ?? "", /all expected workflows succeeded/);
+});
+
+test("CI policy keeps the explicit expected workflow set authoritative over derivation", () => {
+  assert.equal(decideGithubCiDigestFlush(
+    [policyRun(1, 10, "success")], CI_BARRIER_CONFIG, CI_CONTEXT, { pull_request: [10, 30] },
+  ).flush, false);
+});
+
+test("github_repo_ci digest decisions read the derived set from the source checkpoint", async () => {
+  const source: SourceStream = {
+    sourceId: "src_ci_derived", hostId: "hst_ci_derived", streamKind: "ci_runs",
+    streamKey: "holon-run/agentinbox", sourceType: "github_repo_ci",
+    sourceKey: "holon-run/agentinbox", configRef: null,
+    config: { owner: "holon-run", repo: "agentinbox" }, status: "active",
+    checkpoint: JSON.stringify({ observedWorkflowsByEvent: { pull_request: [10] } }),
+    createdAt: CI_CONTEXT.threadCreatedAt, updatedAt: CI_CONTEXT.now,
+  };
+  const module = await new RemoteSourceModuleRegistry().resolve(source, "");
+  const pending = await module.shouldFlushDigestThread!(
+    [policyRun(1, 20, null, { event: "pull_request" })], source, CI_CONTEXT,
+  );
+  assert.equal(pending?.flush, false, "missing derived members and pending runs block completion");
+  const complete = await module.shouldFlushDigestThread!(
+    [policyRun(1, 10, "success", { event: "pull_request" })], source, CI_CONTEXT,
+  );
+  assert.equal(complete?.flush, true);
+  assert.match(complete?.summary ?? "", /derived expected set/);
+});
+
+test("github_repo_ci sync learns observed workflows per trigger event into the checkpoint", async () => {
+  const { store, service, dir } = await makeService();
+  try {
+    const fake = new FakeGithubActionsClient();
+    const runtime = new GithubCiSourceRuntime(
+      store, async (input) => service.appendSourceEvent(input), new GithubActionsUxcClient(fake));
+    const source: SourceStream = {
+      sourceId: "src_ci_observed", hostId: "hst_ci_observed", streamKind: "ci_runs",
+      streamKey: "holon-run/agentinbox", sourceType: "github_repo_ci",
+      sourceKey: "holon-run/agentinbox", configRef: null,
+      config: { owner: "holon-run", repo: "agentinbox", perPage: 10 }, status: "active",
+      checkpoint: null, createdAt: nowIso(), updatedAt: nowIso(),
+    };
+    store.insertSource(source);
+    fake.workflowRuns = [
+      // GitHub lists the newest run first; the sync processes oldest-first.
+      { id: 3003, workflow_id: 30, name: "Nightly", status: "completed", conclusion: "success",
+        event: "pull_request", head_sha: "sha-c", updated_at: "2026-04-06T10:02:00Z", pull_requests: [{ number: 73 }] },
+      { id: 3002, workflow_id: 20, name: "Docs Site", status: "completed", conclusion: "success",
+        event: "push", head_sha: "sha-b", updated_at: "2026-04-06T10:01:00Z" },
+      { id: 3001, workflow_id: 10, name: "CI", status: "completed", conclusion: "success",
+        event: "pull_request", head_sha: "sha-a", updated_at: "2026-04-06T10:00:00Z", pull_requests: [{ number: 71 }] },
+    ];
+    await runtime.ensureSource(source);
+    await runtime.pollSource(source.sourceId);
+    const checkpoint = JSON.parse(store.getSource(source.sourceId)!.checkpoint!);
+    assert.deepEqual(checkpoint.observedWorkflowsByEvent, { pull_request: [10, 30], push: [20] });
+    // Re-polling keeps the learned set stable.
+    await runtime.pollSource(source.sourceId);
+    const checkpointAgain = JSON.parse(store.getSource(source.sourceId)!.checkpoint!);
+    assert.deepEqual(checkpointAgain.observedWorkflowsByEvent, { pull_request: [10, 30], push: [20] });
+  } finally {
+    await service.stop();
+    store.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("CI policy includes observed workflows outside the expected set in failure alerts", () => {
@@ -678,8 +840,9 @@ test("CI policy unknown scope still sends first failure, but later terminal even
     ...context, now: "2026-04-06T11:01:00Z",
   });
   assert.equal(timeout.flush, true);
-  assert.match(timeout.summary ?? "", /incomplete.*expected workflow set unknown/);
+  assert.match(timeout.summary ?? "", /final \(observed set only\)/);
   assert.doesNotMatch(timeout.summary ?? "", /all expected workflows succeeded/);
+  assert.doesNotMatch(timeout.summary ?? "", /all observed workflows succeeded/);
 });
 
 test("CI policy waits for terminal conclusions and accepts completion enrichment without regression", () => {

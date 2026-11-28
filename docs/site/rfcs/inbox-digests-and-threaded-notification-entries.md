@@ -383,12 +383,14 @@ The GitHub CI module uses this contract for workflow-run notifications:
 - the first actionable failure is eligible immediately, even while other
   workflows are running;
 - a success summary requires an explicitly declared `expectedWorkflowIds`
-  set, all declared workflows present and successful, and no observed
+  set (or one derived from workflows previously observed per trigger event),
+  all declared workflows present and successful, and no observed
   outstanding or non-successful run;
 - subsequent failures in the same evaluation are coalesced until the final
   result; a rerun starts a fresh evaluation and can report recovery;
-- missing or unknown membership cannot be advertised as complete success;
-  the timeout fallback explicitly reports incomplete state;
+- missing membership cannot be advertised as complete success and the
+  timeout fallback explicitly reports it; unknown membership falls back to
+  observed-set-only summaries that never claim incompleteness;
 - cancelled, skipped and neutral outcomes are not successes;
 - latest-attempt evidence and notification phases survive restart, ack and
   raw-item GC, and previous head SHAs do not contaminate current results.
